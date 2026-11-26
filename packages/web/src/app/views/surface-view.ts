@@ -282,7 +282,6 @@ export class SurfaceView {
 		{
 			type: "button",
 			class: "surface-plus",
-			"data-act": "plus-menu",
 			"aria-label": t("Point or attach"),
 			title: t("Point or attach"),
 			"aria-haspopup": "menu",
@@ -314,6 +313,8 @@ export class SurfaceView {
 	#pointVisible = false;
 	#pointEnabled = false;
 	#plusMenu: ContextMenu | undefined;
+	#plusShutBy: Event | undefined;
+	#plusShuts = false;
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
 	#attachedReport: SurfaceReportView | undefined;
@@ -468,6 +469,24 @@ export class SurfaceView {
 			{ signal: lifetimeSignal },
 		);
 		lifetimeSignal.addEventListener("abort", () => clearTimeout(this.#peekTimer));
+		this.#plus.addEventListener(
+			"pointerdown",
+			(event) => {
+				this.#plusShuts = event === this.#plusShutBy;
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#plus.addEventListener(
+			"click",
+			(event) => {
+				// WHY: The press that shut the open menu ends in this click; a keyboard click has no press before it.
+				const shut = this.#plusShuts && event.detail > 0;
+				this.#plusShuts = false;
+				if (shut || this.#deactivated || this.#parked) return;
+				this.#openPlusMenu();
+			},
+			{ signal: lifetimeSignal },
+		);
 		this.#composer.addEventListener(
 			"submit",
 			(event) => {
@@ -2163,11 +2182,12 @@ export class SurfaceView {
 		this.#plusMenu = openContextMenu({
 			label: t("Point or attach"),
 			x: box.left,
-			y: this.#shell.getBoundingClientRect().top - 8,
+			y: this.#shell.getBoundingClientRect().top - 8 * uiScale(),
 			up: true,
 			opener: this.#plus,
 			items,
-			onClose: () => {
+			onClose: (press) => {
+				this.#plusShutBy = press;
 				this.#plusMenu = undefined;
 				this.#plus.setAttribute("aria-expanded", "false");
 				this.#paintFold();
@@ -2308,9 +2328,6 @@ export class SurfaceView {
 				this.#composer.classList.add("is-held");
 				this.#input.focus({ preventScroll: true });
 				this.#paintFold();
-				return;
-			case "plus-menu":
-				this.#openPlusMenu();
 				return;
 			case "clear-target":
 				this.#target = undefined;

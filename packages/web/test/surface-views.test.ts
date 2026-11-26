@@ -688,6 +688,54 @@ describe("the surface page", () => {
 		store.dispose();
 	});
 
+	it("opens Point and Attach from the composer's +, holds the folded composer open meanwhile, and shuts on a second press", async () => {
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+				surfaceSessionImages: vi.fn(async () => ({ sessionId: "s", messages: [] })),
+			}),
+			{ uploadImage: vi.fn(async () => ({ sha256: "a".repeat(64), bytes: 5, mediaType: "image/png" })) },
+		);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		document.body.append(view.el);
+		await flush();
+		view.update();
+		const plus = view.el.querySelector<HTMLButtonElement>(".surface-plus")!;
+		const composer = view.el.querySelector<HTMLElement>(".surface-composer")!;
+		expect(plus.hidden).toBe(false);
+		expect(view.el.querySelector(".surface-composer-shell .surface-attach")).toBeNull();
+
+		plus.click();
+		const menu = openMenu()!;
+		expect(menu.el.classList.contains("is-up")).toBe(true);
+		expect(plus.getAttribute("aria-expanded")).toBe("true");
+		expect(composer.classList.contains("is-held")).toBe(true);
+		const labels = [...menu.el.querySelectorAll(".context-menu-label")].map((label) => label.textContent);
+		expect(labels).toEqual(["Point at an element", "Attach images"]);
+
+		const picked = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(() => undefined);
+		[...menu.el.querySelectorAll<HTMLElement>(".context-menu-item")].at(-1)!.click();
+		expect(picked).toHaveBeenCalledTimes(1);
+		picked.mockRestore();
+		expect(openMenu()).toBeUndefined();
+		expect(plus.getAttribute("aria-expanded")).toBe("false");
+		expect(composer.classList.contains("is-held")).toBe(false);
+
+		plus.click();
+		expect(openMenu()).toBeDefined();
+		const press = new MouseEvent("pointerdown", { bubbles: true });
+		plus.dispatchEvent(press);
+		expect(openMenu()).toBeUndefined();
+		plus.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+		expect(openMenu()).toBeUndefined();
+		plus.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+		expect(openMenu()).toBeDefined();
+		openMenu()?.close();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("supports Point-to-Change mode, validates picked targets, and starts a targeted session", async () => {
 		const target = pointTarget();
 		const ws = workspace([session(["staged"])], {
@@ -1020,6 +1068,7 @@ describe("the surface page", () => {
 		await flush();
 		inboxView.update();
 		expect(inboxView.el.querySelector(".surface-handoff-btn")).toBeNull();
+		expect(inboxView.el.querySelector<HTMLElement>(".surface-plus")?.hidden).toBe(true);
 		expect(inboxView.el.querySelector<HTMLElement>(".surface-bar")?.hidden).toBe(true);
 		inboxView.dispose();
 		store.dispose();
