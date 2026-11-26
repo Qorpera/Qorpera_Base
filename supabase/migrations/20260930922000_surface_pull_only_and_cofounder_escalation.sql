@@ -399,6 +399,8 @@ select pg_temp.surf_esc_patch('public.qorpera_native_surface_read_session_turn(u
 					else coalesce(nullif(left(regexp_replace(btrim(coalesce(pm.display_name, '')), '\s+', ' ', 'g'), 80), ''),
 						'A teammate')
 				end$new$,
+	$old$Act on the newest member message; the request above is where the session began.$old$,
+	$new$Act on the newest member or agent message; the request above is where the session began.$new$,
 	$old$		'originKind', v_session.origin_kind,$old$,
 	$new$		'originKind', v_session.origin_kind,
 		'memberInitiated', public.qorpera_surface_turn_member_initiated(v_session),$new$

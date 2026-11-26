@@ -377,6 +377,7 @@ begin
 		not public.qorpera_surface_turn_member_initiated(v_sess_row)
 		and public.qorpera_surface_turn_requester(v_sess_row) is null
 		and (v_turn ->> 'memberInitiated')::boolean is false
+		and (v_turn ->> 'prompt') like '%Act on the newest member or agent message%'
 		and (v_turn ->> 'prompt') like '%Operations Lead:%Adjust spacing for desktop.%'
 		and exists (
 			select 1 from public.qorpera_surface_session_messages m
