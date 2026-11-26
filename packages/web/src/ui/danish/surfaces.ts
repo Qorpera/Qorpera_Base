@@ -202,7 +202,6 @@ export const SURFACES: Record<string, string> = {
 	Philosophy: "Filosofi",
 	"Product Studio": "Produktstudie",
 	"Custom Surface": "Egen surface",
-	Surface: "Surface",
 	"What is this surface for? An agent shapes it from this brief.":
 		"Hvad skal denne surface bruges til? En agent former den ud fra denne brief.",
 	Brief: "Brief",

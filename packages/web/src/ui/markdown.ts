@@ -276,12 +276,19 @@ export function surfaceFigureLink(slug: string, name: string | Node[], tab?: str
 
 const COMPACT_FIGURE_ROW = 6;
 
+const FIGURE_ROW_COLUMNS = 4;
+
 function surfaceFigureRow(figures: readonly HTMLElement[]): HTMLElement {
-	return h(
+	const row = h(
 		"div",
-		{ class: figures.length > COMPACT_FIGURE_ROW ? "app-cards surface-figures is-compact" : "app-cards surface-figures" },
-		figures,
+		{
+			class:
+				figures.length > COMPACT_FIGURE_ROW ? "app-cards surface-figures is-compact" : "app-cards surface-figures",
+		},
+		[...figures],
 	);
+	row.style.setProperty("--figure-columns", String(Math.min(figures.length, FIGURE_ROW_COLUMNS)));
+	return row;
 }
 
 interface NamedSurface {
@@ -305,7 +312,8 @@ function surfaceLinksOnly(parts: readonly MarkedToken[]): MarkedToken[] | undefi
 	for (const part of parts) {
 		if (part.type === "link" && surfaceLinkTarget(decodeEntities(part.href))) found.push(part);
 		else if (part.type === "strong" || part.type === "em" || part.type === "text") {
-			const inner = "tokens" in part && part.tokens?.length ? surfaceLinksOnly(part.tokens as MarkedToken[]) : undefined;
+			const inner =
+				"tokens" in part && part.tokens?.length ? surfaceLinksOnly(part.tokens as MarkedToken[]) : undefined;
 			if (inner) found.push(...inner);
 			else if (!LINK_SEPARATOR.test(part.raw)) return undefined;
 		} else if (part.type !== "br" && part.type !== "space") return undefined;
@@ -388,7 +396,13 @@ function renderTokens(
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
 		const children = () =>
-			renderTokens(("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[], depth + 1, links, sites, surfaces);
+			renderTokens(
+				("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[],
+				depth + 1,
+				links,
+				sites,
+				surfaces,
+			);
 		switch (token.type) {
 			case "space":
 			case "def":

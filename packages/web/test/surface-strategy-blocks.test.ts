@@ -1439,7 +1439,9 @@ describe("The studio voice tour", () => {
 describe("Surface links in messages", () => {
 	const slugs = (root: ParentNode) =>
 		[...root.querySelectorAll<HTMLElement>(".surface-card.is-figure")].map((figure) =>
-			figure.dataset.surfaceTab ? `${figure.dataset.surfaceSlug}#${figure.dataset.surfaceTab}` : figure.dataset.surfaceSlug,
+			figure.dataset.surfaceTab
+				? `${figure.dataset.surfaceSlug}#${figure.dataset.surfaceTab}`
+				: figure.dataset.surfaceSlug,
 		);
 	const classes = (parts: readonly HTMLElement[]) => parts.map((part) => part.className);
 
@@ -1455,7 +1457,12 @@ describe("Surface links in messages", () => {
 		);
 		expect(classes(parts)).toEqual(["message-prose", "app-cards surface-figures", "message-prose"]);
 		expect(slugs(parts[1]!)).toEqual(["website", "web-app", "strategy", "strategy#economics"]);
-		expect(texts(parts[1]!.querySelectorAll(".app-card-title"))).toEqual(["Website", "Web App", "Strategy", "Economics"]);
+		expect(texts(parts[1]!.querySelectorAll(".app-card-title"))).toEqual([
+			"Website",
+			"Web App",
+			"Strategy",
+			"Economics",
+		]);
 		expect(parts[1]!.querySelector(".app-card-note, .app-card-go")).toBeNull();
 	});
 
