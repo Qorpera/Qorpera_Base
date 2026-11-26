@@ -69,6 +69,19 @@ export interface SiteDnsRecord {
 	readonly value: string;
 }
 
+export type DomainCheckReason =
+	| "dns_routing_and_txt_missing"
+	| "apex_a_record_mismatch"
+	| "cname_record_mismatch"
+	| "txt_verification_missing"
+	| "domain_not_found";
+
+export interface DomainCheck {
+	readonly reason: DomainCheckReason | null;
+	readonly txtOnWrongName: boolean;
+	readonly nameServers: readonly string[];
+}
+
 export type SiteSlugAvailabilityReason = "available" | "current" | "taken" | "reserved" | "invalid";
 export type SiteSlugValidationProblem = "too_short" | "invalid" | "reserved";
 
@@ -105,6 +118,33 @@ const SLUG_AVAILABILITY_REASONS = new Set<SiteSlugAvailabilityReason>([
 	"reserved",
 	"invalid",
 ]);
+const DOMAIN_CHECK_REASONS = new Set<DomainCheckReason>([
+	"dns_routing_and_txt_missing",
+	"apex_a_record_mismatch",
+	"cname_record_mismatch",
+	"txt_verification_missing",
+	"domain_not_found",
+]);
+const SECOND_LEVEL_LABELS = new Set(["ac", "co", "com", "edu", "gov", "ltd", "net", "nom", "org", "plc", "sch"]);
+const DNS_SHOPS: readonly (readonly [suffix: string, shop: string])[] = [
+	["one.com", "one.com"],
+	["simply.com", "Simply.com"],
+	["unoeuro.com", "Simply.com"],
+	["domaincontrol.com", "GoDaddy"],
+	["cloudflare.com", "Cloudflare"],
+	["registrar-servers.com", "Namecheap"],
+	["gandi.net", "Gandi"],
+	["dns-parking.com", "Hostinger"],
+	["hostinger.com", "Hostinger"],
+	["dandomain.dk", "DanDomain"],
+	["dandomain.com", "DanDomain"],
+	["ui-dns.com", "IONOS"],
+	["ui-dns.de", "IONOS"],
+	["ui-dns.org", "IONOS"],
+	["ui-dns.biz", "IONOS"],
+	["googledomains.com", "Squarespace"],
+	["squarespacedns.com", "Squarespace"],
+];
 const DEPLOYMENT_KINDS = new Set<SiteDeploymentKind>(["static", "server", "hybrid"]);
 const STORAGE_MODES = new Set<SiteStorageMode>(["db", "blob"]);
 const FQDN_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -148,16 +188,63 @@ function parseCustomDomain(value: unknown): SiteCustomDomain | undefined {
 	};
 }
 
+export function registrableDomain(hostname: string): string {
+	const labels = cleanHostname(hostname).split(".");
+	const tld = labels.at(-1) ?? "";
+	const second = labels.at(-2) ?? "";
+	const size = labels.length > 2 && tld.length === 2 && SECOND_LEVEL_LABELS.has(second) ? 3 : 2;
+	return labels.slice(-size).join(".");
+}
+
+export function shopHostname(name: string, hostname: string): string {
+	const base = registrableDomain(hostname);
+	const cleaned = cleanHostname(name);
+	if (cleaned === base) return "";
+	return cleaned.endsWith(`.${base}`) ? cleaned.slice(0, -base.length - 1) : cleaned;
+}
+
 export function siteDnsRecords(hostname: string, dns: SiteDnsSetup): SiteDnsRecord[] {
 	const records: SiteDnsRecord[] = [];
+	const host = shopHostname(hostname, hostname);
 	if (dns.recordType === "A" && dns.ipv4) {
-		records.push({ type: "A", host: "@", value: dns.ipv4 });
-		if (dns.ipv6) records.push({ type: "AAAA", host: "@", value: dns.ipv6 });
+		records.push({ type: "A", host, value: dns.ipv4 });
+		if (dns.ipv6) records.push({ type: "AAAA", host, value: dns.ipv6 });
 	} else if (dns.cnameTarget) {
-		records.push({ type: "CNAME", host: hostname, value: dns.cnameTarget });
+		records.push({ type: "CNAME", host, value: dns.cnameTarget });
 	}
-	records.push({ type: "TXT", host: dns.txtHost, value: dns.txtValue });
+	records.push({ type: "TXT", host: shopHostname(dns.txtHost, hostname), value: dns.txtValue });
 	return records;
+}
+
+export function parseDomainCheck(lastError: string | null): DomainCheck {
+	const tokens = (lastError ?? "").trim().split(/\s+/).filter(Boolean);
+	const first = tokens[0] ?? "";
+	const reason = DOMAIN_CHECK_REASONS.has(first as DomainCheckReason) ? (first as DomainCheckReason) : null;
+	let txtOnWrongName = false;
+	const nameServers: string[] = [];
+	for (const token of tokens.slice(1)) {
+		if (token === "txt_on_wrong_name") txtOnWrongName = true;
+		else if (token.startsWith("ns="))
+			for (const part of token.slice(3).split(",")) {
+				const host = cleanHostname(part);
+				if (FQDN_PATTERN.test(host)) nameServers.push(host);
+			}
+	}
+	return { reason, txtOnWrongName, nameServers };
+}
+
+export function dnsShop(nameServers: readonly string[]): string | null {
+	for (const server of nameServers) {
+		const host = cleanHostname(server);
+		const shop = DNS_SHOPS.find(([suffix]) => host === suffix || host.endsWith(`.${suffix}`));
+		if (shop) return shop[1];
+	}
+	return null;
+}
+
+export function dnsRecordFound(record: SiteDnsRecord, reason: DomainCheckReason | null): boolean {
+	if (record.type === "TXT") return reason === "apex_a_record_mismatch";
+	return reason === "txt_verification_missing";
 }
 
 export function domainDnsSetup(state: CompanySiteHostingState, domain: SiteCustomDomain): SiteDnsSetup {
@@ -171,9 +258,13 @@ export function domainDnsSetup(state: CompanySiteHostingState, domain: SiteCusto
 	};
 }
 
+function cleanHostname(hostname: string): string {
+	return hostname.trim().toLowerCase().replace(/\.$/, "");
+}
+
 export function isApexHostname(hostname: string): boolean {
-	const cleaned = hostname.trim().toLowerCase().replace(/\.$/, "");
-	return cleaned.split(".").length === 2;
+	const cleaned = cleanHostname(hostname);
+	return cleaned === registrableDomain(cleaned);
 }
 
 export function cleanSiteSlugInput(slug: string): string {

@@ -2,9 +2,14 @@ import { CloudRpcError } from "../../cloud/client.ts";
 import {
 	type CompanySiteHostingState,
 	cleanSiteSlugInput,
+	type DomainCheckReason,
+	dnsRecordFound,
+	dnsShop,
 	domainDnsSetup,
 	isApexHostname,
 	NATIVE_SITE_HOST,
+	parseDomainCheck,
+	registrableDomain,
 	type SiteCustomDomain,
 	type SiteDnsRecord,
 	siteDnsRecords,
@@ -76,6 +81,7 @@ interface Row {
 export const ADDRESS_POLL_MS = 15_000;
 export const ADDRESS_RECHECK_GAP_MS = 60_000;
 export const ADDRESS_SLUG_CHECK_MS = 300;
+export const ADDRESS_SECURING_MS = 5 * 60_000;
 const ADDRESS_DOMAIN_LIMIT = 5;
 const COPIED_MS = 1600;
 const MAIN = { kind: "main" } as const;
@@ -110,6 +116,16 @@ function verified(domain: SiteCustomDomain): boolean {
 	return domain.status === "dns_verified" || domain.status === "tls_active";
 }
 
+function securing(domain: SiteCustomDomain): boolean {
+	if (domain.status !== "dns_verified" || !domain.verifiedAt) return false;
+	const at = Date.parse(domain.verifiedAt);
+	return Number.isFinite(at) && Date.now() - at < ADDRESS_SECURING_MS;
+}
+
+function connected(domain: SiteCustomDomain): boolean {
+	return verified(domain) && !securing(domain);
+}
+
 function hostOf(url: string): string {
 	try {
 		return new URL(url).host;
@@ -142,10 +158,71 @@ function pending(hostname: string): SiteCustomDomain {
 	};
 }
 
-function linesLine(count: number, domain: string): string {
-	if (count === 2) return t("Add these two lines where you bought {domain}.", { domain });
-	if (count === 3) return t("Add these three lines where you bought {domain}.", { domain });
-	return t("Add these lines where you bought {domain}.", { domain });
+function openLine(count: number, shop: string | null, domain: string): string {
+	if (shop) {
+		if (count === 2) return t("Open the DNS settings at {shop} and create these two records.", { shop });
+		if (count === 3) return t("Open the DNS settings at {shop} and create these three records.", { shop });
+		return t("Open the DNS settings at {shop} and create these records.", { shop });
+	}
+	if (count === 2)
+		return t("Open the DNS settings where you bought {domain} and create these two records.", { domain });
+	if (count === 3)
+		return t("Open the DNS settings where you bought {domain} and create these three records.", { domain });
+	return t("Open the DNS settings where you bought {domain} and create these records.", { domain });
+}
+
+function waitLine(found: number, count: number): string {
+	if (found === 0) return t("None found yet. We look again every 30 seconds.");
+	if (found === 1 && count === 2) return t("One of two found. We look again every 30 seconds.");
+	return t("{found} of {count} found. We look again every 30 seconds.", { found, count });
+}
+
+function laterLine(count: number, shop: string | null): string {
+	if (shop) {
+		if (count === 2)
+			return t("Your two lines can go in at {shop} already. We'll find them as soon as the domain is on.", { shop });
+		if (count === 3)
+			return t("Your three lines can go in at {shop} already. We'll find them as soon as the domain is on.", {
+				shop,
+			});
+		return t("Your lines can go in at {shop} already. We'll find them as soon as the domain is on.", { shop });
+	}
+	if (count === 2) return t("Your two lines can go in already. We'll find them as soon as the domain is on.");
+	if (count === 3) return t("Your three lines can go in already. We'll find them as soon as the domain is on.");
+	return t("Your lines can go in already. We'll find them as soon as the domain is on.");
+}
+
+function confirmText(hostname: string, shop: string | null): string {
+	if (hostname.endsWith(".dk"))
+		return t(
+			"New .dk domains wait until the owner confirms them. Look for an email from Punktum dk and confirm with MitID. It usually takes a few minutes after that.",
+		);
+	return shop
+		? t(
+				"New domains can take a while before they are switched on. Check your email from {shop} for a confirmation step.",
+				{
+					shop,
+				},
+			)
+		: t(
+				"New domains can take a while before they are switched on. Check your email from the shop where you bought it for a confirmation step.",
+			);
+}
+
+function shopsNote(hostname: string): string {
+	return t("Some shops call Hostname “Name” or “Host”. The shop adds “.{domain}” by itself.", {
+		domain: registrableDomain(hostname),
+	});
+}
+
+function filled(template: string, parts: Readonly<Record<string, Node>>): (Node | string)[] {
+	return template
+		.split(/\{(\w+)\}/)
+		.map((piece, index) => (index % 2 === 1 ? (parts[piece]?.cloneNode(true) ?? `{${piece}}`) : piece));
+}
+
+function chip(type: string): HTMLElement {
+	return h("b", { class: "surface-address-chip" }, type);
 }
 
 function pageName(page: Shown): string {
@@ -259,7 +336,7 @@ export class SurfaceAddress {
 
 	#working(): SiteCustomDomain | undefined {
 		const domains = this.#known?.domains ?? [];
-		return domains.find((domain) => domain.isPrimary && verified(domain)) ?? domains.find(verified);
+		return domains.find((domain) => domain.isPrimary && connected(domain)) ?? domains.find(connected);
 	}
 
 	#openUrl(): string {
@@ -420,7 +497,7 @@ export class SurfaceAddress {
 	#schedule(): void {
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
-		if (!this.#open || this.#waitingDomains().length === 0) return;
+		if (!this.#open || (this.#waitingDomains().length === 0 && !this.#known?.domains.some(securing))) return;
 		this.#timer = setTimeout(() => {
 			this.#timer = undefined;
 			void this.#read();
@@ -940,7 +1017,7 @@ export class SurfaceAddress {
 				: MAIN;
 		if (page.kind === "domain") {
 			const domain = known.domains.find((item) => item.hostname === page.hostname);
-			if (!domain || (verified(domain) && !this.#setup.canManage())) return MAIN;
+			if (!domain || (connected(domain) && !this.#setup.canManage())) return MAIN;
 			return { kind: "domain", domain };
 		}
 		return MAIN;
@@ -977,6 +1054,9 @@ export class SurfaceAddress {
 								domain.isPrimary,
 								domain.isApex,
 								domain.verificationToken,
+								domain.lastCheckedAt !== null,
+								domain.lastError,
+								securing(domain),
 							]),
 						],
 		]);
@@ -1013,9 +1093,11 @@ export class SurfaceAddress {
 				: shown.kind === "add"
 					? this.#addPage(shown.from)
 					: shown.kind === "domain"
-						? verified(shown.domain)
-							? this.#managePage(shown.domain)
-							: this.#handPage(shown.domain)
+						? securing(shown.domain)
+							? this.#securingPage(shown.domain)
+							: verified(shown.domain)
+								? this.#managePage(shown.domain)
+								: this.#handPage(shown.domain)
 						: this.#mainPage()),
 		);
 		replace(this.#sheet, page);
@@ -1161,15 +1243,17 @@ export class SurfaceAddress {
 	}
 
 	#domainRow(domain: SiteCustomDomain, manage: boolean): HTMLElement {
-		const ready = verified(domain);
+		const ready = connected(domain);
 		const warn = (text: string) => h("span", { class: "surface-address-row-end is-ask" }, text);
-		const end = ready
-			? manage
-				? h("span", { class: "surface-address-row-end" }, icon("chevron"))
-				: null
-			: domain.status === "moved" || domain.status === "failed"
-				? warn(t("No longer points here"))
-				: warn(t("Add the lines"));
+		const end = securing(domain)
+			? h("span", { class: "surface-address-row-end" }, t("Making it secure"))
+			: ready
+				? manage
+					? h("span", { class: "surface-address-row-end" }, icon("chevron"))
+					: null
+				: domain.status === "moved" || domain.status === "failed"
+					? warn(t("No longer points here"))
+					: warn(t("Add the lines"));
 		return this.#row({
 			key: `domain:${domain.hostname}`,
 			glyph: "globe",
@@ -1281,44 +1365,185 @@ export class SurfaceAddress {
 			? siteDnsRecords(domain.hostname, domainDnsSetup(known.hosting, domain))
 			: [];
 		const count = domain.verificationToken ? records.length : domain.isApex && known.hosting.edgeIpv6 ? 3 : 2;
+		const check = parseDomainCheck(domain.lastError);
+		const shop = dnsShop(check.nameServers);
+		const reason = domain.lastCheckedAt && records.length > 0 ? check.reason : null;
+		const body =
+			reason === "domain_not_found"
+				? this.#notOnline(domain.hostname, records, shop)
+				: reason
+					? this.#waiting(domain.hostname, records, reason, check.txtOnWrongName)
+					: this.#lines(domain.hostname, records, count, shop);
 		const rows: HTMLElement[] = [];
-		if (records.length > 0) {
-			const message = this.#row({
-				key: "message",
-				glyph: "mail",
-				label: t("Copy as a message for someone else"),
-				quiet: true,
-				press: () =>
-					this.#copy(
-						message.querySelector(".surface-address-row-label")!,
-						[
-							t("Could you add these lines to the DNS for {domain}? They connect it to our website.", {
-								domain: domain.hostname,
-							}),
-							"",
-							...records.map((record) => `${record.type}  ${record.host}  ${record.value}`),
-						].join("\n"),
-						() => {
-							this.#problem = pressToCopy();
-							this.#paint();
-							this.#select(this.#sheet.querySelector(".surface-address-records"));
-						},
-					),
-			});
-			rows.push(message);
-		}
+		if (records.length > 0 && reason !== "domain_not_found") rows.push(this.#messageRow(domain.hostname, records));
 		if (manage && domain.id) rows.push(this.#removeRow(domain));
+		return [
+			this.#top(domain.hostname, MAIN),
+			h("div", { class: "surface-address-body" }, ...body, this.#problemLine()),
+			rows.length > 0 ? this.#group(...rows) : null,
+		];
+	}
+
+	#lines(
+		hostname: string,
+		records: readonly SiteDnsRecord[],
+		count: number,
+		shop: string | null,
+	): (HTMLElement | null)[] {
+		return [
+			h("p", { class: "surface-address-line" }, openLine(count, shop, registrableDomain(hostname))),
+			records.length > 0
+				? h(
+						"div",
+						{ class: "surface-address-records" },
+						...records.map((record, index) => this.#recordBox(record, index, hostname)),
+					)
+				: null,
+			records.length > 0 ? h("p", { class: "surface-address-hint" }, shopsNote(hostname)) : null,
+		];
+	}
+
+	#waiting(
+		hostname: string,
+		records: readonly SiteDnsRecord[],
+		reason: DomainCheckReason,
+		txtOnWrongName: boolean,
+	): HTMLElement[] {
+		const routing = records.filter((record) => record.type !== "TXT");
+		const txt = records.find((record) => record.type === "TXT");
+		const routed = routing.length > 0 && dnsRecordFound(routing[0]!, reason);
+		const proven = txt !== undefined && dnsRecordFound(txt, reason);
+		const items = (routing.length > 0 ? 1 : 0) + (txt ? 1 : 0);
+		const foundRow = (shown: readonly SiteDnsRecord[]) =>
+			h(
+				"div",
+				{ class: "surface-address-record is-found", "data-type": shown.map((record) => record.type).join(" ") },
+				h("span", { class: "surface-address-mark is-done", "aria-hidden": "true" }, icon("check")),
+				...shown.map((record) => chip(record.type)),
+				h("span", { class: "surface-address-record-what" }, t("Found")),
+			);
+		const at = (record: SiteDnsRecord) => records.indexOf(record);
+		return [
+			h("p", { class: "surface-address-line" }, waitLine((routed ? 1 : 0) + (proven ? 1 : 0), items)),
+			h(
+				"div",
+				{ class: "surface-address-records" },
+				...(routed ? [foundRow(routing)] : routing.map((record) => this.#recordBox(record, at(record), hostname))),
+				...(txt
+					? [
+							proven
+								? foundRow([txt])
+								: txtOnWrongName
+									? this.#wrongName(txt, at(txt), hostname)
+									: this.#recordBox(txt, at(txt), hostname),
+						]
+					: []),
+			),
+		];
+	}
+
+	#notOnline(hostname: string, records: readonly SiteDnsRecord[], shop: string | null): HTMLElement[] {
+		return [
+			h(
+				"div",
+				{ class: "surface-address-warn" },
+				h(
+					"p",
+					{ class: "surface-address-warn-title" },
+					t("{domain} isn't on the internet yet", { domain: hostname }),
+				),
+				h("p", { class: "surface-address-warn-text" }, confirmText(hostname, shop)),
+			),
+			h("p", { class: "surface-address-line" }, laterLine(records.length, shop)),
+			h(
+				"div",
+				{ class: "surface-address-records" },
+				...records.map((record) =>
+					h(
+						"div",
+						{ class: "surface-address-record is-summary", "data-type": record.type },
+						chip(record.type),
+						h(
+							"span",
+							{ class: "surface-address-record-what" },
+							`${record.host ? t("Hostname {name}", { name: record.host }) : t("Hostname empty")} · ${record.value}`,
+						),
+					),
+				),
+			),
+		];
+	}
+
+	#securingPage(domain: SiteCustomDomain): (HTMLElement | null)[] {
+		const known = this.#known!;
+		const count = siteDnsRecords(domain.hostname, domainDnsSetup(known.hosting, domain)).length;
+		const step = (state: string, label: string, end?: string) =>
+			h(
+				"div",
+				{ class: `surface-address-step is-${state}` },
+				h(
+					"span",
+					{ class: `surface-address-mark is-${state}`, "aria-hidden": "true" },
+					state === "done" ? icon("check") : null,
+				),
+				h("span", null, label),
+				end ? h("span", { class: "surface-address-step-end" }, end) : null,
+			);
 		return [
 			this.#top(domain.hostname, MAIN),
 			h(
 				"div",
 				{ class: "surface-address-body" },
-				h("p", { class: "surface-address-line" }, linesLine(count, domain.hostname)),
-				records.length > 0 ? this.#records(records) : null,
+				h(
+					"div",
+					{ class: "surface-address-steps", role: "status" },
+					step("done", count === 2 ? t("Both lines found") : t("All lines found")),
+					step("busy", t("Making it secure"), t("about a minute")),
+					step("next", t("Open at {domain}", { domain: domain.hostname })),
+				),
+				h(
+					"p",
+					{ class: "surface-address-hint" },
+					t(
+						"You can close this. The website keeps its {address} address until {domain} is ready, then switches by itself.",
+						{ address: this.name(), domain: domain.hostname },
+					),
+				),
 				this.#problemLine(),
 			),
-			rows.length > 0 ? this.#group(...rows) : null,
+			this.#setup.canManage() && domain.id ? this.#group(this.#removeRow(domain)) : null,
 		];
+	}
+
+	#messageRow(hostname: string, records: readonly SiteDnsRecord[]): HTMLElement {
+		const message = this.#row({
+			key: "message",
+			glyph: "mail",
+			label: t("Copy as a message for someone else"),
+			press: () =>
+				this.#copy(
+					message.querySelector(".surface-address-row-label")!,
+					[
+						t("Could you add these lines to the DNS for {domain}? They connect it to our website.", {
+							domain: hostname,
+						}),
+						"",
+						...records.flatMap((record) => [
+							record.type,
+							`${t("Hostname")}: ${record.host || `(${t("leave empty")})`}`,
+							`${t("Value")}: ${record.value}`,
+							"",
+						]),
+						shopsNote(hostname),
+					].join("\n"),
+					() => {
+						this.#problem = pressToCopy();
+						this.#paint();
+						this.#select(this.#sheet.querySelector(".surface-address-records"));
+					},
+				),
+		});
+		return message;
 	}
 
 	#managePage(domain: SiteCustomDomain): (HTMLElement | null)[] {
@@ -1369,55 +1594,96 @@ export class SurfaceAddress {
 		return h("div", { ...attrs, class: `${attrs.class} is-still` }, ...parts);
 	}
 
-	#records(records: readonly SiteDnsRecord[]): HTMLElement {
+	#recordBox(record: SiteDnsRecord, index: number, hostname: string): HTMLElement {
+		const what =
+			record.type === "TXT"
+				? t("shows the domain is yours")
+				: record.type === "AAAA"
+					? t("also points {domain} to your website", { domain: hostname })
+					: t("points {domain} to your website", { domain: hostname });
 		return h(
 			"div",
-			{ class: "surface-address-records" },
-			...records.map((record, index) => {
-				const value = h("span", { class: "surface-address-value" }, record.value);
-				const copy = h(
-					"button",
-					{
-						type: "button",
-						class: "surface-address-copy",
-						title: t("Copy"),
-						"aria-label": t("Copy {value}", { value: record.value }),
-						"data-key": `record:${index}`,
-					},
-					icon("copy"),
-					icon("check"),
-				);
-				copy.addEventListener("click", () => {
-					const done = () => {
-						copy.classList.add("is-copied");
-						setTimeout(() => copy.classList.remove("is-copied"), COPIED_MS);
-					};
-					const refused = () => {
-						this.#problem = pressToCopy();
-						this.#paint();
-						this.#select(
-							[...this.#sheet.querySelectorAll<HTMLElement>(".surface-address-value")].find(
-								(item) => item.textContent === record.value,
-							),
-						);
-					};
-					try {
-						const clipboard = navigator.clipboard as Clipboard | undefined;
-						if (!clipboard?.writeText) return refused();
-						clipboard.writeText(record.value).then(done, refused);
-					} catch {
-						refused();
-					}
-				});
-				return h(
-					"div",
-					{ class: "surface-address-record" },
-					h("b", null, record.type),
-					h("span", { class: "surface-address-record-host" }, record.host),
-					value,
-					copy,
-				);
-			}),
+			{ class: "surface-address-record", "data-type": record.type },
+			h(
+				"div",
+				{ class: "surface-address-record-head" },
+				chip(record.type),
+				h("span", { class: "surface-address-record-what" }, what),
+			),
+			this.#fields(record, index),
 		);
+	}
+
+	#wrongName(record: SiteDnsRecord, index: number, hostname: string): HTMLElement {
+		return h(
+			"div",
+			{ class: "surface-address-record is-wrong", "data-type": record.type },
+			h(
+				"div",
+				{ class: "surface-address-record-head" },
+				h("span", { class: "surface-address-mark is-wrong", "aria-hidden": "true" }),
+				chip(record.type),
+				h("span", { class: "surface-address-record-wrong" }, t("Found on the wrong name")),
+			),
+			h(
+				"p",
+				{ class: "surface-address-record-note" },
+				...filled(t("It's on {domain}. Put it on {name} instead: write {typed} in the Hostname box."), {
+					domain: h("b", null, hostname),
+					name: h("b", null, record.host),
+					typed: h("code", null, record.host),
+				}),
+			),
+			this.#fields(record, index),
+		);
+	}
+
+	#fields(record: SiteDnsRecord, index: number): HTMLElement {
+		return h(
+			"div",
+			{ class: "surface-address-fields" },
+			h("span", { class: "surface-address-field" }, t("Hostname")),
+			record.host
+				? h("span", { class: "surface-address-value", "data-copy": `record:${index}:host` }, record.host)
+				: h("span", { class: "surface-address-empty" }, t("leave empty")),
+			record.host ? this.#copyButton(record.host, `record:${index}:host`) : h("span"),
+			h("span", { class: "surface-address-field" }, t("Value")),
+			h("span", { class: "surface-address-value", "data-copy": `record:${index}:value` }, record.value),
+			this.#copyButton(record.value, `record:${index}:value`),
+		);
+	}
+
+	#copyButton(text: string, key: string): HTMLButtonElement {
+		const copy = h(
+			"button",
+			{
+				type: "button",
+				class: "surface-address-copy",
+				title: t("Copy"),
+				"aria-label": t("Copy {value}", { value: text }),
+				"data-key": key,
+			},
+			icon("copy"),
+			icon("check"),
+		);
+		copy.addEventListener("click", () => {
+			const done = () => {
+				copy.classList.add("is-copied");
+				setTimeout(() => copy.classList.remove("is-copied"), COPIED_MS);
+			};
+			const refused = () => {
+				this.#problem = pressToCopy();
+				this.#paint();
+				this.#select(this.#sheet.querySelector(`[data-copy="${key}"]`));
+			};
+			try {
+				const clipboard = navigator.clipboard as Clipboard | undefined;
+				if (!clipboard?.writeText) return refused();
+				clipboard.writeText(text).then(done, refused);
+			} catch {
+				refused();
+			}
+		});
+		return copy;
 	}
 }

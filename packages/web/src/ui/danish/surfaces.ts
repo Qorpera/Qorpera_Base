@@ -348,9 +348,62 @@ export const SURFACES: Record<string, string> = {
 	"No, leave {title} with {name}": "Nej, lad {title} blive hos {name}",
 	"Add another address": "Tilføj en adresse mere",
 	"Add the lines": "Tilføj linjerne",
-	"Add these lines where you bought {domain}.": "Tilføj disse linjer der, hvor du købte {domain}.",
-	"Add these three lines where you bought {domain}.": "Tilføj disse tre linjer der, hvor du købte {domain}.",
-	"Add these two lines where you bought {domain}.": "Tilføj disse to linjer der, hvor du købte {domain}.",
+	"Open the DNS settings at {shop} and create these two records.":
+		"Åbn DNS-indstillingerne hos {shop}, og opret disse to poster.",
+	"Open the DNS settings at {shop} and create these three records.":
+		"Åbn DNS-indstillingerne hos {shop}, og opret disse tre poster.",
+	"Open the DNS settings at {shop} and create these records.":
+		"Åbn DNS-indstillingerne hos {shop}, og opret disse poster.",
+	"Open the DNS settings where you bought {domain} and create these two records.":
+		"Åbn DNS-indstillingerne der, hvor du købte {domain}, og opret disse to poster.",
+	"Open the DNS settings where you bought {domain} and create these three records.":
+		"Åbn DNS-indstillingerne der, hvor du købte {domain}, og opret disse tre poster.",
+	"Open the DNS settings where you bought {domain} and create these records.":
+		"Åbn DNS-indstillingerne der, hvor du købte {domain}, og opret disse poster.",
+	"Some shops call Hostname “Name” or “Host”. The shop adds “.{domain}” by itself.":
+		"Nogle steder hedder Værtsnavn “Navn” eller “Host”. Stedet sætter selv “.{domain}” på.",
+	"points {domain} to your website": "leder {domain} hen til din hjemmeside",
+	"also points {domain} to your website": "leder også {domain} hen til din hjemmeside",
+	"shows the domain is yours": "viser, at domænet er dit",
+	Hostname: "Værtsnavn",
+	Value: "Værdi",
+	"leave empty": "lad stå tomt",
+	"Hostname {name}": "Værtsnavn {name}",
+	"Hostname empty": "Værtsnavn tomt",
+	Found: "Fundet",
+	"Found on the wrong name": "Fundet på det forkerte navn",
+	"It's on {domain}. Put it on {name} instead: write {typed} in the Hostname box.":
+		"Den ligger på {domain}. Sæt den på {name} i stedet: skriv {typed} i feltet Værtsnavn.",
+	"None found yet. We look again every 30 seconds.": "Ingen fundet endnu. Vi kigger igen hvert 30. sekund.",
+	"One of two found. We look again every 30 seconds.": "En af to fundet. Vi kigger igen hvert 30. sekund.",
+	"{found} of {count} found. We look again every 30 seconds.":
+		"{found} af {count} fundet. Vi kigger igen hvert 30. sekund.",
+	"{domain} isn't on the internet yet": "{domain} er ikke på internettet endnu",
+	"New .dk domains wait until the owner confirms them. Look for an email from Punktum dk and confirm with MitID. It usually takes a few minutes after that.":
+		"Nye .dk-domæner venter, til ejeren bekræfter dem. Kig efter en e-mail fra Punktum dk, og bekræft med MitID. Derefter tager det som regel et par minutter.",
+	"New domains can take a while before they are switched on. Check your email from {shop} for a confirmation step.":
+		"Nye domæner kan tage lidt tid, før de bliver slået til. Se i din e-mail fra {shop}, om du skal bekræfte noget.",
+	"New domains can take a while before they are switched on. Check your email from the shop where you bought it for a confirmation step.":
+		"Nye domæner kan tage lidt tid, før de bliver slået til. Se i din e-mail fra stedet, hvor du købte det, om du skal bekræfte noget.",
+	"Your two lines can go in at {shop} already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine to linjer ind hos {shop}. Vi finder dem, så snart domænet er slået til.",
+	"Your three lines can go in at {shop} already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine tre linjer ind hos {shop}. Vi finder dem, så snart domænet er slået til.",
+	"Your lines can go in at {shop} already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine linjer ind hos {shop}. Vi finder dem, så snart domænet er slået til.",
+	"Your two lines can go in already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine to linjer ind. Vi finder dem, så snart domænet er slået til.",
+	"Your three lines can go in already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine tre linjer ind. Vi finder dem, så snart domænet er slået til.",
+	"Your lines can go in already. We'll find them as soon as the domain is on.":
+		"Du kan allerede sætte dine linjer ind. Vi finder dem, så snart domænet er slået til.",
+	"Both lines found": "Begge linjer fundet",
+	"All lines found": "Alle linjer fundet",
+	"Making it secure": "Gør den sikker",
+	"about a minute": "cirka et minut",
+	"Open at {domain}": "Åbner på {domain}",
+	"You can close this. The website keeps its {address} address until {domain} is ready, then switches by itself.":
+		"Du kan lukke det her. Hjemmesiden beholder adressen {address}, til {domain} er klar, og skifter så selv.",
 	"Copy as a message for someone else": "Kopiér som en besked til en anden",
 	"Could you add these lines to the DNS for {domain}? They connect it to our website.":
 		"Kan du tilføje disse linjer til DNS for {domain}? De forbinder domænet med vores hjemmeside.",

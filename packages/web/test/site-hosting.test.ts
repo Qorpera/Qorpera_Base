@@ -5,12 +5,19 @@ import { parseSitePreviewAnswer } from "../src/cloud/releases.ts";
 import {
 	cleanSiteSlugInput,
 	createWebSiteHosting,
+	dnsRecordFound,
+	dnsShop,
 	isApexHostname,
 	NATIVE_SITE_HOST,
 	parseAddedSiteDomain,
 	parseCompanySiteHostingState,
+	parseDomainCheck,
 	parseSiteSlugAvailability,
 	parseUpdatedSiteSlug,
+	registrableDomain,
+	type SiteDnsSetup,
+	shopHostname,
+	siteDnsRecords,
 	validateCustomDomainInput,
 	validateSiteSlugInput,
 } from "../src/cloud/site-hosting.ts";
@@ -87,6 +94,98 @@ describe("site-hosting", () => {
 		expect(validateCustomDomainInput("93.164.62.162")).toBeDefined();
 		expect(isApexHostname("minbutik.dk")).toBe(true);
 		expect(isApexHostname("www.minbutik.dk")).toBe(false);
+	});
+
+	it("writes each line's hostname the way a shop's form wants it, relative to the bought domain", () => {
+		const dns = (hostname: string, recordType: "A" | "CNAME"): SiteDnsSetup => ({
+			recordType,
+			ipv4: "93.164.62.162",
+			ipv6: null,
+			cnameTarget: "edge.qorpera.site",
+			txtHost: `_qorpera.${hostname}`,
+			txtValue: "qorpera-verify=abc",
+		});
+		expect(siteDnsRecords("namah.dk", dns("namah.dk", "A"))).toEqual([
+			{ type: "A", host: "", value: "93.164.62.162" },
+			{ type: "TXT", host: "_qorpera", value: "qorpera-verify=abc" },
+		]);
+		expect(siteDnsRecords("www.namah.dk", dns("www.namah.dk", "CNAME"))).toEqual([
+			{ type: "CNAME", host: "www", value: "edge.qorpera.site" },
+			{ type: "TXT", host: "_qorpera.www", value: "qorpera-verify=abc" },
+		]);
+		expect(siteDnsRecords("shop.eu.namah.dk", dns("shop.eu.namah.dk", "CNAME")).map((record) => record.host)).toEqual(
+			["shop.eu", "_qorpera.shop.eu"],
+		);
+		expect(registrableDomain(" WWW.Namah.DK. ")).toBe("namah.dk");
+		expect(registrableDomain("www.shop.co.uk")).toBe("shop.co.uk");
+		expect(registrableDomain("shop.com.au")).toBe("shop.com.au");
+		expect(registrableDomain("co.uk")).toBe("co.uk");
+		expect(isApexHostname("shop.co.uk")).toBe(true);
+		expect(isApexHostname("www.shop.co.uk")).toBe(false);
+		expect(siteDnsRecords("www.shop.co.uk", dns("www.shop.co.uk", "CNAME")).map((record) => record.host)).toEqual([
+			"www",
+			"_qorpera.www",
+		]);
+		expect(siteDnsRecords("shop.co.uk", dns("shop.co.uk", "A")).map((record) => record.host)).toEqual([
+			"",
+			"_qorpera",
+		]);
+		expect(shopHostname("_qorpera.namah.dk.", "namah.dk")).toBe("_qorpera");
+		expect(shopHostname("other.example", "namah.dk")).toBe("other.example");
+	});
+
+	it("reads the router's last check in today's one-word form, the full form, and junk", () => {
+		expect(parseDomainCheck(null)).toEqual({ reason: null, txtOnWrongName: false, nameServers: [] });
+		expect(parseDomainCheck("txt_verification_missing")).toEqual({
+			reason: "txt_verification_missing",
+			txtOnWrongName: false,
+			nameServers: [],
+		});
+		expect(
+			parseDomainCheck(" dns_routing_and_txt_missing  txt_on_wrong_name ns=NS01.one.com.,ns02.one.com later_token "),
+		).toEqual({
+			reason: "dns_routing_and_txt_missing",
+			txtOnWrongName: true,
+			nameServers: ["ns01.one.com", "ns02.one.com"],
+		});
+		expect(parseDomainCheck("domain_not_found ns=")).toEqual({
+			reason: "domain_not_found",
+			txtOnWrongName: false,
+			nameServers: [],
+		});
+		expect(parseDomainCheck("txt_on_wrong_name apex_a_record_mismatch")).toEqual({
+			reason: null,
+			txtOnWrongName: false,
+			nameServers: [],
+		});
+		expect(parseDomainCheck("ok ns=bad..host,<script>,ns1.simply.com").nameServers).toEqual(["ns1.simply.com"]);
+		expect(parseDomainCheck("").reason).toBeNull();
+	});
+
+	it("names the shop from its name servers, and no shop when none matches", () => {
+		expect(dnsShop(["ns01.one.com", "ns02.one.com"])).toBe("one.com");
+		expect(dnsShop(["ns1.simply.com"])).toBe("Simply.com");
+		expect(dnsShop(["ns41.domaincontrol.com"])).toBe("GoDaddy");
+		expect(dnsShop(["ada.ns.cloudflare.com"])).toBe("Cloudflare");
+		expect(dnsShop(["dns1.registrar-servers.com"])).toBe("Namecheap");
+		expect(dnsShop(["ns-1.gandi.net"])).toBe("Gandi");
+		expect(dnsShop(["ns1.dns-parking.com"])).toBe("Hostinger");
+		expect(dnsShop(["ns1.dandomain.dk"])).toBe("DanDomain");
+		expect(dnsShop(["ns1045.ui-dns.de"])).toBe("IONOS");
+		expect(dnsShop(["ns-cloud-a1.googledomains.com"])).toBe("Squarespace");
+		expect(dnsShop(["ns1.notone.com", "ns.example.net"])).toBeNull();
+		expect(dnsShop(["ns.example.net", "ns2.one.com"])).toBe("one.com");
+		expect(dnsShop([])).toBeNull();
+	});
+
+	it("counts a line as found only from the reason that says so", () => {
+		const a = { type: "A", host: "", value: "x" } as const;
+		const txt = { type: "TXT", host: "_qorpera", value: "y" } as const;
+		expect([a, txt].map((record) => dnsRecordFound(record, "txt_verification_missing"))).toEqual([true, false]);
+		expect([a, txt].map((record) => dnsRecordFound(record, "apex_a_record_mismatch"))).toEqual([false, true]);
+		expect([a, txt].map((record) => dnsRecordFound(record, "cname_record_mismatch"))).toEqual([false, false]);
+		expect([a, txt].map((record) => dnsRecordFound(record, "dns_routing_and_txt_missing"))).toEqual([false, false]);
+		expect([a, txt].map((record) => dnsRecordFound(record, null))).toEqual([false, false]);
 	});
 
 	it("validates site subdomain inputs against the kernel slug rules", () => {
