@@ -497,6 +497,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
 	},
 	{
+		id: "cofounder-pulse-and-real-codebases",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Co-Founder Pulse and real-codebase builds",
+		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
+	},
+	{
 		id: "analytics-interfaces-live-numbers",
 		kind: "capability",
 		date: "2026-11-26",

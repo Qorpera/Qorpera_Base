@@ -26,7 +26,7 @@ export type MenuEntry =
 			disabled?: boolean;
 			select: () => void;
 	  }
-	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[] }
+	| { kind: "submenu"; label: string; icon?: string; items: MenuEntry[]; ariaLabel?: string }
 	/** A row that opens a panel of its own beside it, as a submenu opens (the apps drawer's Icon and colour): `panel`
 	 * builds it, with `close` to close the whole menu, and `dispose` runs when it closes. */
 	| {
@@ -149,6 +149,7 @@ export function openContextMenu(options: ContextMenuOptions): ContextMenu {
 						role: "menuitem",
 						"aria-haspopup": entry.kind === "panel" ? "dialog" : "menu",
 						"aria-expanded": "false",
+						...(entry.kind === "submenu" && entry.ariaLabel ? { "aria-label": entry.ariaLabel } : {}),
 					},
 					glyph,
 					h("span", { class: "context-menu-label" }, entry.label),

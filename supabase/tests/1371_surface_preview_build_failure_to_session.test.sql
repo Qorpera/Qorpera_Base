@@ -300,8 +300,8 @@ begin
 	perform pg_temp.sbf_assert(
 		v_frame ->> 'status' = 'failed' and (v_frame ->> 'previewId')::uuid = v_p2
 		and (v_frame #>> '{kept,previewId}')::uuid = v_p1
-		and v_frame #>> '{kept,doorActionUrl}' = 'https://' || v_site.slug || '--p'
-			|| (select short_host_id from public.qorpera_surface_previews where id = v_p1) || '.qorpera.com/__qorpera/member'
+		and v_frame #>> '{kept,doorActionUrl}' = 'https://' || v_site.slug || '--p0.'
+			|| public.qorpera_site_preview_domain() || '/__qorpera/member'
 		and v_frame -> 'kept' -> 'memberPass' = 'null'::jsonb
 		and (v_frame ->> 'fixing')::boolean,
 		'the member''s frame keeps the last preview that built and says a fix is coming: ' || v_frame::text

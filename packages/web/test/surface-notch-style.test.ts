@@ -102,4 +102,25 @@ describe("surface notch track spacing", () => {
 		expect(phoneShell).toContain("transform: scale(var(--phone-scale, 1))");
 		expect(phoneShell).toContain("transform-origin: 0 0");
 	});
+
+	it("clears the top-right panel toggle button when showing the preview status pill with drawer collapsed", () => {
+		const clearance = declarations(
+			".surface-page:not(.has-drawer):not(.is-panels-hidden):has(> .surface-panel-toggle:not([hidden])) .surface-frames:not(.is-compare) .surface-preview-pill",
+		);
+		expect(clearance).toContain("right: 66px");
+		expect(clearance).toContain("max-width: calc(100% - 80px)");
+	});
+
+	it("keeps phone corner controls spaced and stackable when the center notch is hidden", () => {
+		expect(declarations(".surface-bar:has(> .surface-notch[hidden])")).toContain(
+			"grid-template-columns: auto minmax(0, 1fr) auto",
+		);
+		expect(declarations(".surface-bar:is(.is-phone-stacked, .is-phone-tight) > .surface-phone-corner")).toContain(
+			"grid-column: 1 / -1",
+		);
+		expect(declarations(".surface-bar.is-phone-tight > .surface-phone-corner.is-end")).toContain("grid-row: 2");
+		expect(declarations(".surface-bar.is-phone-stacked.is-phone-tight > .surface-phone-corner.is-end")).toContain(
+			"grid-row: 3",
+		);
+	});
 });

@@ -686,10 +686,10 @@ begin
 
 	update public.qorpera_site_settings set enabled = true, hosts_domain = 'qorpera.com';
 	update public.qorpera_site_settings set hosts_enabled = true;
-	v_host := public.qorpera_site_host('look-shop--pab12cd34.qorpera.com');
+	v_host := public.qorpera_site_host('look-shop--p0.qorpera.com');
 	perform pg_temp.sf_assert(
-		v_host = jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewId', 'ab12cd34'),
-		'qorpera_site_host parses isolated preview host'
+		v_host = jsonb_build_object('slug', 'look-shop', 'scope', 'preview', 'previewSlot', 0),
+		'qorpera_site_host parses isolated preview slot host'
 	);
 
 	insert into public.qorpera_company_sites(id, profile_id, environment_id, slug, title, source_path, created_by_staff_agent_id)
@@ -789,7 +789,7 @@ begin
 	v_preview_state := public.qorpera_mint_surface_preview_pass(v_preview_id);
 	reset role;
 	v_preview_pass := v_preview_state ->> 'memberPass';
-	v_preview_host := v_site_slug || '--p' || (select short_host_id from public.qorpera_surface_previews where id = v_preview_id) || '.qorpera.com';
+	v_preview_host := v_site_slug || '--p0.qorpera.com';
 	perform pg_temp.sf_assert(
 		v_preview_pass is not null and v_preview_state ->> 'doorActionUrl' = 'https://' || v_preview_host || '/__qorpera/member',
 		'viewer mints one-use memberPass for ready preview via qorpera_mint_surface_preview_pass'
@@ -797,26 +797,22 @@ begin
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;
-	v_served := public.qorpera_site_serve_host(v_preview_host, '/', null, null, null, null);
-	perform pg_temp.sf_assert(v_served ->> 'state' = 'locked' and v_served ->> 'scope' = 'preview', 'preview host is locked without member token');
-
-	v_redeemed := public.qorpera_site_member_pass_redeem(v_preview_host, v_preview_pass);
-	perform pg_temp.sf_assert(v_redeemed ->> 'state' = 'open' and v_redeemed ->> 'token' is not null, 'qorpera_site_member_pass_redeem opens session on --p preview host');
+	v_redeemed := public.qorpera_web_edge_redeem_member_pass(v_preview_host, v_preview_pass);
 	perform pg_temp.sf_assert(
-		(public.qorpera_site_member_pass_redeem(v_preview_host, v_preview_pass) ->> 'state') = 'refused',
+		v_redeemed ->> 'state' = 'open'
+		and (v_redeemed ->> 'version_id')::uuid = v_preview_version_id,
+		'qorpera_web_edge_redeem_member_pass opens preview version on --p0 preview host'
+	);
+	perform pg_temp.sf_assert(
+		(public.qorpera_web_edge_redeem_member_pass(v_preview_host, v_preview_pass) ->> 'state') = 'refused',
 		'preview member pass is single-use'
 	);
-
-	v_served := public.qorpera_site_serve_host(v_preview_host, '/', v_redeemed ->> 'token', null, null, null);
-	perform pg_temp.sf_assert(v_served ->> 'state' = 'file' and v_served ->> 'path' = 'index.html', 'qorpera_site_serve_host serves preview file with redeemed member token');
-
-	v_served := public.qorpera_site_serve_host(v_site_slug || '--p00000000.qorpera.com', '/', v_redeemed ->> 'token', null, null, null);
-	perform pg_temp.sf_assert(v_served ->> 'state' = 'locked', 'preview session token is bound strictly to its --p host');
 	perform pg_temp.sf_assert(
 		(public.qorpera_web_edge_tls_allow(v_site_slug || '.qorpera.com') ->> 'allowed')::boolean = true
-		and (public.qorpera_web_edge_tls_allow(v_preview_host) ->> 'allowed')::boolean = false
+		and (public.qorpera_web_edge_tls_allow(v_preview_host) ->> 'allowed')::boolean = true
+		and (public.qorpera_web_edge_tls_allow(v_site_slug || '--p8.qorpera.com') ->> 'allowed')::boolean = false
 		and strpos(pg_get_functiondef('public.qorpera_web_edge_tls_allow(text)'::regprocedure), '''qorpera_web_router''') > 0,
-		'qorpera_web_edge_tls_allow allows own host, denies --p preview host, and preserves qorpera_web_router role guard'
+		'qorpera_web_edge_tls_allow allows own host and --p0..--p7 preview slots, denies --p8, and preserves qorpera_web_router role guard'
 	);
 	reset role;
 
