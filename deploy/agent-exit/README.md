@@ -58,8 +58,8 @@ own and removes the node's masquerade.
 | `install-agent-exit.sh` | verifies the pins and the rules reader's package, copies the files, runs `check`; installs no package, creates no group, mounts nothing, starts and enables nothing |
 
 The rules reader's program is not in this folder: `scripts/package-agent-exit-rules.mjs` bundles it (with `pg`,
-pinned at 8.23.0 by `packages/runtime`) from `packages/runtime/src/agent-exit-rules-main.ts` into a package with its unit and
-Supabase's CA, and the installer takes that package.
+pinned at 8.23.0 by `packages/runtime`) from `packages/runtime/src/agent-exit-rules-main.ts` into a package with its unit
+(and optionally the pinned database CA files), and the installer takes that package.
 
 Packages: `dnsmasq-base` and `conntrack` (neither starts a service of its own), and `python3`. The rules reader runs on
 `/usr/bin/node`, 22.19 or later (the nodes run 22.22.1).
@@ -152,8 +152,9 @@ with E3; a node that already runs the exit takes E3 as in "Adding E3 to a node t
    line ("The logs on the NAS", below). `findmnt /srv/qorpera/agent-exit-logs` shows `192.168.1.40`, and the marker
    is there.
 4. From a checkout at the merged head, with its dependencies installed (`npm ci --ignore-scripts`):
-   `node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules` (the rules reader's package; the folder must
-   be new), then `bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules`. The rules reader stays off
+   `node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules --database-ca <ca-file> --database-ca-sha256 <ca-sha256>`
+   (the rules reader's package; the folder must be new; alternatively omit the CA flags here and pass them to
+   `install-agent-exit.sh`), then `bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules`. The rules reader stays off
    until its login is placed ("The rules reader (E8b)", below).
 5. `systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service
    qorpera-agent-plug.service qorpera-agent-exit-names.service qorpera-agent-exit-health.timer
@@ -578,8 +579,8 @@ run it again.
 First migration 20260930230000 (E8a), on the database.
 1. On each node, `install-agent-exit.sh` as in step 4 of "Switching a node on". Nothing changes for running machines;
    the reader stays off.
-2. Once both nodes have it, on the Mac: `python3 deploy/agent-exit/rules-reader-login.py --check`, then without
-   `--check`. It does both nodes in one go.
+2. Once both nodes have it, on the Mac: `python3 deploy/agent-exit/rules-reader-login.py --check` with the five
+   `--direct-*` flags shown above, then the same command without `--check`. It does both nodes in one go.
 3. Check: the script ends with `ok`; on each node `systemctl is-active qorpera-agent-exit-rules.service` says `active`,
    `cat /run/qorpera-agent-exit-rules/status.json` shows `"ok":true` and a `readAt` under 10 seconds old, and `X verify`
    stays healthy. From a release that carries E8b-2 (each company's names, below), `verify` fails from step 1 on with
@@ -888,9 +889,9 @@ Then the brake on a stand-in for the exit's rules: the levels (off until set, an
 braked map, the share chain and the counted sets as `nft -j` lists them, a company braked past either level, longer
 while it goes on (its dropped connections counted once) and let go after, and a failed read or write and a restart
 that keep the brake; and the counts and the report with the brake's lines. Then the rules reader's login script, with
-stand-ins for the Supabase API and the root helpers: its login in the one form the tool takes, its verifier as RFC
-7677's exchange proves it, the keychain's token, the pooler and the role taken only as Supabase and the migration make
-them, a run's order (checks, both files, the verifier, the readers), and a node not as this checkout or a file not as
+stand-ins for `psql` and the root helpers: its login in the one form the tool takes, its verifier as RFC
+7677's exchange proves it, the pinned direct TLS CA check and the role taken only as the migration makes
+it, a run's order (checks, both files, the verifier, the readers), and a node not as this checkout or a file not as
 sent stopping the run before the role changes, with nothing printed that holds the login. Then the names reconciler
 against stand-ins for systemd, the exit's map and set and its sockets: a company with rules given a resolver, its
 servers file and its machines once it answers; a resolver that does not answer (the main dnsmasq for 10 seconds, then
@@ -991,13 +992,13 @@ on the tailnet. It checks:
 
 Where the kernel has br_netfilter loaded, the proof also checks that the node does not track the bridged leg; the
 test machines do not load it, so it prints a SKIP line there. Not covered here: br_netfilter, LXD's own MAC and IPv6
-filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, Supabase's pooler,
+filters and port isolation, LXD's API as the reconciler reads it, systemd's handling of the units, the live database,
 a real NFS mount (the proofs' NAS is a tmpfs; the shipper reads each copy back), and running
 beside the guest guard, LXD and Tailscale on a real node. E2b's proof, in a throwaway VM with its own LXD inside a
 test machine, covers the first three; E8b's, in another, systemd's handling of the rules reader; E8b-2's, in another,
 systemd's handling of the names reconciler and the resolver units, with real LXD machines of two companies, and the
 server name check through the queue (the only place the proofs load the queue modules). The rollout script's last
-step reads Supabase through its pooler on each node.
+step reads the live self-hosted database on each node.
 
 `run-on-node.mjs changed` runs it on the node 2 test machine.
 
@@ -1084,7 +1085,7 @@ nodes' Node (Ubuntu's `nodejs` 22.22.1+dfsg+~cs22.19.15-1ubuntu1 and its `libnod
 - undoes it as "Adding E8b to a node that runs the exit" says: the reader disabled and stopped, its credentials and
   runtime folder gone, and no start without a login.
 
-Afterwards the test machine is compared with before, as for E2b. A read that succeeds needs Supabase: the rollout
+Afterwards the test machine is compared with before, as for E2b. A read that succeeds needs the live database: the rollout
 script's last step proves it on the nodes.
 
 Result (9 October 2026, node 1's test machine, Ubuntu 26.04.1 with kernel 7.0.0-30; run
@@ -1104,7 +1105,8 @@ node scripts/run-on-node.mjs --machine node01 --sudo --no-status -- bash deploy/
 ```
 
 With `-- env QORPERA_AGENT_EXIT_PROOF_PREVIOUS=<a previous release's deploy/agent-exit> bash …` it also proves the
-step for nodes that already run the exit. It changes nothing of the test machine. As E2b's proof, it makes a throwaway
+step for nodes that already run the exit (if that previous release predates the pinned-CA package layout and expects
+`supabase-prod-ca-2021.crt`, also pass `QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE=<package built from that release>`). It changes nothing of the test machine. As E2b's proof, it makes a throwaway
 VM with no network card and sets up LXD inside, and as E8b's, it pushes in the reader's package and the packages for
 the nodes' Node, dnsmasq and conntrack. Inside, `test/prove-names.sh` stands in for the internet (a web server and
 two upstream name servers at 9.9.9.9 and 1.1.1.1 in a namespace of their own) and for the rules reader (a script that

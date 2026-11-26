@@ -46,6 +46,7 @@ set -euo pipefail
 here=${QORPERA_AGENT_EXIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 package=${QORPERA_AGENT_EXIT_RULES_PACKAGE:?the rules reader package folder}
 previous=${QORPERA_AGENT_EXIT_PROOF_PREVIOUS:-}
+previous_package=${QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE:-$package}
 IMAGE=${QORPERA_AGENT_EXIT_PROOF_IMAGE:?the container image}
 PROJECT=qae8n
 POOL=qae8n
@@ -1088,7 +1089,7 @@ else
 		/etc/systemd/system/qorpera-agent-plug.service
 	systemctl daemon-reload
 	systemctl reset-failed
-	bash "$previous/install-agent-exit.sh" "$package" >"$work/install-previous.out" 2>&1 ||
+	bash "$previous/install-agent-exit.sh" "$previous_package" >"$work/install-previous.out" 2>&1 ||
 		fail "the previous release's install: $(cat "$work/install-previous.out")"
 	grep -q '^Installed\. Nothing is started or enabled' "$work/install-previous.out" ||
 		fail "the previous release's install: $(cat "$work/install-previous.out")"
@@ -1146,7 +1147,7 @@ if [[ -n $previous ]] && ((step == 9)); then
 	pass "ROLLOUT.md step 9 on the previous release's exit: healthy within 30 s, $C1 has its resolver on port 10001 and m3 its blocked names, also on its flow from port 40054 opened before the step; reach sends m3 to open and it reaches 198.51.100.1:80"
 
 	{
-		bash "$previous/install-agent-exit.sh" "$package" &&
+		bash "$previous/install-agent-exit.sh" "$previous_package" &&
 			systemctl reload qorpera-agent-exit.service &&
 			systemctl disable --now qorpera-agent-exit-names.service &&
 			systemctl stop 'qorpera-agent-exit-resolver@*.service' &&
@@ -1196,7 +1197,7 @@ elif [[ -n $previous ]] && ((step == 10)); then
 	pass "ROLLOUT.md step 10 on the previous release's exit: healthy within 30 s, $C1's resolver restarted into \"only listed\" (open.example.com is NXDOMAIN), m3's connection made before ended, and after asking for listed.example.com m3 reaches 198.51.100.1 on 443 and not on 80"
 
 	{
-		bash "$previous/install-agent-exit.sh" "$package" &&
+		bash "$previous/install-agent-exit.sh" "$previous_package" &&
 			systemctl reload qorpera-agent-exit.service &&
 			systemctl restart qorpera-agent-exit-names.service &&
 			rm -f "$RUN"/names/*.mode "$RUN"/names/*.owed &&
@@ -1269,7 +1270,7 @@ elif [[ -n $previous ]]; then
 	pass "ROLLOUT.md step 12 (the queue modules, here only): within 30 s the checker runs and verify is healthy; m3 reaches 198.51.100.1:443 with a ClientHello for listed.example.com only; its connection from step 11 is reset at its next data, the one from before step 11 goes on"
 
 	{
-		bash "$previous/install-agent-exit.sh" "$package" &&
+		bash "$previous/install-agent-exit.sh" "$previous_package" &&
 			systemctl reload qorpera-agent-exit.service &&
 			systemctl restart qorpera-agent-exit-names.service qorpera-agent-plug.service qorpera-agent-exit-log.service &&
 			systemctl stop qorpera-agent-exit-sni.service &&

@@ -968,6 +968,7 @@ if [[ $part == names-logs ]]; then
 	ip -n plugged addr add 10.210.1.2/16 dev eth0
 	ip -n plugged route add default via 10.210.0.1
 	wait_for "bash $tool verify >/dev/null 2>&1"
+	wait_for '[[ $(reach_map) == "10.210.1.1:open 10.210.1.2:open" ]]'
 	connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
 	connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
 	ip netns exec plugged python3 -c 'import socket; s = socket.create_connection(("1.1.1.1", 8443), 3); s.close()' || fail "plugged tcp 8443"

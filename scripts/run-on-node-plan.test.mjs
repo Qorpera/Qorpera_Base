@@ -111,7 +111,7 @@ test("deploy, function and SQL-input paths reach the tests that read them", () =
 	// Files runner-orchestrator tests read outside its package (review round 2).
 	for (const file of [
 		"deploy/coding-worker/qorpera-coding-executor.service",
-		"deploy/cloud-secret-broker/qorpera-shared-vault.service",
+		"packages/runtime/test/fixtures/test-ca.crt",
 		"packages/runtime/test/fixtures/native-tool-authority-fixture.ts",
 		"packages/runtime/src/cloud-identity-recovery-filesystems.ts",
 		"packages/cloud-client/src/node/native-account-refresh.ts",

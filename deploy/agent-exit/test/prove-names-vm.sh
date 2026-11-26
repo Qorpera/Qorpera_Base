@@ -33,6 +33,7 @@ IMAGE=${QORPERA_AGENT_EXIT_PROOF_IMAGE:-ubuntu:26.04}
 # The nodes' Node: Ubuntu's nodejs package, and its libnode, at this version.
 NODE_VERSION=${QORPERA_AGENT_EXIT_PROOF_NODE:-22.22.1+dfsg+~cs22.19.15-1ubuntu1}
 previous=${QORPERA_AGENT_EXIT_PROOF_PREVIOUS:-}
+previous_package=${QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE:-}
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -48,6 +49,13 @@ if [[ -n $previous ]]; then
 	[[ $previous == /* ]] || previous=$repo/$previous
 	[[ -f $previous/install-agent-exit.sh ]] ||
 		fail "QORPERA_AGENT_EXIT_PROOF_PREVIOUS: no release's deploy/agent-exit folder at $previous"
+	if [[ -n $previous_package ]]; then
+		[[ $previous_package == /* ]] || previous_package=$repo/$previous_package
+		[[ -f $previous_package/manifest.json ]] ||
+			fail "QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE: no reader package manifest at $previous_package"
+	elif grep -q 'supabase-prod-ca-2021\.crt' "$previous/install-agent-exit.sh"; then
+		fail "QORPERA_AGENT_EXIT_PROOF_PREVIOUS expects the pre-pinned-CA package format (supabase-prod-ca-2021.crt); also set QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE to a package built from that release"
+	fi
 fi
 # The project first: it is this run's claim on the names (a second run stops here and removes nothing of this one).
 claim=$(lxc project create "$PROJECT" -c features.images=true -c features.profiles=false \
@@ -93,6 +101,7 @@ ca_sha256=$(sha256sum "$work/ca.crt" | cut -d' ' -f1)
 	fail "cannot build the rules reader's package"
 cp -r "$here" "$work/push/agent-exit"
 if [[ -n $previous ]]; then cp -r "$previous" "$work/push/previous"; fi
+if [[ -n $previous_package ]]; then cp -r "$previous_package" "$work/push/previous-package"; fi
 pass "built the rules reader's package ($(ls "$work/push/package" | tr '\n' ' '))${previous:+; the previous release from $previous}"
 
 # --- LXD's snaps and the images ----------------------------------------------------------------------------------
@@ -157,6 +166,7 @@ pass "LXD, the container image and the packages are set up in the VM, offline: N
 lx exec "$VM" -- env PATH=/snap/bin:/usr/sbin:/usr/bin:/sbin:/bin QORPERA_AGENT_EXIT_DIR=/root/push/agent-exit \
 	QORPERA_AGENT_EXIT_RULES_PACKAGE=/root/push/package QORPERA_AGENT_EXIT_PROOF_IMAGE=qae8n-ct \
 	${previous:+QORPERA_AGENT_EXIT_PROOF_PREVIOUS=/root/push/previous} \
+	${previous_package:+QORPERA_AGENT_EXIT_PROOF_PREVIOUS_PACKAGE=/root/push/previous-package} \
 	bash /root/push/agent-exit/test/prove-names.sh | tee "$work/inner.out" || fail "the proof inside the VM failed"
 grep -q "^ALL PASSED" "$work/inner.out" || fail "the proof inside the VM did not finish"
 

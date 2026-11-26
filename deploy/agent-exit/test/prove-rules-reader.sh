@@ -1,21 +1,4 @@
 #!/usr/bin/env bash
-# The rules reader (E8b) under systemd, inside the throwaway VM test/prove-rules-reader-vm.sh makes (never on a node,
-# never on a shared test machine: it installs the exit's units, a group, a user and a login). It installs the exit and
-# the reader's package with install-agent-exit.sh, plugs two machines in as a creator does, places a login with the
-# tool's `database-url` as the rollout script does, and starts the reader with `rules-start`. The login names a
-# stand-in server in this VM that answers Postgres's TLS request with a certificate of its own. It checks what the
-# Docker proof and the unit tests cannot:
-# - the installer on Ubuntu 26.04 with its own Node (the nodes' nodejs package) and coreutils: a changed package
-#   refused with nothing installed, then the package taken and nothing started or enabled;
-# - that without its login the reader does not start;
-# - systemd's dynamic user, the two credentials as systemd hands them over (the reader checks them as the broker does),
-#   the link to its state folder and its runtime folder;
-# - that the reader reads the client map as a creator writes it, asks the login's server over TLS only, refuses a
-#   certificate not from Supabase's CA before it sends anything, keeps no rules without a read, and says why in its
-#   status and in `rules-start`'s answer;
-# - that the login reaches no log, and that the undo leaves the reader off with nothing of the login behind.
-# A read that succeeds needs Supabase itself: the rollout script's last step proves it on the nodes.
-# Prints PASS lines, then ALL PASSED.
 set -euo pipefail
 
 here=${QORPERA_AGENT_EXIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
@@ -190,7 +173,7 @@ nsenter --target "$pid" --mount --setgid "$gid" --setuid "$uid" -- \
 	fail "the runtime folder: $(stat -c '%a %U:%G' /run/qorpera-agent-exit-rules)"
 credentials=/run/credentials/$UNIT
 seen=$(stat -c '%n %a %U:%G' "$credentials"/* 2>/dev/null | sed "s|$credentials/||" | tr '\n' ';' || true)
-pass "the reader runs as dynamic user $uid with both credentials (as systemd hands them: ${seen:-not visible from here}), its state folder linked from $STATE/rules (0700, empty, uid ${on_disk#* } on disk, the reader's own and writable in its namespace) and its runtime folder its own"
+pass "the reader runs as dynamic user $uid with its credentials (as systemd hands them: ${seen:-not visible from here}), its state folder linked from $STATE/rules (0700, empty, uid ${on_disk#* } on disk, the reader's own and writable in its namespace) and its runtime folder its own"
 
 [[ $(stat -c %a "$STATUS") == 644 ]] || fail "status.json is mode $(stat -c %a "$STATUS")"
 python3 - "$STATUS" "$problem" <<'EOF' || fail "status.json: $(cat "$STATUS")"

@@ -106,8 +106,11 @@ export async function readLinuxX64Elf(filePath, errorMessage) {
 	return bytes;
 }
 
-export async function loadDatabaseOwnCa(file, sha256) {
-	if (file === undefined && sha256 === undefined) return undefined;
+export async function loadDatabaseOwnCa(file, sha256, { required = false } = {}) {
+	if (file === undefined && sha256 === undefined) {
+		if (required) throw new Error("--database-ca and --database-ca-sha256 are required");
+		return undefined;
+	}
 	if (file === undefined || sha256 === undefined) {
 		throw new Error("--database-ca and --database-ca-sha256 go together");
 	}

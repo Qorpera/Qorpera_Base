@@ -12,12 +12,19 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("packages the secret broker separately from every execution host", async () => {
 	const temporary = await mkdtemp(join(tmpdir(), "qorpera-secret-broker-package-test-"));
 	try {
+		const caSource = join(repositoryRoot, "packages/runtime/test/fixtures/test-ca.crt");
+		const caBytes = await readFile(caSource);
+		const caPin = createHash("sha256").update(caBytes).digest("hex");
 		const destination = join(temporary, "package");
-		const packaged = spawnSync(process.execPath, ["scripts/package-cloud-secret-broker.mjs", "--out", destination], {
-			cwd: repositoryRoot,
-			encoding: "utf8",
-			timeout: 30_000,
-		});
+		const packaged = spawnSync(
+			process.execPath,
+			["scripts/package-cloud-secret-broker.mjs", "--out", destination, "--database-ca", caSource, "--database-ca-sha256", caPin],
+			{
+				cwd: repositoryRoot,
+				encoding: "utf8",
+				timeout: 30_000,
+			},
+		);
 		assert.equal(packaged.status, 0, packaged.stderr);
 		const encoded = await readFile(join(destination, "manifest.json"), "utf8");
 		const manifest = JSON.parse(encoded);
@@ -29,6 +36,8 @@ test("packages the secret broker separately from every execution host", async ()
 				"qorpera-cloud-secret-broker.service",
 				"qorpera-shared-vault.service",
 				"shared-vault-secrets.py",
+				"database-own-ca.crt",
+				"database-own-ca.sha256",
 			],
 		);
 		const sharedUnit = await readFile(join(destination, "qorpera-shared-vault.service"), "utf8");
@@ -72,7 +81,7 @@ test("packages the secret broker separately from every execution host", async ()
 		assert.ok(!service.includes("Environment=QORPERA_"));
 		const repeated = spawnSync(
 			process.execPath,
-			["scripts/package-cloud-secret-broker.mjs", "--out", destination],
+			["scripts/package-cloud-secret-broker.mjs", "--out", destination, "--database-ca", caSource, "--database-ca-sha256", caPin],
 			{ cwd: repositoryRoot, encoding: "utf8" },
 		);
 		assert.notEqual(repeated.status, 0);
@@ -82,7 +91,7 @@ test("packages the secret broker separately from every execution host", async ()
 	}
 });
 
-const usage = /--out <new-directory> \[--database-ca <file> --database-ca-sha256 <sha256>\]/;
+const usage = /--out <new-directory> --database-ca <file> --database-ca-sha256 <sha256>/;
 
 test("packages our own database CA only with its sha256 pin, the two given together", async () => {
 	const temporary = await mkdtemp(join(tmpdir(), "qorpera-secret-broker-own-ca-test-"));
@@ -116,6 +125,7 @@ test("packages our own database CA only with its sha256 pin, the two given toget
 		// Half an input, a pin the file does not match, a file that is not one CA certificate: refused before anything is
 		// built, and no package folder is made.
 		for (const [input, reason] of [
+			[[], /--database-ca and --database-ca-sha256 are required/],
 			[["--database-ca", own], /--database-ca and --database-ca-sha256 go together/],
 			[["--database-ca-sha256", pin], /--database-ca and --database-ca-sha256 go together/],
 			[["--database-ca", own, "--database-ca-sha256", createHash("sha256").update(await readFile(other)).digest("hex")], /does not match/],
