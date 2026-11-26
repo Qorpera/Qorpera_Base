@@ -3402,6 +3402,8 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 						]);
 						expect((mcpAnswers[1]?.result as { tools: { name: string }[] }).tools.map((t) => t.name)).toEqual([
 							"stage_surface_patch",
+							"compose_surface_layout",
+							"inspect_surface",
 							"coding_finish",
 							"coding_ask",
 						]);

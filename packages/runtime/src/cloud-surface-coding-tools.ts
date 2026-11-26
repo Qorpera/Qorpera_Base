@@ -1,5 +1,5 @@
 import { type SurfaceFolderContents, surfaceFolderRoots } from "@qorpera/cloud-client/surface-folder-files";
-import { SURFACE_LAYOUT_PATH } from "@qorpera/contracts";
+import { IDENTITY_TOKENS_CSS_PATH, type StudioBinaryRef, SURFACE_LAYOUT_PATH } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
@@ -11,7 +11,10 @@ import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
 import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
+import { createStageSurfaceArtifactTool } from "./cloud-surface-artifact-tool.ts";
 import { createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
+import { createInspectSurfaceTool, type StudioInspectBinaryMeta } from "./cloud-surface-inspect-tool.ts";
+import { createComposeSurfaceLayoutTool } from "./cloud-surface-layout-tool.ts";
 import { createNarrateExplainerTool } from "./cloud-surface-narrate-tool.ts";
 import { createStudioPictureTool } from "./cloud-surface-picture-tool.ts";
 import {
@@ -34,6 +37,7 @@ import {
 import {
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
+	createSurfacePatchSessionTracker,
 	type SurfaceLayoutStaging,
 	type SurfacePatchToolPort,
 } from "./cloud-surface-tools.ts";
@@ -271,6 +275,16 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		view.page === "layout" ? await cloudStudioSkill(SURFACE_STARTER_SKILLS[view.starter], readSkill, signal) : null;
 
 	const stagedText = new Map<string, string | null>();
+	const stagedBytesBySha = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
+	const stagedBinaries = new Map<string, { readonly bytes: Uint8Array; readonly mediaType: string }>();
+	const rawStageBytes = surfaceSession.stageBytes ?? surfaceSession.narrateExplainer?.stageBytes;
+	const trackedStageBytes = rawStageBytes
+		? async (bytes: Uint8Array, mediaType: string, reqSignal: AbortSignal): Promise<StudioBinaryRef> => {
+				const ref = await rawStageBytes(bytes, mediaType, reqSignal);
+				stagedBytesBySha.set(ref.fileSha256, { bytes, mediaType });
+				return ref;
+			}
+		: undefined;
 	if (surfaceSession.openScenesOps && surfaceSession.openScenesOps.length > 0) {
 		applyStudioTextOps(stagedText, surfaceSession.openScenesOps, folderRoot);
 	}
@@ -294,6 +308,17 @@ export async function prepareSurfaceCodingWorkspace(options: {
 				: undefined;
 			if (!request.optionGroup && (!targetOpen?.optionGroupKey || targetOpen.changeId === replyChangeId)) {
 				applyStudioTextOps(stagedText, request.ops, folderRoot);
+				for (const op of request.ops) {
+					const rel = normalizeStudioRelativePath(op.path, folderRoot);
+					if (!rel) continue;
+					if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
+						stagedBinaries.delete(rel);
+					} else if (op.op === "write_file") {
+						stagedText.delete(rel);
+						const cached = stagedBytesBySha.get(op.file.fileSha256);
+						if (cached) stagedBinaries.set(rel, cached);
+					}
+				}
 			}
 			return result;
 		},
@@ -347,20 +372,30 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	);
 	const codexInstructions = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "coding_finish"),
-		"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts, Node/Python tooling, and Chromium/Playwright visual verification.",
+		"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts, Node/Python tooling, and headless Chromium visual verification.",
 		`Never try to write directly into /company/${folderRoot}/ from shell commands (the mount refuses direct writes); use company_search to find files across the whole company, data_describe and data_query to inspect company databases under /company/data/, company_read and company_list to read files with active Preview overlays, stage every change under ${folderRoot}/ via stage_surface_patch, and write working notes under ${notesRoot}/ via company_write.`,
-		isInternalReconciliation
-			? "When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask."
-			: "Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
+		...(isInternalReconciliation
+			? [
+					"When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask.",
+				]
+			: [
+					"Visual drawing and inspection tools: use compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks for line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap data), use stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, GLB, MP3/WAV) straight into Preview, and call inspect_surface after staging layout or visual changes to visually verify the rendered page (desktop/mobile, light/dark) before calling coding_finish.",
+					"Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
+				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 	].join("\n\n");
 	const claudeSystemNote = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "mcp__qorpera__coding_finish"),
-		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts, Node/Python, Blender, and Chromium/Playwright visual verification.",
+		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts, Node/Python, Blender, and headless Chromium visual verification.",
 		`Never try to modify /company directly with Bash, Edit, or Write (the mount refuses direct writes). Use mcp__qorpera__company_search to search across the whole company, mcp__qorpera__data_describe and mcp__qorpera__data_query to inspect company databases read-only, mcp__qorpera__company_read and mcp__qorpera__company_list when you need active Preview overlay contents, stage every file change under ${folderRoot}/ through mcp__qorpera__stage_surface_patch, and write working notes under ${notesRoot}/ through mcp__qorpera__company_write.`,
-		isInternalReconciliation
-			? "When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask."
-			: "Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
+		...(isInternalReconciliation
+			? [
+					"When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask.",
+				]
+			: [
+					"Visual drawing and inspection tools: use mcp__qorpera__compose_surface_layout to add, update, remove, or reorder tabs and blocks (including interactive chart blocks for line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap data), use mcp__qorpera__stage_surface_artifact to stage visual or binary files generated in /tmp (PNG/JPG/WebP, SVG, HTML, PDF, GLB, MP3/WAV) straight into Preview, and call mcp__qorpera__inspect_surface after staging visual or layout changes to inspect a real rendered screenshot (desktop/mobile, light/dark) before calling mcp__qorpera__coding_finish.",
+					"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
+				]),
 		...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 	].join("\n\n");
 	const turnCorrection = isInternalReconciliation
@@ -373,6 +408,12 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		turnBrief,
 		turnCorrection,
 		buildTools: (identity, operations, codingMachine) => {
+			const patchTracker = createSurfacePatchSessionTracker({
+				openChanges: sessionOpenChanges,
+				replyChangeId,
+				isInternalReconciliation,
+				folderRoot,
+			});
 			const stagePatchTool = createStageSurfacePatchTool(
 				surfaceSession.sessionId,
 				trackedSurfacePatch,
@@ -383,6 +424,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					openChanges: sessionOpenChanges,
 					replyChangeId,
 					isInternalReconciliation,
+					tracker: patchTracker,
 				},
 			);
 			const voicePort = surfaceSession.narrateExplainer;
@@ -427,14 +469,156 @@ export async function prepareSurfaceCodingWorkspace(options: {
 						]
 					: [];
 			const pictureTool =
-				hasMakePicture && pictures && surfaceSession.stageBytes
+				hasMakePicture && pictures && trackedStageBytes
 					? [
 							createStudioPictureTool({
 								sessionId: surfaceSession.sessionId,
 								folderRoot,
-								stageBytes: surfaceSession.stageBytes,
+								stageBytes: trackedStageBytes,
 								surfacePatch: trackedSurfacePatch,
 								pictures,
+							}),
+						]
+					: [];
+			const readCurrentLayoutTextStrict = async (reqSignal: AbortSignal): Promise<string | null> => {
+				if (stagedText.has(SURFACE_LAYOUT_PATH)) return stagedText.get(SURFACE_LAYOUT_PATH) ?? null;
+				if (!effectiveFolderReader) {
+					throw new Error("SURFACE_FOLDER_UNAVAILABLE");
+				}
+				return folderText(
+					effectiveFolderReader,
+					`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
+					MAX_STAGED_LAYOUT_READ_BYTES,
+					reqSignal,
+				);
+			};
+			const composeLayoutTool =
+				!isInternalReconciliation && view.page !== "report"
+					? [
+							createComposeSurfaceLayoutTool({
+								sessionId: surfaceSession.sessionId,
+								starter: view.page === "layout" ? view.starter : "custom",
+								readCurrentLayoutText: readCurrentLayoutTextStrict,
+								surfacePatch: trackedSurfacePatch,
+								patchTracker,
+							}),
+						]
+					: [];
+			const stageArtifactTool =
+				!isInternalReconciliation && codingMachine && trackedStageBytes
+					? [
+							createStageSurfaceArtifactTool({
+								sessionId: surfaceSession.sessionId,
+								folderRoot,
+								machine: codingMachine,
+								stageBytes: trackedStageBytes,
+								surfacePatch: trackedSurfacePatch,
+								patchTracker,
+							}),
+						]
+					: [];
+			const inspectSurfaceTool =
+				!isInternalReconciliation && codingMachine
+					? [
+							createInspectSurfaceTool({
+								machine: codingMachine,
+								loadSnapshot: async (reqSignal) => {
+									const files: Record<string, string> = { ...(contents?.files ?? {}) };
+									const knownBinaries: Record<string, StudioInspectBinaryMeta> = {};
+									for (const [fullPath, ref] of Object.entries(contents?.binaries ?? {})) {
+										knownBinaries[fullPath] = {
+											bytes: ref.bytes,
+											mediaType: ref.mediaType,
+											inCompanyMount: true,
+										};
+									}
+									if (turnReadOverlay) {
+										const overlayCandidates = new Set<string>([
+											`${folderRoot}/${SURFACE_LAYOUT_PATH}`,
+											IDENTITY_TOKENS_CSS_PATH,
+										]);
+										for (const change of [...previewBaseChanges, ...sessionOpenChanges]) {
+											for (const p of change.affectedPaths) {
+												const clean = p.replace(/^\/+|\/+$/g, "");
+												if (!clean) continue;
+												overlayCandidates.add(
+													clean.startsWith(`${folderRoot}/`) ? clean : `${folderRoot}/${clean}`,
+												);
+											}
+										}
+										for (const candidate of overlayCandidates) {
+											const looked = await turnReadOverlay.lookup(candidate, reqSignal);
+											if (looked?.kind === "file") {
+												files[candidate] = looked.content;
+												delete knownBinaries[candidate];
+											} else if (looked?.kind === "deleted") {
+												delete files[candidate];
+												delete knownBinaries[candidate];
+											}
+										}
+									}
+									for (const change of previewBaseChanges) {
+										for (const op of change.patchManifest ?? []) {
+											const rel = normalizeStudioRelativePath(op.path, folderRoot);
+											if (!rel) continue;
+											const full = `${folderRoot}/${rel}`;
+											if (op.op === "write_file") {
+												delete files[full];
+												knownBinaries[full] = {
+													bytes: op.file.bytes,
+													mediaType: op.file.mediaType,
+													inCompanyMount: false,
+												};
+											} else if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
+												delete knownBinaries[full];
+											}
+										}
+									}
+									for (const change of sessionOpenChanges) {
+										if (change.optionGroupKey && change.changeId !== replyChangeId) continue;
+										for (const op of change.patchManifest ?? []) {
+											const rel = normalizeStudioRelativePath(op.path, folderRoot);
+											if (!rel) continue;
+											const full = `${folderRoot}/${rel}`;
+											if (op.op === "write_file") {
+												delete files[full];
+												knownBinaries[full] = {
+													bytes: op.file.bytes,
+													mediaType: op.file.mediaType,
+													inCompanyMount: false,
+												};
+											} else if (op.op === "delete" || op.op === "write_text" || op.op === "merge_json") {
+												delete knownBinaries[full];
+											}
+										}
+									}
+									for (const [rel, val] of stagedText) {
+										const full = `${folderRoot}/${rel}`;
+										delete knownBinaries[full];
+										if (val === null) delete files[full];
+										else files[full] = val;
+									}
+									const binaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> =
+										{};
+									for (const [rel, entry] of stagedBinaries) {
+										const full = `${folderRoot}/${rel}`;
+										delete files[full];
+										binaries[full] = entry;
+										knownBinaries[full] = {
+											bytes: entry.bytes.byteLength,
+											mediaType: entry.mediaType,
+											inCompanyMount: false,
+										};
+									}
+									return {
+										surfaceTitle: surfaceSession.surfaceTitle,
+										folderRoot,
+										starter: view.page === "layout" ? view.starter : "custom",
+										files,
+										binaries,
+										knownBinaries,
+									};
+								},
 							}),
 						]
 					: [];
@@ -464,6 +648,9 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			const skillTools = surfaceSession.readSkillTools ? surfaceSession.readSkillTools(operations, identity) : [];
 			return [
 				stagePatchTool,
+				...composeLayoutTool,
+				...stageArtifactTool,
+				...inspectSurfaceTool,
 				...narrateTool,
 				...pictureTool,
 				...viewAttachmentTool,

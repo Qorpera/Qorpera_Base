@@ -9,7 +9,7 @@ A custom Studio surface is a living workspace tailored to a goal that product or
 
 ## Shape freely first
 - Read the member's goal, active company Interfaces, brief, and relevant company files or databases under `/company` using `company_search`, `company_read`, `company_list`, `data_describe`, and `data_query`.
-- Shape the layout file freely with the tabs and blocks this workspace needs (`explainer` videos, `report` articles and posts, `artifacts` images and diagrams, `module` custom tools, and strategy or data blocks on any tab). When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
+- Shape the layout freely with `compose_surface_layout` to add or reorder tabs and blocks (`chart`, `explainer` videos, `report` articles, `artifacts` visuals, `module` custom tools, and strategy or data blocks on any tab). Use `stage_surface_artifact` to stage bespoke visuals rendered on the machine directly into Preview, and call `inspect_surface` to check how the rendered page looks (desktop and mobile, light and dark) before finishing. When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
 - Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
 
 ## Show, narrate, don't dump text
@@ -24,6 +24,6 @@ A custom Studio surface is a living workspace tailored to a goal that product or
 - Write to the member about the workspace and decisions — never mention file paths, schemas, or tool names in change titles, summaries, or replies.
 
 ## Native blocks first, module when blocks cannot
-- Prefer native blocks (they inherit company Identity tokens and light or dark themes automatically): `plays`, `economics`, `hypotheses`, `landscape`, `explainer`, `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts`.
+- Prefer native blocks (they inherit company Identity tokens and light or dark themes automatically): `chart`, `plays`, `economics`, `hypotheses`, `landscape`, `explainer`, `title`, `facts`, `spec_list`, `table`, `cards`, `report`, `stage_3d`, `palette`, `brand_mark`, `type_specimen`, `swatch_row`, and `artifacts`.
 - Use a `module` block (an interactive app inside its own subfolder) only when no native block fits — for example a custom sketchpad, funnel tool, or drag-and-drop planner.
 - Link the company Identity tokens stylesheet inside modules so they wear the company look; never hardcode brand colors or fonts. Modules have no network access, read files through the built-in read and list bridge, and hand founder inputs back through the built-in tell bridge. Auto-height modules must not lock to viewport height.

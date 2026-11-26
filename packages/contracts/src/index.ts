@@ -12,6 +12,7 @@ export * from "./cloud-coding-storage.ts";
 export * from "./cloud-machine.ts";
 export * from "./folder-key.ts";
 export * from "./idle-rule.ts";
+export * from "./surface-chart.ts";
 export * from "./surface-economics.ts";
 export * from "./surface-layout.ts";
 export * from "./surface-merge.ts";

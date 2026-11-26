@@ -51,6 +51,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"economics",
 	"hypotheses",
 	"landscape",
+	"chart",
 	"report",
 	"explainer",
 	"artifacts",
@@ -191,6 +192,14 @@ export interface SurfaceLandscapeBlock extends SurfaceBlockBase {
 	readonly heading?: string;
 }
 
+export interface SurfaceChartBlock extends SurfaceBlockBase {
+	readonly type: "chart";
+	readonly from: SurfaceSource;
+	readonly heading?: string;
+	readonly caption?: string;
+	readonly height?: "auto" | number;
+}
+
 export interface SurfaceReportFileBlock extends SurfaceBlockBase {
 	readonly type: "report";
 	readonly from: string;
@@ -248,6 +257,7 @@ export type SurfaceBlock =
 	| SurfaceEconomicsBlock
 	| SurfaceHypothesesBlock
 	| SurfaceLandscapeBlock
+	| SurfaceChartBlock
 	| SurfaceReportBlock
 	| SurfaceExplainerBlock
 	| SurfaceArtifactsBlock
@@ -357,22 +367,22 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 	{
 		type: "palette",
 		family: "colours",
-		summary: "a palette of named colours",
-		fields: [{ name: "from", kind: "source", required: true, note: "{name: colour} or a list" }, HEADING_FIELD],
+		summary: "named colours",
+		fields: [{ name: "from", kind: "source", required: true, note: "{name: colour} or list" }, HEADING_FIELD],
 	},
 	{
 		type: "brand_mark",
 		family: "brand_mark",
-		summary: "a logo or wordmark on light and dark ground",
+		summary: "logo/mark on light & dark",
 		fields: [
 			{
 				name: "from",
 				kind: "file",
 				required: true,
-				note: "a picture file",
+				note: "picture file",
 				accepts: SURFACE_PICTURE_EXTENSIONS,
 			},
-			{ name: "grounds", kind: "grounds", required: false, note: "default both" },
+			{ name: "grounds", kind: "grounds", required: false, note: "both" },
 			HEADING_FIELD,
 		],
 	},
@@ -454,34 +464,45 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		fields: [{ name: "from", kind: "source", required: true, note: "landscape.json" }, HEADING_FIELD],
 	},
 	{
+		type: "chart",
+		family: "chart",
+		summary: "interactive chart (line, bar, area, scatter, pie, sankey, radar, funnel, heatmap)",
+		fields: [
+			{ name: "from", kind: "source", required: true, note: "chart.json" },
+			HEADING_FIELD,
+			{ name: "caption", kind: "caption", required: false, note: "under it" },
+			{ name: "height", kind: "height", required: false, note: "auto" },
+		],
+	},
+	{
 		type: "report",
 		family: "report",
-		summary: "posts read one at a time: report files, HTML pages and PDFs; add to any tab",
+		summary: "posts: report files, HTML pages & PDFs; any tab",
 		fields: [
 			{
 				name: "from",
 				kind: "file",
 				required: false,
-				note: "one post; or use match",
+				note: "one post",
 				accepts: [".json", ".html", ".htm", ".pdf"],
 			},
-			{ name: "match", kind: "glob", required: false, note: "every matching post" },
+			{ name: "match", kind: "glob", required: false, note: "matching posts" },
 			HEADING_FIELD,
 		],
 	},
 	{
 		type: "explainer",
 		family: "explainer",
-		summary: "narrated animated breakdowns from scenes.js",
+		summary: "narrated breakdowns (scenes.js)",
 		fields: [
 			{
 				name: "from",
 				kind: "file",
 				required: false,
-				note: "one scenes.js; or use match",
+				note: "one scenes.js",
 				accepts: [".js"],
 			},
-			{ name: "match", kind: "glob", required: false, note: "every matching scenes.js" },
+			{ name: "match", kind: "glob", required: false, note: "matching scenes.js" },
 			HEADING_FIELD,
 		],
 	},
@@ -491,26 +512,26 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		summary:
 			"rendered artifacts (vector art, pictures, docs, pages, PDFs, .json) no other block shows, expandable fullscreen; add to any tab",
 		fields: [
-			{ name: "match", kind: "globs", required: false, note: "default every file" },
-			{ name: "skip", kind: "globs", required: false, note: "files to leave out" },
+			{ name: "match", kind: "globs", required: false, note: "all files" },
+			{ name: "skip", kind: "globs", required: false, note: "leave out" },
 			HEADING_FIELD,
 		],
 	},
 	{
 		type: "module",
 		family: "module",
-		summary: "a small app built for this page",
+		summary: "custom app for this page",
 		fields: [
-			{ name: "from", kind: "folder", required: true, note: "its folder" },
-			{ name: "height", kind: "height", required: false, note: "default auto" },
+			{ name: "from", kind: "folder", required: true, note: "folder" },
+			{ name: "height", kind: "height", required: false, note: "auto" },
 			HEADING_FIELD,
 		],
 	},
 	{
 		type: "row",
 		family: "row",
-		summary: "blocks side by side; one column on a phone",
-		fields: [{ name: "blocks", kind: "blocks", required: true, note: "no row inside a row" }],
+		summary: "blocks side by side",
+		fields: [{ name: "blocks", kind: "blocks", required: true, note: "no nested row" }],
 	},
 ];
 
@@ -1545,6 +1566,9 @@ export const SURFACE_HYPOTHESES_FORMAT =
 export const SURFACE_LANDSCAPE_FORMAT =
 	'A landscape file (landscape.json) is {"summary","wedge","axes":{"xLabel","yLabel","xLow","xHigh","yLow","yHigh"},"players":[{"id","name","isUs":false,"url","category","positioning","pricing","target","strength","weakness","ourEdge","tier":"verified"|"benchmark"|"hypothesis","source","x":0,"y":0}]} (x and y are 0-100 coordinates on axes).';
 
+export const SURFACE_CHART_FORMAT =
+	'A chart file (*.chart.json or charts/*.json) is {"kind":"line"|"bar"|"area"|"scatter"|"pie"|"sankey"|"radar"|"funnel"|"heatmap","title","subtitle","unit","note","stacked":false,"horizontal":false,"smooth":false,"donut":false,"showLegend":true,"categories":["..."],"xAxisLabel","yAxisLabel","series":[{"name","color","data":[...],"markLine":[{"value":0,"label"}]}]} — or for sankey {"kind":"sankey","nodes":[{"name","color"}],"links":[{"source","target","value"}]}, radar {"kind":"radar","indicators":[{"name","max"}],"series":[{"name","data":[...]}]}, heatmap {"kind":"heatmap","xCategories":["..."],"yCategories":["..."],"cells":[[x,y,value]]}.';
+
 const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
 
 const SURFACE_TOKENS_FORMAT =
@@ -1558,6 +1582,7 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	economics: SURFACE_ECONOMICS_FORMAT,
 	hypotheses: SURFACE_HYPOTHESES_FORMAT,
 	landscape: SURFACE_LANDSCAPE_FORMAT,
+	chart: SURFACE_CHART_FORMAT,
 	report: SURFACE_REPORT_FORMAT,
 	module: SURFACE_TOKENS_FORMAT,
 };

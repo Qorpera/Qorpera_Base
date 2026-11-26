@@ -19,6 +19,7 @@ import type { SurfacesStore } from "../surfaces-store.ts";
 import { prepareArtifacts, type StudioHtmlPages } from "./surface-blocks/artifacts.ts";
 import { SurfacePictures } from "./surface-blocks/brand-mark.ts";
 import { prepareCards } from "./surface-blocks/cards.ts";
+import { prepareChart } from "./surface-blocks/chart.ts";
 import { type ColorToken, prepareSwatchRow, readSwatches } from "./surface-blocks/colours.ts";
 import {
 	cleanFolderRoot,
@@ -495,6 +496,8 @@ export class SurfaceLayoutView {
 				return prepareHypotheses(block, ctx);
 			case "landscape":
 				return prepareLandscape(block, ctx);
+			case "chart":
+				return prepareChart(block, ctx, this.#fullscreen);
 			default:
 				return prepareUnknown();
 		}

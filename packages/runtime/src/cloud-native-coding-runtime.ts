@@ -93,6 +93,7 @@ import type { CloudRuntimeObservability, CloudRuntimeToolOperation } from "./clo
 import { isCloudRuntimeClaudeChoice } from "./cloud-runtime-policy.ts";
 import type { ClaudeLoginRunClient } from "./cloud-secret-broker-http.ts";
 import { SITE_NAME_RULE } from "./cloud-site-tools.ts";
+import { STUDIO_STAGE_ARTIFACT_SCHEMA } from "./cloud-surface-artifact-tool.ts";
 import {
 	type CodingWorkspaceKind,
 	isCodingWorkspaceKind,
@@ -100,6 +101,7 @@ import {
 	prepareSurfaceCodingWorkspace,
 } from "./cloud-surface-coding-tools.ts";
 import { CODING_ATTACHMENT_VIEW_SCHEMA, createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
+import { STUDIO_INSPECT_SURFACE_SCHEMA } from "./cloud-surface-inspect-tool.ts";
 import { STUDIO_MAKE_PICTURE_SCHEMA } from "./cloud-surface-picture-tool.ts";
 import { createCodingRecordChangeTool } from "./cloud-surface-tools.ts";
 import {
@@ -313,7 +315,7 @@ function trimUtf8ToBytes(text: string, maxBytes: number): string {
 function codingShownImageSha256(
 	text: unknown,
 	wanted: string | null = CODING_INSPECT_IMAGE_SCHEMA,
-	wantedKind: "image" | "picture" = "image",
+	wantedKind: "image" | "picture" | "surface_screenshot" | "artifact_image" = "image",
 ): string | undefined {
 	if (typeof text !== "string") return undefined;
 	let answer: unknown;
@@ -1775,7 +1777,27 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 											readId === undefined &&
 											offeredNames.has("make_picture") &&
 											codingShownImageSha256(content?.text, STUDIO_MAKE_PICTURE_SCHEMA, "picture") ===
-												output.imageSha256));
+												output.imageSha256) ||
+										(isSurfaceWorkspace &&
+											provenance.tool === "inspect_surface" &&
+											provenance.source === "runtime" &&
+											readId === undefined &&
+											offeredNames.has("inspect_surface") &&
+											codingShownImageSha256(
+												content?.text,
+												STUDIO_INSPECT_SURFACE_SCHEMA,
+												"surface_screenshot",
+											) === output.imageSha256) ||
+										(isSurfaceWorkspace &&
+											provenance.tool === "stage_surface_artifact" &&
+											provenance.source === "runtime" &&
+											readId === undefined &&
+											offeredNames.has("stage_surface_artifact") &&
+											codingShownImageSha256(
+												content?.text,
+												STUDIO_STAGE_ARTIFACT_SCHEMA,
+												"artifact_image",
+											) === output.imageSha256));
 								if (output.capture || (output.imageSha256 !== undefined && !shownImage))
 									throw new Error("CODING_CONTEXT_RESOURCES_REFUSED");
 								return {
