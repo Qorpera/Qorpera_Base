@@ -689,10 +689,17 @@ export function mountApplication(
 		const look = surfaces.lookOf(surface);
 		const tab = card.dataset.surfaceTab ?? "";
 		const subtitle = surfaceKindSubtitle(look.kind);
-		const shown = JSON.stringify([surface.id, surface.title, surface.icon, look.kind, tab, subtitle]);
+		const figure = card.classList.contains("is-figure");
+		const state = figure && surface.runningSessionCount > 0 ? "working" : "rest";
+		const shown = JSON.stringify([surface.id, surface.title, surface.icon, look.kind, tab, subtitle, state]);
 		if (card.dataset.shown === shown) return;
 		card.dataset.shown = shown;
-		card.querySelector(".app-card-emblem")?.replaceChildren(surfaceTile(surface, look, "is-rail"));
+		card.querySelector(".app-card-emblem")?.replaceChildren(surfaceTile(surface, look, "is-rail", state));
+		if (figure) {
+			const title = card.querySelector<HTMLElement>(".app-card-title");
+			if (title && !tab) title.textContent = surface.title;
+			return;
+		}
 		const note = card.querySelector<HTMLElement>(".app-card-note");
 		if (note) {
 			const label = tab ? `${surface.title} · ${tab}` : subtitle;

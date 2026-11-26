@@ -61,7 +61,7 @@ function cachedMarkdown(text: string): HTMLElement {
 		parsedMarkdownCache.set(text, cached);
 		return cached.cloneNode(true) as HTMLElement;
 	}
-	const rendered = markdown(text);
+	const rendered = markdown(text, { surfaceRow: true });
 	parsedMarkdownCache.set(text, rendered);
 	while (parsedMarkdownCache.size > MARKDOWN_CACHE_MAX) {
 		const oldest = parsedMarkdownCache.keys().next().value;
