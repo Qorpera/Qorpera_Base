@@ -516,6 +516,8 @@ export const SURFACES: Record<string, string> = {
 	"Break-even": "Nulpunkt",
 	Waterfall: "Vandfald",
 	"The chart couldn't load.": "Diagrammet kunne ikke indlæses.",
+	Chart: "Diagram",
+	"No chart data yet": "Ingen diagramdata endnu",
 	Category: "Kategori",
 	Pricing: "Priser",
 	"Briefings & posts": "Briefinger & indlæg",

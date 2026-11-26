@@ -475,6 +475,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Live Company Interfaces and search on coding machines",
 		text: "Every coding and interface session now receives a live manifest of the company's active Interfaces (Identity, Strategy, product, and custom Surfaces with their /company paths and Strategy/Identity summaries) in place of legacy vision and reading files. Coding sessions now carry company_search across the full company folder, and Studio and Ops coding sessions also carry read-only data_describe and data_query so every dispatched agent can inspect the whole company directly on its machine.",
 	},
+	{
+		id: "studio-visual-inspect-and-draw-tools",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Visual inspection, charts and drawing in Studio",
+		text: "Studio sessions now have native drawing and visual sight tools: an interactive chart block (line, bar, area, scatter, pie, sankey, radar, funnel, and heatmap), compose_surface_layout for validated tab and block mutations, stage_surface_artifact for staging PNG, SVG, HTML, PDF, GLB, and audio artifacts built on the coding machine straight into Preview, and inspect_surface for rendering and visually inspecting the live Preview page across desktop, mobile, light, and dark modes before finishing.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

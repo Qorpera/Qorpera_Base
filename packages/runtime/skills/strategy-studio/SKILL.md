@@ -8,11 +8,10 @@ description: How to run the Strategy surface: grand plan, narrated voice tours, 
 The Strategy surface is the company's living war room for planning, sketching, and testing how this business wins. Product surfaces hold what customers touch; this surface holds the bets, market reality, unit math, and tests deciding what gets built and why.
 
 ## Freedom with tabs, media, and guided voice tours
-- Treat the starter tabs (Grand plan, Economics, Market, Hypotheses, Breakdowns, Deep dives) as a starting canvas, never a cage. Reshape the layout file freely to add, rename, split, or mix blocks on any tab.
-- Both Grand plan and Breakdowns natively support editorial posts (`report`), animated breakdown videos (`explainer`), and visual `artifacts` (pictures, diagrams, sketches, HTML boards, PDFs).
-- Never build a text-only page. Whenever a static chart or visual cannot carry the mechanism, stage a narrated animated `explainer` breakdown and record its voice clips with `narrate_explainer`.
-- Add a guided Studio voice tour with concise spoken beats that switch tabs, scroll smoothly, trigger scenarios or selections, and apply spotlight, pulse, or glow focus effects, then record its spoken clips with `narrate_explainer` in the member's configured voice.
-- Keep copy light and scannable: one-line theses and crisp numbers. Mark only the two or three most decisive inputs as primary in the `economics` model so secondary assumptions stay tucked away.
+- Treat the starter tabs (Grand plan, Economics, Market, Hypotheses, Breakdowns, Deep dives) as a starting canvas, never a cage. Use `compose_surface_layout` to reshape tabs and add `chart`, `report`, `explainer`, `artifacts`, or `module` blocks anywhere.
+- Lead visually: use native `chart` blocks (line, bar, area, scatter, pie, sankey, radar, funnel, heatmap), `stage_surface_artifact` for visuals rendered on the machine, and narrated `explainer` videos (`narrate_explainer`). Call `inspect_surface` to audit the rendered page visually before finishing.
+- Add a guided Studio voice tour whose spoken beats switch tabs, scroll, trigger scenarios, and spotlight sections, then record its clips with `narrate_explainer`.
+- Keep copy light and scannable: one-line theses, crisp numbers, and only two or three primary levers in `economics` so secondary assumptions stay tucked away.
 
 ## Play the real game of capitalism
 - Start from the market board, not an internal worksheet. Research real incumbents, direct rivals, substitutes, and pricing before recommending a move; record real names, prices, strengths, weaknesses, and our sharpest wedge in `landscape`.

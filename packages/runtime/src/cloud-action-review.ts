@@ -255,6 +255,7 @@ export function cloudActionEffect(
 		// How one part of an interface app is made: the runtime's own text, the same for every company.
 		case "app_guide":
 		case "coding_view_attachment":
+		case "inspect_surface":
 		// more_tools' describe shows tools' descriptions and forms (T3-6). Its use is never classified as more_tools: the
 		// boundary runs it as the call of the tool it names.
 		case "more_tools":
@@ -451,6 +452,8 @@ export function cloudActionEffect(
 		case "coding_record_change":
 		case "stage_surface_patch":
 		case "stage_surface_ops_action":
+		case "compose_surface_layout":
+		case "stage_surface_artifact":
 			return "internal";
 		default:
 			return "external";

@@ -2555,8 +2555,29 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 	:is(.studio-play-more, .studio-econ-assumptions, .studio-hyp-row) .icon { transition: none; }
 	.studio-econ-range::-webkit-slider-thumb { transition: none; }
 	.studio-econ-range:hover::-webkit-slider-thumb { transform: none; }
-	.studio-ask-btn.is-busy .icon, :is(.studio-econ-chart-host, .studio-land-chart-host).is-loading { animation: none; }
+	.studio-ask-btn.is-busy .icon, :is(.studio-econ-chart-host, .studio-land-chart-host, .studio-chart-host).is-loading { animation: none; }
 }
+
+.studio-chart { gap: 10px; }
+.studio-chart-subtitle { max-width: 72ch; margin: -4px 0 0; color: var(--text-muted); font-size: 13.5px; line-height: 1.5; }
+.studio-chart-frame {
+	min-width: 0; margin: 0; padding: 14px 12px 10px; border: 1px solid var(--border); border-radius: 18px;
+	background: linear-gradient(180deg, color-mix(in srgb, var(--text) 1.4%, var(--bg)), var(--bg) 75%);
+}
+.studio-chart-host { position: relative; width: 100%; min-width: 0; height: 340px; }
+.studio-chart-host.is-fullscreen { height: min(68vh, 580px); }
+.studio-chart-host.is-loading {
+	border-radius: 12px;
+	background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 5%, transparent), transparent);
+	background-size: 200% 100%;
+	animation: studio-chart-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes studio-chart-shimmer {
+	0% { background-position: 200% 0; }
+	100% { background-position: -200% 0; }
+}
+.studio-chart-wide { display: grid; gap: 12px; min-width: 0; }
+.studio-chart-caption, .studio-chart-note { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
 
 .surface-studio { --tour-accent: var(--studio-brand-accent, var(--accent)); }
 .surface-studio.is-tour-active { padding-bottom: 220px; }

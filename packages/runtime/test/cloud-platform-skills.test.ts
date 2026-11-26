@@ -8,6 +8,9 @@ import { cloudStudioSkill } from "../src/cloud-skill-tools.ts";
 const SKILLS = new URL("../skills/", import.meta.url);
 const STUDIO_TOOLS = [
 	"stage_surface_patch",
+	"compose_surface_layout",
+	"stage_surface_artifact",
+	"inspect_surface",
 	"surface_reply",
 	"surface_ask",
 	"narrate_explainer",
