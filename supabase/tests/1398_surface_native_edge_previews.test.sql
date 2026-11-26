@@ -378,6 +378,38 @@ begin
 		and (select state = 'failed' and split_part(error_detail, E'\n', 1) = 'PREVIEW_BUILD_FAILED' from public.qorpera_surface_preview_builds where id = v_build_id),
 		'settle register refusal wraps error with PREVIEW_BUILD_FAILED header and fails build for hand-back'
 	);
+
+	update public.qorpera_company_sites
+	set taken_down_at = clock_timestamp(), taken_down_reason = 'test takedown'
+	where id = v_site.id;
+	update public.qorpera_surfaces
+	set live_head_sha = repeat('6', 40), published_head_sha = repeat('4', 40), unpublished_change_count = 1, publish_status = 'idle'
+	where id = v_surface;
+	perform pg_temp.snep_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_publish_surface(v_surface);
+	reset role;
+	v_claimed := pg_temp.snep_service($q$select public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo')$q$);
+	select (elem ->> 'jobId')::uuid, (elem ->> 'leaseToken')::uuid into strict v_pub_job, v_pub_lease
+	from jsonb_array_elements(v_claimed -> 'publishes') elem where (elem ->> 'surfaceId')::uuid = v_surface;
+	v_req := pg_temp.snep_service(format(
+		'select public.qorpera_surface_request_build(%L, %L, %L, %L, %L, %L)',
+		'publish', v_pub_job, v_pub_lease, repeat('6', 40), repeat('d', 40), v_recipe
+	));
+	v_build_id := (v_req ->> 'buildId')::uuid;
+	v_coding_claim := pg_temp.snep_service($q$select public.qorpera_claim_coding_session('exec-1398', 60)$q$);
+	v_b_lease := (v_coding_claim ->> 'leaseToken')::uuid;
+	perform pg_temp.snep_service(format('select public.qorpera_begin_surface_preview_build(%L, %L)', v_worker.id, v_b_lease));
+	perform pg_temp.snep_service(format(
+		'select public.qorpera_complete_surface_preview_build(%L, %L, %L, %L, null, null, %L, %L::jsonb, 2, 2112, false)',
+		v_worker.id, v_b_lease, v_build_id, 'built', repeat('7', 64), v_manifest::text
+	));
+	perform pg_temp.snep_assert(
+		(select publish_status = 'failed' and split_part(last_publish_error, E'\n', 1) = 'PREVIEW_BUILD_FAILED' from public.qorpera_surfaces where id = v_surface)
+		and (select state = 'built' and manifest_sha256 = repeat('7', 64) from public.qorpera_surface_preview_builds where id = v_build_id)
+		and not exists (select 1 from public.qorpera_surface_build_handbacks where build_id = v_build_id),
+		'non-code refusal (SITE_TAKEN_DOWN) fails publish job without wiping built manifest or handing back to session'
+	);
 end $$;
 
 rollback;

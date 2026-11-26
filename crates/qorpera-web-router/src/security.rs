@@ -444,17 +444,27 @@ pub fn is_content_hashed_preview_asset(path: &str) -> bool {
         return false;
     }
     let mut has_digit = false;
-    let mut has_letter = false;
+    let mut has_lower = false;
+    let mut has_upper = false;
+    let mut all_hex = true;
     for b in token.bytes() {
         if b.is_ascii_digit() {
             has_digit = true;
-        } else if b.is_ascii_alphabetic() {
-            has_letter = true;
-        } else if b != b'_' {
+        } else if b.is_ascii_lowercase() {
+            has_lower = true;
+            if !b.is_ascii_hexdigit() {
+                all_hex = false;
+            }
+        } else if b.is_ascii_uppercase() {
+            has_upper = true;
+            if !b.is_ascii_hexdigit() {
+                all_hex = false;
+            }
+        } else {
             return false;
         }
     }
-    has_digit && has_letter
+    has_digit && ((all_hex && (has_lower || has_upper)) || (has_lower && has_upper))
 }
 
 pub fn render_preview_inspector_script(origins: &[String]) -> String {
@@ -700,6 +710,8 @@ mod tests {
         assert!(is_content_hashed_preview_asset("_next/static/chunks/main.9f8e7d6c.css"));
         assert!(!is_content_hashed_preview_asset("assets/hero.png"));
         assert!(!is_content_hashed_preview_asset("assets/logo.svg"));
+        assert!(!is_content_hashed_preview_asset("assets/team-IMG_4567.jpg"));
+        assert!(!is_content_hashed_preview_asset("assets/photo-IMG45678.jpg"));
         assert!(!is_content_hashed_preview_asset("photo-20240115.jpg"));
         assert!(!is_content_hashed_preview_asset("assets/branding-statement.css"));
         assert!(!is_content_hashed_preview_asset("index.html"));

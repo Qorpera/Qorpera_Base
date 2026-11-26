@@ -654,6 +654,7 @@ declare
 	v_version_id uuid;
 	v_publish_head_sha text;
 	v_sqlstate text;
+	v_raw_err text;
 	v_err text;
 begin
 	select * into v_build from public.qorpera_surface_preview_builds where id = p_build_id;
@@ -709,7 +710,8 @@ begin
 				where p.build_id = v_build.id and p.status = 'building' and p.lease_token is null;
 			exception when others then
 				v_sqlstate := sqlstate;
-				if v_sqlstate in ('55P03', '57014', '40P01', '40001') then
+				v_raw_err := sqlerrm;
+				if v_sqlstate in ('55P03', '40P01', '40001') then
 					update public.qorpera_surface_previews p
 					set
 						status = 'composing',
@@ -722,18 +724,20 @@ begin
 				else
 					v_err := public.qorpera_surface_preview_build_detail(
 						'PREVIEW_BUILD_FAILED',
-						'The built preview could not be registered: ' || left(sqlerrm, 700)
+						'The built preview could not be registered: ' || left(v_raw_err, 700)
 					);
-					update public.qorpera_surface_preview_builds
-					set state = 'failed', error_detail = v_err, built_tree_sha = null,
-						manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
-						updated_at = v_now
-					where id = v_build.id
-					returning * into v_build;
 					update public.qorpera_surface_previews
 					set status = 'failed', error_detail = v_err, lease_expires_at = null, lease_token = null, updated_at = v_now
 					where build_id = v_build.id and status = 'building' and lease_token is null;
-					perform public.qorpera_surface_build_hand_back(v_build.id);
+					if v_sqlstate = '22023' or v_raw_err = 'SITE_CONTAINS_CREDENTIAL_INPUTS' then
+						update public.qorpera_surface_preview_builds
+						set state = 'failed', error_detail = v_err, built_tree_sha = null,
+							manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
+							updated_at = v_now
+						where id = v_build.id
+						returning * into v_build;
+						perform public.qorpera_surface_build_hand_back(v_build.id);
+					end if;
 				end if;
 			end;
 		end if;
@@ -799,28 +803,31 @@ begin
 				where id = v_job.id;
 			exception when others then
 				v_sqlstate := sqlstate;
-				if v_sqlstate in ('55P03', '57014', '40P01', '40001') then
+				v_raw_err := sqlerrm;
+				if v_sqlstate in ('55P03', '40P01', '40001') then
 					update public.qorpera_surface_jobs
 					set status = 'queued', attempts = 0, lease_expires_at = null, updated_at = v_now
 					where id = v_job.id;
 				else
 					v_err := public.qorpera_surface_preview_build_detail(
 						'PREVIEW_BUILD_FAILED',
-						'The built site could not be published: ' || left(sqlerrm, 700)
+						'The built site could not be published: ' || left(v_raw_err, 700)
 					);
-					update public.qorpera_surface_preview_builds
-					set state = 'failed', error_detail = v_err, built_tree_sha = null,
-						manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
-						updated_at = v_now
-					where id = v_build.id
-					returning * into v_build;
 					update public.qorpera_surfaces
 					set publish_status = 'failed', last_publish_error = v_err, updated_at = v_now
 					where id = v_job.surface_id;
 					update public.qorpera_surface_jobs
 					set status = 'failed', error_detail = v_err, lease_expires_at = null, completed_at = v_now, updated_at = v_now
 					where id = v_job.id;
-					perform public.qorpera_surface_build_hand_back(v_build.id);
+					if v_sqlstate = '22023' or v_raw_err = 'SITE_CONTAINS_CREDENTIAL_INPUTS' then
+						update public.qorpera_surface_preview_builds
+						set state = 'failed', error_detail = v_err, built_tree_sha = null,
+							manifest_sha256 = null, manifest_json = null, file_count = null, total_bytes = null, has_credential_inputs = false,
+							updated_at = v_now
+						where id = v_build.id
+						returning * into v_build;
+						perform public.qorpera_surface_build_hand_back(v_build.id);
+					end if;
 				end if;
 			end;
 		elsif v_build.state = 'built' then
