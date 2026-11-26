@@ -3,7 +3,7 @@ use arc_swap::{ArcSwap, Guard};
 use http::HeaderValue;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -282,6 +282,7 @@ pub enum ResolvedHost {
     UnknownOwnHost {
         scope: HostScope,
     },
+    AlmostReady,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +313,7 @@ pub struct RouteTable {
     sites_by_slug: Arc<HashMap<String, Arc<SiteRecord>>>,
     sites_by_id: Arc<HashMap<String, Arc<SiteRecord>>>,
     domains_by_host: Arc<HashMap<String, CustomDomainRecord>>,
+    routing_ok_domain_ids: Arc<HashSet<String>>,
     deployment_snapshot_upstreams: Arc<HashMap<String, Option<String>>>,
     upstream_overrides: HashMap<String, UpstreamOverride>,
     content_type_headers: Arc<HashMap<String, HeaderValue>>,
@@ -388,6 +390,7 @@ impl RouteTable {
             sites_by_slug: Arc::new(sites_by_slug),
             sites_by_id: Arc::new(sites_by_id),
             domains_by_host: Arc::new(domains_by_host),
+            routing_ok_domain_ids: Arc::new(HashSet::new()),
             deployment_snapshot_upstreams: Arc::new(deployment_snapshot_upstreams),
             upstream_overrides: HashMap::new(),
             content_type_headers: Arc::new(content_type_headers),
@@ -422,6 +425,15 @@ impl RouteTable {
     }
 
     pub fn apply_prebuilt(&mut self, mut next: RouteTable) {
+        if !self.routing_ok_domain_ids.is_empty() {
+            next.routing_ok_domain_ids = Arc::new(
+                next.domains_by_host
+                    .values()
+                    .filter(|domain| self.routing_ok_domain_ids.contains(&domain.id))
+                    .map(|domain| domain.id.clone())
+                    .collect(),
+            );
+        }
         let old_overrides = std::mem::take(&mut self.upstream_overrides);
         if !old_overrides.is_empty() {
             let mut active_upstreams: HashMap<&str, Option<&str>> = HashMap::new();
@@ -567,6 +579,26 @@ impl RouteTable {
         updated
     }
 
+    pub fn domain_routing_differs(&self, results: &[(String, bool)]) -> bool {
+        results
+            .iter()
+            .any(|(id, routing_ok)| self.routing_ok_domain_ids.contains(id) != *routing_ok)
+    }
+
+    pub fn set_domain_routing(&mut self, results: &[(String, bool)]) {
+        if !self.domain_routing_differs(results) {
+            return;
+        }
+        let ids = Arc::make_mut(&mut self.routing_ok_domain_ids);
+        for (id, routing_ok) in results {
+            if *routing_ok {
+                ids.insert(id.clone());
+            } else {
+                ids.remove(id);
+            }
+        }
+    }
+
     pub fn upstream_for(&self, deployment: &DeploymentRecord) -> Option<String> {
         match self.upstream_overrides.get(&deployment.id) {
             Some(UpstreamOverride::Set(addr)) => Some(addr.clone()),
@@ -583,7 +615,7 @@ impl RouteTable {
             if !self.domains_enabled {
                 return false;
             }
-            if !matches!(domain.status, DomainStatus::DnsVerified | DomainStatus::TlsActive) {
+            if !is_verified(domain.status) && !self.routing_ok_domain_ids.contains(&domain.id) {
                 return false;
             }
             return self
@@ -609,10 +641,10 @@ impl RouteTable {
             if !self.domains_enabled {
                 return None;
             }
-            if !matches!(domain.status, DomainStatus::DnsVerified | DomainStatus::TlsActive) {
-                return None;
-            }
             let site = self.sites_by_id.get(&domain.site_id)?.clone();
+            if !is_verified(domain.status) {
+                return (!site.taken_down).then_some(ResolvedHost::AlmostReady);
+            }
             let redirect = match &site.primary_custom_domain {
                 Some(primary) if !domain.is_primary && primary.as_str() != host.as_ref() && !site.taken_down => {
                     Some(primary.clone())
@@ -635,9 +667,10 @@ impl RouteTable {
                         .as_ref()
                         .filter(|primary| {
                             self.domains_enabled
-                                && self.domains_by_host.get(*primary).map_or(false, |d| {
-                                    matches!(d.status, DomainStatus::DnsVerified | DomainStatus::TlsActive)
-                                })
+                                && self
+                                    .domains_by_host
+                                    .get(*primary)
+                                    .map_or(false, |d| is_verified(d.status))
                         })
                         .cloned()
                 } else {
@@ -681,6 +714,10 @@ impl RouteTable {
         }
         None
     }
+}
+
+fn is_verified(status: DomainStatus) -> bool {
+    matches!(status, DomainStatus::DnsVerified | DomainStatus::TlsActive)
 }
 
 fn collect_precomputed_headers(
@@ -1120,6 +1157,51 @@ mod tests {
         assert!(!table.is_tls_allowed("unverified.dk"));
         assert!(!table.is_tls_allowed("random-attacker.com"));
         assert!(!table.is_tls_allowed("nonexistent.qorpera.site"));
+    }
+
+    #[test]
+    fn tls_allowed_once_routing_points_here_before_the_txt_is_found() {
+        let mut table = RouteTable::from_snapshot(sample_snapshot());
+        assert!(!table.is_tls_allowed("unverified.dk"));
+        assert!(matches!(table.resolve_host("unverified.dk"), Some(ResolvedHost::AlmostReady)));
+        assert!(table.resolve_host("random-attacker.com").is_none());
+
+        let routing = vec![("dom-3".to_string(), true), ("dom-unknown".to_string(), true)];
+        assert!(table.domain_routing_differs(&routing));
+        table.set_domain_routing(&routing);
+        assert!(!table.domain_routing_differs(&routing));
+        assert!(table.is_tls_allowed("unverified.dk"));
+        assert!(!table.is_tls_allowed("random-attacker.com"));
+        assert!(matches!(table.resolve_host("unverified.dk"), Some(ResolvedHost::AlmostReady)));
+
+        table.apply_snapshot(sample_snapshot());
+        assert!(table.is_tls_allowed("unverified.dk"));
+
+        let mut disabled = sample_snapshot();
+        disabled.domains_enabled = false;
+        let mut off = table.clone();
+        off.apply_snapshot(disabled);
+        assert!(!off.is_tls_allowed("unverified.dk"));
+        assert!(off.resolve_host("unverified.dk").is_none());
+
+        let mut taken_down = sample_snapshot();
+        taken_down.sites[0].taken_down = true;
+        let mut down = table.clone();
+        down.apply_snapshot(taken_down);
+        assert!(!down.is_tls_allowed("unverified.dk"));
+        assert!(down.resolve_host("unverified.dk").is_none());
+
+        let mut removed = sample_snapshot();
+        removed.custom_domains.retain(|d| d.id != "dom-3");
+        table.apply_snapshot(removed);
+        assert!(!table.is_tls_allowed("unverified.dk"));
+        table.apply_snapshot(sample_snapshot());
+        assert!(!table.is_tls_allowed("unverified.dk"));
+
+        table.set_domain_routing(&[("dom-3".to_string(), true)]);
+        assert!(table.is_tls_allowed("unverified.dk"));
+        table.set_domain_routing(&[("dom-3".to_string(), false)]);
+        assert!(!table.is_tls_allowed("unverified.dk"));
     }
 
     #[test]

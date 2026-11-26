@@ -2441,3 +2441,173 @@ async fn internal_blobs_exists_batches_and_validates_hashes() {
     .await;
     assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn a_pointed_domain_gets_a_certificate_and_an_almost_ready_page_until_verified() {
+    let dns_server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let dns_addr = dns_server.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 512];
+        loop {
+            let Ok((n, peer)) = dns_server.recv_from(&mut buf).await else {
+                break;
+            };
+            if n < 12 {
+                continue;
+            }
+            let mut offset = 12usize;
+            let mut labels = Vec::new();
+            while offset < n && buf[offset] != 0 {
+                let len = buf[offset] as usize;
+                offset += 1;
+                labels.push(String::from_utf8_lossy(&buf[offset..offset + len]).into_owned());
+                offset += len;
+            }
+            let qname = labels.join(".");
+            let after_name = offset + 1;
+            let qtype = u16::from_be_bytes([buf[after_name], buf[after_name + 1]]);
+            let rdata: Option<(u16, Vec<u8>)> = match (qname.as_str(), qtype) {
+                ("namah.dk", DNS_TYPE_A) => Some((DNS_TYPE_A, vec![93, 164, 62, 162])),
+                ("namah.dk", DNS_TYPE_TXT) => {
+                    let txt = b"qorpera-verify=tok-namah";
+                    let mut v = vec![txt.len() as u8];
+                    v.extend_from_slice(txt);
+                    Some((DNS_TYPE_TXT, v))
+                }
+                _ => None,
+            };
+            let mut resp = Vec::new();
+            resp.extend_from_slice(&buf[0..2]);
+            resp.extend_from_slice(&0x8180u16.to_be_bytes());
+            resp.extend_from_slice(&1u16.to_be_bytes());
+            resp.extend_from_slice(&(if rdata.is_some() { 1u16 } else { 0u16 }).to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&0u16.to_be_bytes());
+            resp.extend_from_slice(&buf[12..after_name + 4]);
+            if let Some((rt, data)) = rdata {
+                resp.extend_from_slice(&[0xC0, 0x0C]);
+                resp.extend_from_slice(&rt.to_be_bytes());
+                resp.extend_from_slice(&1u16.to_be_bytes());
+                resp.extend_from_slice(&60u32.to_be_bytes());
+                resp.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                resp.extend_from_slice(&data);
+            }
+            let _ = dns_server.send_to(&resp, peer).await;
+        }
+    });
+
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+    let live_html = Bytes::from("<html><body>namah-live</body></html>");
+    let live_sha = sha256_hex(&live_html);
+    blobs.put(&live_sha, live_html.clone(), false).await.unwrap();
+    let mut files = HashMap::new();
+    files.insert("index.html".to_string(), html_file(live_sha, live_html.len()));
+    let mut site = site_record("site-namah", "namah", true, None);
+    site.live_deployment = Some(static_deployment("dep-namah", files));
+    let domain = |id: &str, hostname: &str, token: &str| CustomDomainRecord {
+        id: id.to_string(),
+        site_id: "site-namah".to_string(),
+        hostname: hostname.to_string(),
+        is_apex: true,
+        is_primary: false,
+        status: DomainStatus::PendingDns,
+        verification_token: token.to_string(),
+        last_checked_at: None,
+        consecutive_misses: 0,
+    };
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        edge_ipv4: Some("93.164.62.162".to_string()),
+        sites: vec![site],
+        custom_domains: vec![
+            domain("dom-namah", "namah.dk", "tok-namah"),
+            domain("dom-elsewhere", "elsewhere.dk", "tok-elsewhere"),
+        ],
+        ..Default::default()
+    };
+
+    let mut cfg = test_config(None);
+    cfg.dns_servers = vec![dns_addr];
+    let state = Arc::new(RouterState::new(blobs, snapshot, &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_p, _i) = bound.spawn();
+
+    let tls_allow = |domain: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/_internal/tls/allow?domain={domain}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    };
+    assert_eq!(http_call(int_addr, tls_allow("namah.dk")).await.0, StatusCode::FORBIDDEN);
+
+    let (st, _, body) = http_call(
+        int_addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/domains/verify")
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(Bytes::new()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let checked: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let reasons: HashMap<String, (String, bool)> = checked["checked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["hostname"].as_str().unwrap().to_string(),
+                (o["reason"].as_str().unwrap().to_string(), o["routing_ok"].as_bool().unwrap()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reasons["namah.dk"],
+        ("txt_verification_missing txt_on_wrong_name".to_string(), true)
+    );
+    assert_eq!(reasons["elsewhere.dk"], ("dns_routing_and_txt_missing".to_string(), false));
+
+    assert_eq!(http_call(int_addr, tls_allow("namah.dk")).await.0, StatusCode::OK);
+    assert_eq!(http_call(int_addr, tls_allow("elsewhere.dk")).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(http_call(int_addr, tls_allow("stranger.dk")).await.0, StatusCode::FORBIDDEN);
+
+    let (st, hdrs, body) = http_call(pub_addr, get("namah.dk", "/", &[])).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(hdrs.get("retry-after").unwrap(), "60");
+    assert_eq!(hdrs.get("cache-control").unwrap(), "no-store, no-transform");
+    assert_eq!(hdrs.get("vary").unwrap(), "Accept-Language");
+    assert_eq!(hdrs.get("x-content-type-options").unwrap(), "nosniff");
+    assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+    let page = String::from_utf8(body.to_vec()).unwrap();
+    assert!(page.contains("<h1>namah.dk is almost ready</h1>"));
+    assert!(page.contains("Made with Qorpera"));
+    assert!(!page.contains("namah-live"));
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("namah.dk", "/index.html", &[("accept-language", "da-DK,da;q=0.9,en;q=0.8")]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+    let page = String::from_utf8(body.to_vec()).unwrap();
+    assert!(page.contains("<h1>namah.dk er næsten klar</h1>") && page.contains("lang=\"da\""));
+    assert!(page.contains("Lavet med Qorpera") && !page.contains("namah-live"));
+
+    let (st, _, body) = http_call(pub_addr, get("elsewhere.dk", "/", &[])).await;
+    assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("elsewhere.dk is almost ready"));
+
+    let (st, hdrs, body) = http_call(pub_addr, get("stranger.dk", "/", &[])).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert!(hdrs.get("retry-after").is_none());
+    assert!(!String::from_utf8(body.to_vec()).unwrap().contains("almost ready"));
+}

@@ -16,10 +16,10 @@ use crate::routes::{
 };
 use crate::security::{
     check_cross_site_write, constant_time_eq, extract_client_ip_cow, inject_preview_banner,
-    parse_cookie, prefers_danish, render_app_unavailable_page, render_not_found_page,
-    render_not_live_page, render_password_page, render_takedown_page, sanitize_next_path,
-    sanitize_redirect_location, sign_preview_cookie, sign_session_cookie, verify_preview_cookie,
-    verify_session_cookie, HSTS_HEADER, SITE_SESSION_COOKIE,
+    parse_cookie, prefers_danish, render_almost_ready_page, render_app_unavailable_page,
+    render_not_found_page, render_not_live_page, render_password_page, render_takedown_page,
+    sanitize_next_path, sanitize_redirect_location, sign_preview_cookie, sign_session_cookie,
+    verify_preview_cookie, verify_session_cookie, HSTS_HEADER, SITE_SESSION_COOKIE,
 };
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
@@ -867,6 +867,18 @@ fn not_live_response(status: StatusCode, accept_language: Option<&str>) -> Respo
     res
 }
 
+fn almost_ready_response(hostname: &str, accept_language: Option<&str>) -> Response<BoxBody> {
+    let mut res = html_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        render_almost_ready_page(hostname, prefers_danish(accept_language)),
+        true,
+    );
+    let headers = res.headers_mut();
+    headers.insert(HeaderName::from_static("retry-after"), HeaderValue::from_static("60"));
+    headers.insert(HeaderName::from_static("vary"), HeaderValue::from_static("Accept-Language"));
+    res
+}
+
 fn refusal_response(
     site: &SiteRecord,
     status: StatusCode,
@@ -1227,6 +1239,9 @@ async fn handle_public(
                     .unwrap();
             }
             return not_live_response(StatusCode::UNAUTHORIZED, accept_language(&req).as_deref());
+        }
+        ResolvedHost::AlmostReady => {
+            return almost_ready_response(host, accept_language(&req).as_deref());
         }
         ResolvedHost::Site {
             site,
