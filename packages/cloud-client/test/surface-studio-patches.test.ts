@@ -831,8 +831,10 @@ describe("studio surface folder_patch overlay engine", () => {
 				},
 			);
 			expect(disjointIdSharedPath.status).toBe("conflicted");
-			expect(disjointIdSharedPath.conflictReport?.paths).toEqual(["identity/tokens.json"]);
-			expect(disjointIdSharedPath.conflictReport?.changeIds).toEqual([cPath1, cPath2, cPath3, cPath4]);
+			if (disjointIdSharedPath.status === "conflicted") {
+				expect(disjointIdSharedPath.conflictReport.paths).toEqual(["identity/tokens.json"]);
+				expect(disjointIdSharedPath.conflictReport.changeIds).toEqual([cPath1, cPath2, cPath3, cPath4]);
+			}
 		});
 	});
 });
