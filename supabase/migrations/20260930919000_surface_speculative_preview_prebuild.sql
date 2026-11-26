@@ -199,7 +199,8 @@ $new$	update public.qorpera_surface_sessions
 select pg_temp.sspp_patch(
 	'public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure,
 	array[
-$old$	if cardinality(v_toggled) > 0 then
+$old$	-- WHY: 20260930860000 filters and deduplicates toggled changes to open staged/conflicted rows in input order.
+	if cardinality(v_toggled) > 0 then
 		select coalesce(array_agg(dedup.cid order by dedup.first_ord), '{}'::uuid[])
 		into v_toggled
 		from (
@@ -213,7 +214,8 @@ $old$	if cardinality(v_toggled) > 0 then
 			group by u.cid
 		) dedup;
 	end if;$old$,
-$new$	if cardinality(v_toggled) > 0 then
+$new$	-- WHY: Canonical (created_at, seq, id) order matches speculative pre-build composition keys across sessions.
+	if cardinality(v_toggled) > 0 then
 		select coalesce(array_agg(dedup.cid order by dedup.created_at asc, dedup.seq asc, dedup.cid asc), '{}'::uuid[])
 		into v_toggled
 		from (
