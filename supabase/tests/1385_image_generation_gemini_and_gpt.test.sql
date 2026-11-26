@@ -18,10 +18,11 @@ declare v_active public.qorpera_runtime_bundles; v_manifest jsonb; v_bundle publ
 begin
 	select b.* into strict v_active from public.qorpera_active_runtime_bundle a
 	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
+	-- WHY: Keep section 10 on the wake-based studio picture lane tested here while v284+ is active.
 	v_manifest := jsonb_set(
 		jsonb_set(v_active.manifest, '{modelPolicy,geminiChoice}', '"thread"'),
 		'{modelPolicy,claudeChoice}', '"thread"'
-	);
+	) #- '{implementation,packages/runtime/src/cloud-surface-coding-tools.ts}';
 	if p_with_image_bundle then
 		v_manifest := jsonb_set(
 			v_manifest,
@@ -200,6 +201,12 @@ begin
 	v_alice := pg_temp.c4_alice();
 	v_alice_run := (v_alice ->> 'runId')::uuid;
 	v_alice_model_binding := v_alice - array['provider', 'nativeHarness', 'model'];
+	-- WHY: c4_alice creates its run on the active v284+ bundle; pin v_old_bundle to test rolling omission.
+	set local session_replication_role = replica;
+	update public.qorpera_execution_runs
+	set runtime_bundle_id = v_old_bundle.id, runtime_bundle_sha256 = v_old_bundle.sha256
+	where id = v_alice_run;
+	set local session_replication_role = origin;
 
 	set local role service_role;
 	v_ctx := public.qorpera_describe_company_run_context(v_alice);

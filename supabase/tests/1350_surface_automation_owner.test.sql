@@ -136,6 +136,11 @@ declare
 	v_last_run timestamptz;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
+	-- WHY: Exercise the pre-v284 wake-based surface session path tested by this suite.
+	update public.qorpera_active_runtime_bundle a
+	set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
+	from public.qorpera_runtime_bundles b
+	where a.singleton and b.bundle_key = 'qorpera.cloud-runtime' and b.version = 283;
 	insert into auth.users(id, email) values
 		(v_dee, 'dee-sao@example.test'), (v_vic, 'vic-sao@example.test'), (v_eve, 'eve-sao@example.test');
 	insert into public.qorpera_profile_members(profile_id, user_id, email, display_name, role) values
