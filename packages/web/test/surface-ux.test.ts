@@ -849,6 +849,16 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(pencil.hidden).toBe(false);
 		expect(document.activeElement).toBe(show);
 		expect(composer.classList.contains("is-held")).toBe(false);
+		expect(pencil.getAttribute("aria-label")).toBe(input.getAttribute("aria-label"));
+
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(false);
+		pencil.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		show.dispatchEvent(new Event("pointerover", { bubbles: true }));
+		expect(composer.classList.contains("is-peek")).toBe(true);
+		composer.dispatchEvent(new Event("pointerleave"));
+		expect(composer.classList.contains("is-peek")).toBe(false);
 
 		pencil.click();
 		expect(document.activeElement).toBe(input);

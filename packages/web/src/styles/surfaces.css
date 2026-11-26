@@ -763,19 +763,21 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-show-panels .icon { width: 17px; height: 17px; }
 .surface-compose-open .icon { width: 15px; height: 15px; }
 .surface-show-panels[hidden], .surface-compose-open[hidden] { display: none; }
+.surface-compose-open:disabled { opacity: 0.45; }
+.surface-compose-open:disabled:hover { background: none; color: var(--text-muted); }
 .surface-page.is-panels-hidden .surface-composer { transition: width var(--motion-slow) var(--ease-spring); }
 .surface-page.is-panels-hidden .surface-chips:not(:has(.surface-chip.is-pointing)) { display: none; }
-.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) {
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) {
 	width: 78px; transition: width var(--motion-base) var(--ease-in) 180ms;
 }
-.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-composer-shell {
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-composer-shell {
 	align-items: center; gap: 2px; padding: 3px;
 }
-.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
 	:is(.surface-point, .surface-attach, .surface-input, .surface-send) { display: none; }
-.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
+.surface-page.is-panels-hidden .surface-composer:not(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
 	:is(.surface-show-panels, .surface-compose-open) { width: 30px; height: 30px; }
-.surface-page.is-panels-hidden .surface-composer:is(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-compose-open { display: none; }
+.surface-page.is-panels-hidden .surface-composer:is(.is-peek, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-compose-open { display: none; }
 
 /* ---- the pushed session side panel -------------------------------------------- */
 .surface-drawer {

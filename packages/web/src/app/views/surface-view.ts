@@ -386,6 +386,16 @@ export class SurfaceView {
 		this.#wireActive(activeSignal);
 		this.#attachObservers();
 		this.#composer.addEventListener(
+			"pointerover",
+			(event) => {
+				if (!this.#showPanels.contains(event.target as Node)) this.#composer.classList.add("is-peek");
+			},
+			{ signal: lifetimeSignal },
+		);
+		this.#composer.addEventListener("pointerleave", () => this.#composer.classList.remove("is-peek"), {
+			signal: lifetimeSignal,
+		});
+		this.#composer.addEventListener(
 			"submit",
 			(event) => {
 				event.preventDefault();
@@ -594,8 +604,10 @@ export class SurfaceView {
 
 	#setPanelsHidden(hidden: boolean): void {
 		if (this.#panelsHidden === hidden) return;
-		const hadFocus = this.#notch.contains(document.activeElement) || this.#showPanels === document.activeElement;
+		const active = document.activeElement;
+		const hadFocus = this.#notch.contains(active) || active === this.#showPanels || active === this.#composeOpen;
 		this.#panelsHidden = hidden;
+		this.#composer.classList.remove("is-peek");
 		this.#barOpen = false;
 		this.#barShown = "";
 		const surface = this.surface;
@@ -1808,7 +1820,10 @@ export class SurfaceView {
 			this.#insteadShown = instead?.id;
 			if (instead && canStart) this.#input.focus({ preventScroll: true });
 		}
-		this.#input.setAttribute("aria-label", surface.archetype === "ops" ? t("Ask an agent") : t("Describe a change"));
+		const inputLabel = surface.archetype === "ops" ? t("Ask an agent") : t("Describe a change");
+		this.#input.setAttribute("aria-label", inputLabel);
+		this.#composeOpen.setAttribute("aria-label", inputLabel);
+		this.#composeOpen.disabled = !canStart;
 		this.#send.setAttribute("aria-label", t("Start session"));
 		this.#send.disabled = !canStart;
 		this.#point.hidden = !pointVisible;
@@ -2132,6 +2147,8 @@ export class SurfaceView {
 				this.#setPanelsHidden(false);
 				return;
 			case "open-composer":
+				// WHY: The folded input is display:none and cannot take focus; holding the bar open for the call lets
+				// it, and #paintFold then drops the hold while the input's own :focus keeps the bar open.
 				this.#composer.classList.add("is-held");
 				this.#input.focus({ preventScroll: true });
 				this.#paintFold();
