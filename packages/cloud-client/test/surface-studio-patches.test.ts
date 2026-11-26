@@ -770,7 +770,7 @@ describe("studio surface folder_patch overlay engine", () => {
 			expect(composed.files["identity/layout.json"]).toBe('{"v":2,"merged":true}\n');
 			expect(composed.files["identity/wordmark.svg"]).toBe("<svg>merged</svg>\n");
 
-			const overlapping = composeStudioPreview(
+			const sharedIdOnly = composeStudioPreview(
 				base,
 				ordered,
 				"identity",
@@ -782,15 +782,55 @@ describe("studio surface folder_patch overlay engine", () => {
 							id: randomUUID(),
 							status: "ready" as const,
 							selectedChangeIds: [cTok1, cMark1],
-							conflictPaths: ["identity/tokens.json"],
-							patchManifest: [{ op: "write_text" as const, path: "tokens.json", content: '{"wrong":true}\n' }],
+							conflictPaths: ["identity/brief.md"],
+							patchManifest: [{ op: "write_text" as const, path: "brief.md", content: "# Wrong Brief\n" }],
 							errorDetail: null,
 						},
 					],
 				},
 			);
-			expect(overlapping.status).toBe("ready");
-			expect(overlapping.files["identity/tokens.json"]).toBe('{"accent":"#222","merged":true}\n');
+			expect(sharedIdOnly.status).toBe("ready");
+			expect(sharedIdOnly.files["identity/brief.md"]).toBe("# Nordic Brief\n");
+
+			const cPath1 = randomUUID();
+			const cPath2 = randomUUID();
+			const cPath3 = randomUUID();
+			const cPath4 = randomUUID();
+			const cPath5 = randomUUID();
+			const disjointIdSharedPath = composeStudioPreview(
+				{},
+				[
+					{ changeId: cPath1, ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"a":1}\n' }] },
+					{ changeId: cPath2, ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"a":2}\n' }] },
+					{ changeId: cPath3, ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"a":3}\n' }] },
+					{ changeId: cPath4, ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"a":4}\n' }] },
+					{ changeId: cPath5, ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"a":5}\n' }] },
+				],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cPath1, cPath2, cPath3],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: [{ op: "write_text" as const, path: "tokens.json", content: '{"winner":3}\n' }],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cPath4, cPath5],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: [{ op: "write_text" as const, path: "tokens.json", content: '{"second":2}\n' }],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(disjointIdSharedPath.status).toBe("conflicted");
+			expect(disjointIdSharedPath.conflictReport?.paths).toEqual(["identity/tokens.json"]);
 		});
 	});
 });
