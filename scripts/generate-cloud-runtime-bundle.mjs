@@ -8,37 +8,11 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929028999_runtime_bundle_activation_v289.sql";
-const activationVersion = 289;
-const previousActivationVersion = 288;
-const previousActivationSha256 = "04d99c2a3cf91fd7d8338386efadeb979381a0aec6e33e9a4f910aaad033dce6";
-const activationRequires = Object.freeze([
-	[
-		"20260930916000_surface_native_edge_previews",
-		"#2438 (native edge preview blobs & slot hosts): bundle 289 pairs with qorpera_surface_preview_slot_host",
-		"to_regprocedure('public.qorpera_surface_preview_slot_host(text,integer)') is not null",
-	],
-	[
-		"20260930917000_coding_cleanup_and_surface_metadata",
-		"#2437 (coding cleanup unblock & workerId on view renewals): bundle 289 pairs with 20260930917000 in qorpera_folder_view_renew",
-		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_view_renew(uuid,text,timestamptz,uuid)')), ''), '20260930917000') > 0",
-	],
-	[
-		"20260930918000_cofounder_pulse_and_reconcile_guard",
-		"#2439 (Co-Founder Pulse wake & reconcile dedup): bundle 289 pairs with 20260930918000 in qorpera_surface_trigger_automation",
-		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_surface_trigger_automation(uuid)')), ''), '20260930918000') > 0",
-	],
-	[
-		"20260930919000_surface_speculative_preview_prebuild",
-		"#2443 (warm incremental preview workspaces & speculative pre-builds): bundle 289 pairs with qorpera_surface_enqueue_speculative_preview",
-		"to_regprocedure('public.qorpera_surface_enqueue_speculative_preview(uuid,uuid,uuid)') is not null",
-	],
-	[
-		"20260930920000_coding_executor_multi_node_pick",
-		"#2444 (multi-node coding executor pick & overflow headroom): bundle 289 pairs with qorpera_coding_machine_node_has_room",
-		"to_regprocedure('public.qorpera_coding_machine_node_has_room(public.qorpera_coding_machines,text,boolean)') is not null",
-	],
-]);
+const activation = "supabase/migrations/20260929029099_runtime_bundle_activation_v290.sql";
+const activationVersion = 290;
+const previousActivationVersion = 289;
+const previousActivationSha256 = "4a715fb1dc58f5183b002e2bada3e458f7465922aad35a1e8db537b9203d0d90";
+const activationRequires = Object.freeze([]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
