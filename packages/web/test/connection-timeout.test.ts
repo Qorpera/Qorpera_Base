@@ -2,7 +2,6 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	AUTH_LOCK_TIMEOUT_MS,
 	type Cloud,
 	CloudRpcError,
 	connectionLost,
@@ -235,18 +234,8 @@ describe("a cloud that never answers", () => {
 		expect(asked).toEqual([]);
 	});
 
-	it("bounds cross-tab auth lock acquisition and classifies lock acquire timeouts as connectionLost", () => {
-		expect(AUTH_LOCK_TIMEOUT_MS).toBeGreaterThan(DATABASE_ANSWER_MS);
-		const lockTimeout = Object.assign(new Error("lock timed out"), { isAcquireTimeout: true });
-		expect(connectionLost(lockTimeout)).toBe(true);
-		const wrapped = new CloudRpcError(
-			"qorpera_list_hosted_profiles",
-			{
-				message:
-					'Error: Acquiring an exclusive Navigator LockManager lock "lock:qorpera-web-auth/v1" timed out waiting 25000ms',
-			},
-			0,
-		);
-		expect(connectionLost(wrapped)).toBe(true);
+	it("keeps lockAcquireTimeout disabled so navigatorLock never steals an in-flight auth lock across tabs", () => {
+		const { cloud } = silentCloud();
+		expect((cloud.supabase.auth as unknown as { lockAcquireTimeout?: number }).lockAcquireTimeout).toBe(-1);
 	});
 });

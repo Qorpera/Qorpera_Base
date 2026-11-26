@@ -2033,6 +2033,9 @@ export class SurfacesStore {
 	}
 
 	load(): Promise<void> {
+		if (this.#options.signal.aborted || this.#suspended || this.#visitAbort.signal.aborted) {
+			return Promise.resolve();
+		}
 		this.#loaded ??= this.#load();
 		return this.#loaded;
 	}

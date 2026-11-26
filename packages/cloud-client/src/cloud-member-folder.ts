@@ -1536,11 +1536,33 @@ export function parseCloudMemberFolderHint(value: unknown): number | null {
 	return (hint.seq as number) >= 1 ? (hint.seq as number) : null;
 }
 
-type FolderHintClient = Pick<SupabaseClient, "channel" | "removeChannel"> & {
-	readonly getChannels?: SupabaseClient["getChannels"];
-};
+type FolderHintClient = Pick<SupabaseClient, "channel" | "removeChannel">;
 
 const pendingHintRemovals = new WeakMap<object, Map<string, Promise<unknown>>>();
+const abandonedHintChannels = new WeakMap<object, Map<string, Set<RealtimeChannel>>>();
+const activeHintTopics = new WeakMap<object, Map<string, SharedHintTopic>>();
+
+function markAbandonedHintChannel(client: FolderHintClient, topic: string, channel: RealtimeChannel): void {
+	let byTopic = abandonedHintChannels.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		abandonedHintChannels.set(client, byTopic);
+	}
+	let channels = byTopic.get(topic);
+	if (!channels) {
+		channels = new Set();
+		byTopic.set(topic, channels);
+	}
+	channels.add(channel);
+}
+
+function clearAbandonedHintChannel(client: FolderHintClient, topic: string, channel: RealtimeChannel): void {
+	const byTopic = abandonedHintChannels.get(client);
+	const channels = byTopic?.get(topic);
+	if (!channels) return;
+	channels.delete(channel);
+	if (channels.size === 0) byTopic?.delete(topic);
+}
 
 function removeHintChannel(client: FolderHintClient, topic: string, channel: RealtimeChannel): Promise<unknown> {
 	let byTopic = pendingHintRemovals.get(client);
@@ -1549,7 +1571,13 @@ function removeHintChannel(client: FolderHintClient, topic: string, channel: Rea
 		pendingHintRemovals.set(client, byTopic);
 	}
 	const previous = byTopic.get(topic);
-	const current = withCloudDeadline(() => client.removeChannel(channel), 2000).catch(() => "error");
+	const current = withCloudDeadline(() => client.removeChannel(channel), 2000)
+		.catch(() => "error")
+		.then((status) => {
+			if (status === "ok") clearAbandonedHintChannel(client, topic, channel);
+			else markAbandonedHintChannel(client, topic, channel);
+			return status;
+		});
 	const tracked = (previous ? Promise.allSettled([previous, current]) : current).finally(() => {
 		if (byTopic.get(topic) === tracked) byTopic.delete(topic);
 	});
@@ -1557,50 +1585,69 @@ function removeHintChannel(client: FolderHintClient, topic: string, channel: Rea
 	return current;
 }
 
-export class CloudMemberFolderHints {
+interface HintListener {
+	readonly onHint: (seq: number) => void;
+	readonly onState?: (connected: boolean) => void;
+}
+
+class SharedHintTopic {
 	readonly #client: FolderHintClient;
 	readonly #topic: string;
-	readonly #signal: AbortSignal;
-	readonly #onHint: (seq: number) => void;
-	readonly #onState?: (connected: boolean) => void;
+	readonly #listeners = new Set<HintListener>();
 	#channel: RealtimeChannel | undefined;
 	readonly #removing = new Set<RealtimeChannel>();
 	#retry: ReturnType<typeof setTimeout> | undefined;
+	#connected = false;
 	#joining = false;
 	#closed = false;
-	readonly #onAbort = (): void => {
-		void this.close();
-	};
+	#closing: Promise<void> | undefined;
 
-	constructor(options: {
-		environmentId: string;
-		client: FolderHintClient;
-		signal: AbortSignal;
-		onHint(seq: number): void;
-		onState?(connected: boolean): void;
-	}) {
-		this.#topic = cloudMemberFolderHintTopic(options.environmentId);
-		this.#client = options.client;
-		this.#signal = options.signal;
-		this.#onHint = options.onHint;
-		this.#onState = options.onState;
-		if (this.#signal.aborted) {
-			this.#closed = true;
-			return;
-		}
-		this.#signal.addEventListener("abort", this.#onAbort, { once: true });
-		this.#join();
+	constructor(client: FolderHintClient, topic: string) {
+		this.#client = client;
+		this.#topic = topic;
 	}
 
-	#heldChannels(): RealtimeChannel[] {
-		return (this.#client.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${this.#topic}`);
+	attach(listener: HintListener): void {
+		const first = this.#listeners.size === 0;
+		this.#listeners.add(listener);
+		if (this.#connected) listener.onState?.(true);
+		if (first) this.#join();
+	}
+
+	detach(listener: HintListener): Promise<void> {
+		this.#listeners.delete(listener);
+		if (this.#listeners.size > 0) return Promise.resolve();
+		if (this.#closing) return this.#closing;
+		this.#closed = true;
+		this.#connected = false;
+		const byTopic = activeHintTopics.get(this.#client);
+		if (byTopic?.get(this.#topic) === this) byTopic.delete(this.#topic);
+		clearTimeout(this.#retry);
+		this.#retry = undefined;
+		const toRemove: RealtimeChannel[] = [];
+		if (this.#channel) {
+			toRemove.push(this.#channel);
+			this.#channel = undefined;
+		}
+		for (const stale of this.#removing) {
+			if (!toRemove.includes(stale)) toRemove.push(stale);
+		}
+		this.#removing.clear();
+		if (toRemove.length === 0) {
+			this.#closing = Promise.resolve();
+			return this.#closing;
+		}
+		this.#closing = Promise.all(
+			toRemove.map((channel) => removeHintChannel(this.#client, this.#topic, channel)),
+		).then(() => undefined);
+		return this.#closing;
 	}
 
 	#join(): void {
 		if (this.#closed || this.#channel || this.#joining) return;
 		const pending = pendingHintRemovals.get(this.#client)?.get(this.#topic);
-		const held = this.#heldChannels();
-		if (!pending && held.length === 0) {
+		const abandoned = abandonedHintChannels.get(this.#client)?.get(this.#topic);
+		if (!pending && (!abandoned || abandoned.size === 0)) {
 			this.#openChannel();
 			return;
 		}
@@ -1616,9 +1663,13 @@ export class CloudMemberFolderHints {
 					await pending;
 					continue;
 				}
-				const held = this.#heldChannels();
-				if (held.length === 0) break;
-				await Promise.all(held.map((each) => removeHintChannel(this.#client, this.#topic, each)));
+				const byTopic = abandonedHintChannels.get(this.#client);
+				const abandoned = byTopic?.get(this.#topic);
+				if (!abandoned || abandoned.size === 0) break;
+				const stale = [...abandoned];
+				abandoned.clear();
+				byTopic?.delete(this.#topic);
+				await Promise.all(stale.map((each) => removeHintChannel(this.#client, this.#topic, each)));
 				break;
 			}
 		} finally {
@@ -1635,14 +1686,19 @@ export class CloudMemberFolderHints {
 		channel.on("broadcast", { event: "folder" }, (message: { payload?: unknown }) => {
 			if (this.#closed || this.#channel !== channel) return;
 			const seq = parseCloudMemberFolderHint(message.payload);
-			if (seq !== null) this.#onHint(seq);
+			if (seq !== null) {
+				for (const listener of [...this.#listeners]) listener.onHint(seq);
+			}
 		});
 		channel.subscribe((status: string) => {
 			if (this.#closed || this.#channel !== channel) return;
-			if (status === "SUBSCRIBED") this.#onState?.(true);
-			else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+			if (status === "SUBSCRIBED") {
+				this.#connected = true;
+				for (const listener of [...this.#listeners]) listener.onState?.(true);
+			} else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
 				this.#channel = undefined;
-				this.#onState?.(false);
+				this.#connected = false;
+				for (const listener of [...this.#listeners]) listener.onState?.(false);
 				void this.#rejoin(channel);
 			}
 		});
@@ -1659,24 +1715,60 @@ export class CloudMemberFolderHints {
 		this.#retry = setTimeout(() => (removed === "ok" ? this.#join() : void this.#rejoin(old)), delay);
 		if (typeof this.#retry === "object") this.#retry.unref?.();
 	}
+}
+
+function acquireHintTopic(client: FolderHintClient, topic: string): SharedHintTopic {
+	let byTopic = activeHintTopics.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		activeHintTopics.set(client, byTopic);
+	}
+	let entry = byTopic.get(topic);
+	if (!entry) {
+		entry = new SharedHintTopic(client, topic);
+		byTopic.set(topic, entry);
+	}
+	return entry;
+}
+
+export class CloudMemberFolderHints {
+	readonly #signal: AbortSignal;
+	readonly #listener: HintListener;
+	#topicEntry: SharedHintTopic | undefined;
+	#closing: Promise<void> | undefined;
+	#closed = false;
+	readonly #onAbort = (): void => {
+		void this.close();
+	};
+
+	constructor(options: {
+		environmentId: string;
+		client: FolderHintClient;
+		signal: AbortSignal;
+		onHint(seq: number): void;
+		onState?(connected: boolean): void;
+	}) {
+		const topic = cloudMemberFolderHintTopic(options.environmentId);
+		this.#signal = options.signal;
+		this.#listener = { onHint: options.onHint, onState: options.onState };
+		if (this.#signal.aborted) {
+			this.#closed = true;
+			return;
+		}
+		this.#signal.addEventListener("abort", this.#onAbort, { once: true });
+		const entry = acquireHintTopic(options.client, topic);
+		this.#topicEntry = entry;
+		entry.attach(this.#listener);
+	}
 
 	async close(): Promise<void> {
-		if (this.#closed) return;
+		if (this.#closed) return this.#closing ?? Promise.resolve();
 		this.#closed = true;
 		this.#signal.removeEventListener("abort", this.#onAbort);
-		clearTimeout(this.#retry);
-		this.#retry = undefined;
-		const toRemove: RealtimeChannel[] = [];
-		if (this.#channel) {
-			toRemove.push(this.#channel);
-			this.#channel = undefined;
-		}
-		for (const stale of this.#removing) {
-			if (!toRemove.includes(stale)) toRemove.push(stale);
-		}
-		this.#removing.clear();
-		if (toRemove.length > 0) {
-			await Promise.all(toRemove.map((channel) => removeHintChannel(this.#client, this.#topic, channel)));
-		}
+		const entry = this.#topicEntry;
+		this.#topicEntry = undefined;
+		if (!entry) return;
+		this.#closing = entry.detach(this.#listener);
+		await this.#closing;
 	}
 }

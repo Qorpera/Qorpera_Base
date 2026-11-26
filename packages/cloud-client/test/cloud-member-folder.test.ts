@@ -1530,4 +1530,53 @@ describe("the folder hint", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("shares one channel across concurrent instances on the same topic and retries abandoned removals", async () => {
+		const { client, channels, removed } = realtime(["timed out", "ok", "ok"]);
+		const seenA: number[] = [];
+		const seenB: number[] = [];
+		const statesB: boolean[] = [];
+		const a = new CloudMemberFolderHints({
+			environmentId: env,
+			client,
+			signal: new AbortController().signal,
+			onHint: (seq) => seenA.push(seq),
+		});
+		channels[0]!.onStatus?.("SUBSCRIBED");
+
+		const b = new CloudMemberFolderHints({
+			environmentId: env,
+			client,
+			signal: new AbortController().signal,
+			onHint: (seq) => seenB.push(seq),
+			onState: (connected) => statesB.push(connected),
+		});
+		expect(channels).toHaveLength(1);
+		expect(removed).toHaveLength(0);
+		expect(statesB).toEqual([true]);
+
+		channels[0]!.onBroadcast?.({ payload: { schema: "qorpera.folder-hint/v1", seq: 4 } });
+		expect(seenA).toEqual([4]);
+		expect(seenB).toEqual([4]);
+
+		await b.close();
+		expect(removed).toHaveLength(0);
+		channels[0]!.onBroadcast?.({ payload: { schema: "qorpera.folder-hint/v1", seq: 5 } });
+		expect(seenA).toEqual([4, 5]);
+		expect(seenB).toEqual([4]);
+
+		await a.close();
+		expect(removed).toEqual([channels[0]]);
+
+		const c = new CloudMemberFolderHints({
+			environmentId: env,
+			client,
+			signal: new AbortController().signal,
+			onHint() {},
+		});
+		await vi.waitFor(() => expect(channels).toHaveLength(2));
+		expect(removed).toEqual([channels[0], channels[0]]);
+		await c.close();
+		expect(removed).toEqual([channels[0], channels[0], channels[1]]);
+	});
 });

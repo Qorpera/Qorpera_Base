@@ -3945,6 +3945,29 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("does not cache a resolved load promise when load() is called while suspended", async () => {
+		const studioSurface = summary({
+			id: "99999999-9999-4999-8999-999999999994",
+			slug: "brand-studio",
+			title: "Brand Studio",
+		});
+		const listSurfaces = vi.fn(async () => [studioSurface]);
+		const store = storeWith(fakeClient({ listSurfaces }));
+
+		store.suspend();
+		await store.load();
+		expect(listSurfaces).not.toHaveBeenCalled();
+		expect(store.state.source).toBe("loading");
+
+		store.resume();
+		await vi.waitFor(() => {
+			expect(listSurfaces).toHaveBeenCalledTimes(1);
+			expect(store.state.source).toBe("cloud");
+			expect(store.state.surfaces).toHaveLength(1);
+		});
+		store.dispose();
+	});
+
 	it("keeps staged changes on failed sessions unselected by default while letting members toggle them on", async () => {
 		const failedSession = session(["staged"], {
 			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",

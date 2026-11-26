@@ -112,10 +112,32 @@ export interface PresenceDevices {
 
 type PresenceSupabaseClient = Pick<SupabaseClient, "channel" | "removeChannel"> & {
 	readonly realtime?: Partial<Pick<SupabaseClient["realtime"], "setAuth">>;
-	readonly getChannels?: SupabaseClient["getChannels"];
 };
 
 const pendingPresenceRemovals = new WeakMap<object, Map<string, Promise<unknown>>>();
+const abandonedPresenceChannels = new WeakMap<object, Map<string, Set<RealtimeChannel>>>();
+
+function markAbandonedPresenceChannel(client: PresenceSupabaseClient, topic: string, channel: RealtimeChannel): void {
+	let byTopic = abandonedPresenceChannels.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		abandonedPresenceChannels.set(client, byTopic);
+	}
+	let channels = byTopic.get(topic);
+	if (!channels) {
+		channels = new Set();
+		byTopic.set(topic, channels);
+	}
+	channels.add(channel);
+}
+
+function clearAbandonedPresenceChannel(client: PresenceSupabaseClient, topic: string, channel: RealtimeChannel): void {
+	const byTopic = abandonedPresenceChannels.get(client);
+	const channels = byTopic?.get(topic);
+	if (!channels) return;
+	channels.delete(channel);
+	if (channels.size === 0) byTopic?.delete(topic);
+}
 
 function removePresenceChannel(
 	client: PresenceSupabaseClient,
@@ -128,9 +150,13 @@ function removePresenceChannel(
 		pendingPresenceRemovals.set(client, byTopic);
 	}
 	const previous = byTopic.get(topic);
-	const current = withCloudDeadline(() => client.removeChannel(channel), REMOVE_CHANNEL_TIMEOUT_MS).catch(
-		() => undefined,
-	);
+	const current = withCloudDeadline(() => client.removeChannel(channel), REMOVE_CHANNEL_TIMEOUT_MS)
+		.catch(() => "error")
+		.then((status) => {
+			if (status === "ok") clearAbandonedPresenceChannel(client, topic, channel);
+			else markAbandonedPresenceChannel(client, topic, channel);
+			return status;
+		});
 	const tracked = (previous ? Promise.allSettled([previous, current]) : current).finally(() => {
 		if (byTopic.get(topic) === tracked) byTopic.delete(topic);
 	});
@@ -477,9 +503,13 @@ export class SupabaseCloudPresenceTransport {
 						await pending;
 					}
 					if (stopped) return;
-					const held = (this.#client.getChannels?.() ?? []).filter((each) => each.topic === `realtime:${topic}`);
-					if (held.length > 0) {
-						await Promise.all(held.map((each) => removePresenceChannel(this.#client, topic, each)));
+					const abandonedByTopic = abandonedPresenceChannels.get(this.#client);
+					const abandoned = abandonedByTopic?.get(topic);
+					if (abandoned && abandoned.size > 0) {
+						const stale = [...abandoned];
+						abandoned.clear();
+						abandonedByTopic?.delete(topic);
+						await Promise.all(stale.map((each) => removePresenceChannel(this.#client, topic, each)));
 					}
 					await this.#client.realtime?.setAuth?.().catch(() => undefined);
 					if (stopped) return;

@@ -143,7 +143,6 @@ export function forgetStoredSession(): void {
 }
 
 export const DATABASE_ANSWER_MS = 20_000;
-export const AUTH_LOCK_TIMEOUT_MS = DATABASE_ANSWER_MS + 5_000;
 
 export const NO_ANSWER = "Qorpera did not answer in time.";
 
@@ -321,8 +320,9 @@ export function createCloud(config: CloudConfig): Cloud {
 			// cannot restore a session that the member has already signed out of.
 			lock:
 				typeof navigator !== "undefined" && "locks" in navigator && navigator.locks ? navigatorLock : processLock,
-			// WHY: Exceed /auth/v1/ fetch deadline so live saves commit before timing out while a frozen tab cannot wedge auth forever.
-			lockAcquireTimeout: AUTH_LOCK_TIMEOUT_MS,
+			// A timeout must not steal a lock while the original request can still
+			// commit its session. Wait for that request (or its tab) to release it.
+			lockAcquireTimeout: -1,
 			flowType: "pkce",
 			persistSession: true,
 			autoRefreshToken: true,
@@ -366,11 +366,7 @@ export function translateCloudErrors(translate: (source: string) => string): voi
 export function connectionLost(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
 	return (
-		error.name === "TimeoutError" ||
-		error.message.startsWith("TimeoutError: ") ||
-		(error as { isAcquireTimeout?: unknown }).isAcquireTimeout === true ||
-		/\bNavigator LockManager lock\b.*timed out/i.test(error.message) ||
-		CONNECTION_LOST.test(error.message)
+		error.name === "TimeoutError" || error.message.startsWith("TimeoutError: ") || CONNECTION_LOST.test(error.message)
 	);
 }
 
