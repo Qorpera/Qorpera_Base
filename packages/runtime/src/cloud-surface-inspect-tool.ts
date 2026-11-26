@@ -48,7 +48,7 @@ export type InspectSurfaceViewport = "desktop" | "mobile";
 
 const WORK_ROOT = "/tmp/qorpera-studio-inspect";
 const UPLOAD_CHUNK_BYTES = 14_000;
-const MAX_UPLOAD_CHUNKS = 16;
+const MAX_UPLOAD_CHUNKS = 36;
 const CAPTURE_TIMEOUT_MS = 45_000;
 const SETUP_TIMEOUT_MS = 20_000;
 const CANCEL_ON_ABORT_MS = 5_000;
@@ -64,9 +64,9 @@ const MAX_SCROLL_Y = 6000;
 const MAX_BASE64_OUTPUT_BYTES = Math.ceil((8 * 1024 * 1024) / 3) * 4 + 256;
 const SCRIPT_END = "QORPERA_STUDIO_INSPECT_END";
 
-const MAX_STAGED_BUNDLE_BYTES = 220_000;
-const MAX_STAGED_PREVIEW_IMAGES = 6;
-const MAX_STAGED_PREVIEW_IMAGE_BYTES = 40_000;
+const MAX_STAGED_BUNDLE_BYTES = 380_000;
+const MAX_STAGED_PREVIEW_IMAGES = 8;
+const MAX_STAGED_PREVIEW_IMAGE_BYTES = 32_000;
 const MAX_STAGED_GLB_UPLOAD_BYTES = 140_000;
 
 const CAPTURE_SCRIPT_CJS = [
@@ -1854,6 +1854,10 @@ function shellQuote(value: string): string {
 	return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function encodedBinaryBundleBytes(rawBytes: number): number {
+	return Math.ceil(rawBytes * 1.45) + 128;
+}
+
 async function prepareInspectAssets(
 	snapshot: StudioInspectSnapshot,
 	tabId: string | undefined,
@@ -1864,10 +1868,12 @@ async function prepareInspectAssets(
 		readonly files: Record<string, { readonly b64?: string; readonly text?: string }>;
 		readonly local: Record<string, { readonly src: string; readonly sha256: string }>;
 	};
+	readonly fallbackKeys: readonly string[];
 }> {
 	const assetUrls: Record<string, string> = {};
 	const bundleFiles: Record<string, { readonly b64?: string; readonly text?: string }> = {};
 	const bundleLocal: Record<string, { readonly src: string; readonly sha256: string }> = {};
+	const fallbackKeys: string[] = [];
 	const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
 	const relOf = (fullPath: string): string | null => {
 		if (!rootPrefix) return fullPath.replace(/^\/+/, "") || null;
@@ -1915,20 +1921,25 @@ async function prepareInspectAssets(
 					pngBytes = null;
 				}
 			}
-			if (pngBytes && bundleBytes + pngBytes.byteLength <= MAX_STAGED_BUNDLE_BYTES) {
+			const cost = pngBytes ? encodedBinaryBundleBytes(pngBytes.byteLength) : 0;
+			if (pngBytes && bundleBytes + cost <= MAX_STAGED_BUNDLE_BYTES) {
 				bundleFiles[rel] = { b64: Buffer.from(pngBytes).toString("base64") };
-				bundleBytes += pngBytes.byteLength;
+				bundleBytes += cost;
 				previewImages += 1;
 				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+				else fallbackKeys.push(rel);
 			}
 		} else if (
 			entry.mediaType === "model/gltf-binary" &&
-			entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES &&
-			bundleBytes + entry.bytes.byteLength <= MAX_STAGED_BUNDLE_BYTES
+			entry.bytes.byteLength <= MAX_STAGED_GLB_UPLOAD_BYTES
 		) {
-			bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
-			bundleBytes += entry.bytes.byteLength;
-			if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+			const cost = encodedBinaryBundleBytes(entry.bytes.byteLength);
+			if (bundleBytes + cost <= MAX_STAGED_BUNDLE_BYTES) {
+				bundleFiles[rel] = { b64: Buffer.from(entry.bytes).toString("base64") };
+				bundleBytes += cost;
+				if (setUrl) assetUrls[fullPath] = `/staged/${encodeURI(rel)}`;
+				else fallbackKeys.push(rel);
+			}
 		}
 	};
 	for (const [fullPath, entry] of Object.entries(snapshot.binaries)) {
@@ -1960,7 +1971,7 @@ async function prepareInspectAssets(
 				if (!fullPath.startsWith(prefix)) continue;
 				const rel = relOf(fullPath);
 				if (!rel) continue;
-				const size = Buffer.byteLength(text, "utf8");
+				const size = Buffer.byteLength(text, "utf8") + 128;
 				if (bundleBytes + size > MAX_STAGED_BUNDLE_BYTES) continue;
 				bundleFiles[rel] = { text };
 				bundleBytes += size;
@@ -1972,7 +1983,7 @@ async function prepareInspectAssets(
 		}
 	}
 
-	return { assetUrls, bundle: { files: bundleFiles, local: bundleLocal } };
+	return { assetUrls, bundle: { files: bundleFiles, local: bundleLocal }, fallbackKeys };
 }
 
 export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): CloudNativeTool {
@@ -2128,14 +2139,19 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: rendered preview exceeded the size limit.");
 			}
 			const gzB64 = gzipSync(htmlBytes).toString("base64");
-			const hasStagedBundle =
-				Object.keys(prepared.bundle.files).length > 0 || Object.keys(prepared.bundle.local).length > 0;
-			const stagedGzB64 = hasStagedBundle
-				? gzipSync(Buffer.from(JSON.stringify(prepared.bundle), "utf8")).toString("base64")
-				: "";
-			const chunkCount =
-				Math.ceil(gzB64.length / UPLOAD_CHUNK_BYTES) +
-				(stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
+			const htmlChunks = Math.ceil(gzB64.length / UPLOAD_CHUNK_BYTES);
+			const encodeBundle = (bundle: typeof prepared.bundle): string =>
+				Object.keys(bundle.files).length > 0 || Object.keys(bundle.local).length > 0
+					? gzipSync(Buffer.from(JSON.stringify(bundle), "utf8")).toString("base64")
+					: "";
+			let stagedGzB64 = encodeBundle(prepared.bundle);
+			let chunkCount = htmlChunks + (stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
+			if (chunkCount > MAX_UPLOAD_CHUNKS && prepared.fallbackKeys.length > 0) {
+				const trimmedFiles = { ...prepared.bundle.files };
+				for (const key of prepared.fallbackKeys) delete trimmedFiles[key];
+				stagedGzB64 = encodeBundle({ files: trimmedFiles, local: prepared.bundle.local });
+				chunkCount = htmlChunks + (stagedGzB64 ? Math.ceil(stagedGzB64.length / UPLOAD_CHUNK_BYTES) : 0);
+			}
 			if (chunkCount > MAX_UPLOAD_CHUNKS) {
 				throw new CloudToolRefusal("INSPECT_SURFACE_TOO_LARGE: compressed preview exceeded the upload bound.");
 			}

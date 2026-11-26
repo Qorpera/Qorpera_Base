@@ -18,7 +18,7 @@ This page sells and specifies one product. A buyer knows what it is at first gla
 - An unknown stays an empty home. Never invent a price, weight, supplier or certification: say in your reply what is still missing and who could know it.
 - Read the brief, company files and earlier reports first. Never stop to ask taste or colour questions — stage a concrete direction (or toggleable Preview variants) with stage_surface_patch so the member steers live. Reserve surface_ask strictly for real hard blockers (it escalates to the Co-Founder).
 - Build real visuals and 3D models in this session: generate studio renders, worn shots and exploded views placed under pictures or renders (so Overview shows them cleanly), and use `stage_surface_artifact` for GLB 3D models, Blender renders, charts or PDFs made on the coding machine.
-- Use `compose_surface_layout` only to add a focused block (such as `chart` or an extra `artifacts` section) or remove unused homes; call `inspect_surface` after staging (including option-group changes) to verify the real rendered page before finishing.
+- Use `compose_surface_layout` to drop unused starter tabs (such as `Breakdowns` when no animated breakdown exists) or add a focused block (such as `chart` or an extra `artifacts` section); call `inspect_surface` after staging (including option-group changes) to verify the real rendered page before finishing.
 - Write to the member about the product, never file paths, file names or tool names.
 
 ## What good looks like
