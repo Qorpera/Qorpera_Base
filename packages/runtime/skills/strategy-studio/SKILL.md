@@ -25,6 +25,8 @@ Classify every economic input, rival claim, and strategic bet into one of three 
 - Benchmark: grounded in public market data or statutory rates (VAT, card fees, rival prices, tariffs), always citing the source and adding competitor reference marks where useful. Never leave publicly knowable facts blank.
 - Hypothesis: an owned working bet (conversion, ops time, churn, willingness to pay). Put every load-bearing bet in `hypotheses` with fatal, high, or medium impact, a cheapest test runnable in days, and explicit kill criteria.
 
+- When the company has an Analytics interface, take its real figures from Analytics' numbers (each names its question) and read each with `data_query` before you use it: those are Verified.
+
 Never invent fake company traction, revenue, or signed customers.
 
 ## How to stage work
