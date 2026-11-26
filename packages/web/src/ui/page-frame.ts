@@ -93,7 +93,7 @@ function uniqueToken(html: string, prefix: string): string {
 
 // WHY: Chromium enforces the parent document's style-src CSP on DOMParser detached documents and logs violations for
 // every <style> and style= attribute; renaming <style> to <noframes> and style= to data-* keeps parsing CSP-quiet,
-// while framePage always validates unfit elements on the restored raw HTML via plain DOMParser.
+// treating SVG <style> as raw text intentionally while framePage validates unfit elements via plain DOMParser.
 function neutralizeStyles(
 	html: string,
 	styleTagMarker: string,
