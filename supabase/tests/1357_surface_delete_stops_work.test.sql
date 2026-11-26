@@ -419,12 +419,14 @@ begin
 		'a scheduled agent whose interface is deleted does not run on another one: ' || v_result::text
 	);
 	v_result := pg_temp.sdel_trigger(v_auto_free);
+	select * into strict v_wake from public.qorpera_wake_occurrences where id = (v_result ->> 'wakeId')::uuid;
 	perform pg_temp.sdel_assert(
 		v_result ->> 'status' = 'started'
-			and (select surface.status from public.qorpera_surface_sessions session
-				join public.qorpera_surfaces surface on surface.id = session.surface_id
-				where session.id = (v_result -> 'session' ->> 'sessionId')::uuid) = 'active',
-		'a scheduled agent with no interface of its own still runs on a live one: ' || v_result::text
+			and v_result -> 'session' = 'null'::jsonb
+			and v_wake.wake_kind = 'routine'
+			and public.qorpera_folder_wake_authorized(v_wake)
+			and (select count(*) from public.qorpera_surface_sessions where profile_id = v_company) = v_count,
+		'a scheduled agent with no interface of its own wakes the Co-Founder directly: ' || v_result::text
 	);
 
 	perform pg_temp.sdel_refused(v_vic, format('select public.qorpera_archive_surface(%L)', v_keep), '42501');
