@@ -80,6 +80,11 @@ declare
 	v_idx integer;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
+	-- WHY: Exercise the pre-v284 wake-based surface session path tested by this suite.
+	update public.qorpera_active_runtime_bundle a
+	set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
+	from public.qorpera_runtime_bundles b
+	where a.singleton and b.bundle_key = 'qorpera.cloud-runtime' and b.version = 283;
 	select environment_id into strict v_env_a from public.qorpera_company_cofounders where profile_id = v_company_a;
 
 	insert into auth.users(id, email) values (v_other_owner, 'owner-shw-b@example.test');

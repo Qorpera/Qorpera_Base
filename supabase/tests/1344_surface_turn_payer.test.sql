@@ -82,6 +82,11 @@ declare
 	v_errmsg text;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
+	-- WHY: Exercise the pre-v284 wake-based surface session path tested by this suite.
+	update public.qorpera_active_runtime_bundle a
+	set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
+	from public.qorpera_runtime_bundles b
+	where a.singleton and b.bundle_key = 'qorpera.cloud-runtime' and b.version = 283;
 
 	perform pg_temp.stp_as(v_anna);
 	set local role authenticated;
