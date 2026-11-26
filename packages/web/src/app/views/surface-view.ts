@@ -645,7 +645,7 @@ export class SurfaceView {
 		}
 		for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
 		this.#markNotchCut();
-		this.#fitPhoneCorners();
+		if (this.#fitPhoneCorners()) this.#syncPhoneViewport();
 	}
 
 	#markNotchCut(): void {
@@ -1088,22 +1088,25 @@ export class SurfaceView {
 		if (focusIn) restoreBarFocus(focusIn, focusKey);
 	}
 
-	#fitPhoneCorners(): void {
-		if (!this.#bar.classList.contains("has-phone-corners")) return;
+	#fitPhoneCorners(): boolean {
+		if (!this.#bar.classList.contains("has-phone-corners")) return false;
 		const style = getComputedStyle(this.#bar);
-		const inner = this.#bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+		const inner =
+			this.#bar.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
 		const start = this.#phoneModelCorner.offsetWidth;
 		const end = this.#phoneZoomCorner.offsetWidth;
 		const gap = Math.ceil(12 * uiScale());
 		const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
-		const notch = (parseFloat(this.#notch.style.width) || 0) + 2 || this.#notch.offsetWidth;
+		const notch = (parseFloat(this.#notch.style.width) || this.#notch.offsetWidth) + 2;
 		const restingNotch = this.#barPinned || this.#panelsHidden ? notch : this.#notchPill.offsetWidth + 2;
 		const stacked = inner > 0 && !clears(restingNotch);
+		const changed = stacked !== (this.#viewport.dataset.phoneStacked === "true");
 		this.#bar.classList.toggle("is-phone-stacked", stacked);
 		this.#bar.classList.toggle("is-phone-tight", stacked && start + end + gap > inner);
 		this.#bar.classList.toggle("is-phone-covered", !stacked && inner > 0 && !clears(notch));
 		if (stacked) this.#viewport.dataset.phoneStacked = "true";
 		else delete this.#viewport.dataset.phoneStacked;
+		return changed;
 	}
 
 	#setPhoneModel(id: string): void {

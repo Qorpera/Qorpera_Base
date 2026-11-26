@@ -1656,6 +1656,44 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		store.dispose();
 	});
 
+	it("moves the phone controls below a wide address and fits the phone to the smaller room", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
+		const width = (el: Element, key: "offsetWidth" | "clientWidth", value: () => number) =>
+			Object.defineProperty(el, key, { configurable: true, get: value });
+		const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;
+		let pill = 300;
+		width(bar, "clientWidth", () => 700);
+		width(view.el.querySelector(".surface-notch-pill")!, "offsetWidth", () => pill);
+		for (const corner of view.el.querySelectorAll(".surface-phone-corner")) width(corner, "offsetWidth", () => 120);
+		view.update();
+
+		expect(bar.classList.contains("has-phone-corners")).toBe(true);
+		expect(bar.classList.contains("is-phone-stacked")).toBe(false);
+		expect(viewport.dataset.phoneStacked).toBeUndefined();
+		const roomy = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
+
+		pill = 500;
+		view.el.querySelector<HTMLButtonElement>('[data-act="expand-pill"]')!.click();
+		expect(bar.classList.contains("is-phone-stacked")).toBe(true);
+		expect(viewport.dataset.phoneStacked).toBe("true");
+		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeLessThan(roomy);
+
+		view.dispose();
+		store.dispose();
+	});
+
 	it("renders multiplayer surface presence in the header pill and teammate attribution in drawer chat and the publish window", async () => {
 		stubFigureMotion();
 		const madsId = "99999999-9999-4999-8999-999999999999";
