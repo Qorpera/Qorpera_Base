@@ -1,6 +1,8 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	describeSurfaceFormats,
+	inferSurfaceKind,
 	isSurfaceAskSource,
 	liftSurfaceColorForDark,
 	parseSurfaceLayout,
@@ -8,6 +10,7 @@ import {
 	resolveSurfaceChartColors,
 	resolveSurfaceColors,
 	resolveSurfaceSource,
+	SURFACE_ASK_DAY_RANGE_QUESTIONS,
 	SURFACE_ASK_FORMAT,
 	SURFACE_COLORS_FORMAT,
 	SURFACE_DARK_GROUND,
@@ -625,24 +628,32 @@ describe("the dark ground", () => {
 	});
 });
 
-const QORPERA_COLUMNS: Readonly<Record<string, readonly string[]>> = {
-	"orders-now": [
-		"stripe",
-		"orders_today",
-		"sales_today",
-		"to_pack",
-		"on_the_way",
-		"refunds_30d",
-		"disputes_open",
-		"last_order_at",
-	],
-	"orders-days": ["day", "orders", "sales", "refunds"],
-	"site-days": ["site", "day", "views", "visits"],
-	"site-pages": ["site", "path", "views", "visits"],
-	"money-balance": ["day", "balance"],
-	"money-months": ["month", "money_in", "money_out"],
-	"money-kinds": ["direction", "kind", "amount", "count"],
-};
+function qorperaQuestionsFromMigrations() {
+	const folder = new URL("../../../supabase/migrations/", import.meta.url);
+	const files = readdirSync(folder).filter((name) =>
+		/_company_numbers_(money|site|orders|order_changes)\.sql$/.test(name),
+	);
+	const columns: Record<string, string[]> = {};
+	const params: Record<string, string[]> = {};
+	const names = (list: string) => [...list.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1] as string);
+	for (const file of files) {
+		const text = readFileSync(new URL(file, folder), "utf8");
+		const whens = [...text.matchAll(/when '([a-z][a-z-]*)' then/g)];
+		whens.forEach((when, at) => {
+			const question = when[1] as string;
+			if (!/^(money-|site-|sites$|orders-)/.test(question)) return;
+			const part = text.slice(when.index, whens[at + 1]?.index ?? text.length);
+			const takes = /^when '[a-z-]+' then (?:array\[([^\]]*)\]|'\{\}'::text\[\])/.exec(part);
+			if (takes) params[question] = takes[1] ? names(takes[1]) : [];
+			const made = /v_columns := array\[([^\]]*)\]/.exec(part);
+			if (made && !takes) columns[question] = names(made[1] as string);
+		});
+	}
+	return { files, columns, params };
+}
+
+const FROM_MIGRATIONS = qorperaQuestionsFromMigrations();
+const QORPERA_COLUMNS: Readonly<Record<string, readonly string[]>> = FROM_MIGRATIONS.columns;
 
 function asksOf(
 	value: unknown,
@@ -708,8 +719,15 @@ describe("the Analytics starter", () => {
 	it("asks only qorpera questions that exist, naming their real columns", () => {
 		const asks = asksOf(starter);
 		expect(new Set(asks.map(({ ask }) => splitSurfaceAsk(ask.ask)?.question))).toEqual(
-			new Set(Object.keys(QORPERA_COLUMNS).filter((question) => question !== "money-kinds")),
+			new Set(["orders-now", "orders-days", "money-balance", "money-months", "site-days", "site-pages"]),
 		);
+		expect(FROM_MIGRATIONS.files).toHaveLength(4);
+		expect(Object.keys(QORPERA_COLUMNS).length).toBeGreaterThanOrEqual(16);
+		for (const question of SURFACE_ASK_DAY_RANGE_QUESTIONS) {
+			expect(FROM_MIGRATIONS.params[question.slice("qorpera/".length)], question).toEqual(
+				expect.arrayContaining(["from", "to"]),
+			);
+		}
 		expect(asks.find(({ holder }) => holder.id === "pulse")?.ask.against).toBe("previous");
 		expect(asks.find(({ holder }) => holder.id === "months")?.holder.colors).toEqual({
 			money_in: "up",
@@ -723,6 +741,8 @@ describe("the Analytics starter", () => {
 				(column): column is string => column !== undefined,
 			);
 			for (const column of named) expect(columns).toContain(column);
+			for (const name of Object.keys(ask.params ?? {}))
+				expect(FROM_MIGRATIONS.params[parts?.question ?? ""]).toContain(name);
 			if (holder.type === "table" && Array.isArray(holder.columns)) {
 				for (const column of holder.columns as { key: string }[]) expect(columns).toContain(column.key);
 			}
@@ -767,5 +787,15 @@ describe("the Analytics starter", () => {
 			starter: "analytics",
 		});
 		expect(surfaceStudioPage({ ...studio, archetype: "live_build" })).toEqual({ page: null });
+		for (const slug of ["analytics", "business-numbers", "shop-dashboard", "kpis", "metrics"]) {
+			expect(inferSurfaceKind({ slug, icon: "star", archetype: "studio" }), slug).toBe("dashboard");
+			expect(surfaceStudioPage({ ...studio, kind: "custom", slug, icon: "star" }), slug).toEqual({
+				page: "layout",
+				starter: "analytics",
+			});
+		}
+		for (const slug of ["numbering-guide", "field-notes", "market-analysis"]) {
+			expect(inferSurfaceKind({ slug, icon: "star", archetype: "studio" }), slug).not.toBe("dashboard");
+		}
 	});
 });

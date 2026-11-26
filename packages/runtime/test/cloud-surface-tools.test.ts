@@ -153,6 +153,8 @@ describe("cloud surface runtime tools", () => {
 		const surfaceId = randomUUID();
 		const proposeSurface = vi.fn().mockResolvedValue({ id: surfaceId, slug: "website", status: "active" as const });
 		const tool = createProposeSurfaceTool({ proposeSurface });
+		expect(tool.description).toContain('Analytics (live business numbers, kind "dashboard")');
+		expect(JSON.stringify(tool.inputSchema)).toContain("Analytics: studio, kind dashboard.");
 
 		const parsed = tool.parseArguments({
 			slug: "website",

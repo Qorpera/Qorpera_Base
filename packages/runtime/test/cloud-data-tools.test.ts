@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
@@ -17,7 +18,7 @@ import {
 	DATA_DESCRIBE_DESCRIPTION,
 	DATA_QUERY_DESCRIPTION,
 	httpsCompanyDataDoor,
-	type QORPERA_QUESTIONS,
+	QORPERA_QUESTIONS,
 } from "@qorpera/runtime/cloud-data-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -289,6 +290,36 @@ describe("the platform's own numbers (database qorpera)", () => {
 		expect(DATA_DESCRIBE_DESCRIPTION).toContain("Database qorpera is the platform's own numbers");
 	});
 
+	it("lists every qorpera question with the params and columns its migration gives it", () => {
+		const folder = new URL("../../../supabase/migrations/", import.meta.url);
+		const files = readdirSync(folder).filter((name) =>
+			/_company_numbers_(money|site|orders|order_changes)\.sql$/.test(name),
+		);
+		expect(files).toHaveLength(4);
+		const columns: Record<string, string[]> = {};
+		const params: Record<string, string[]> = {};
+		const names = (list: string) => [...list.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1] as string);
+		for (const file of files) {
+			const text = readFileSync(new URL(file, folder), "utf8");
+			const whens = [...text.matchAll(/when '([a-z][a-z-]*)' then/g)];
+			whens.forEach((when, at) => {
+				const question = when[1] as string;
+				if (!/^(money-|site-|sites$|orders-)/.test(question)) return;
+				const part = text.slice(when.index, whens[at + 1]?.index ?? text.length);
+				const takes = /^when '[a-z-]+' then (?:array\[([^\]]*)\]|'\{\}'::text\[\])/.exec(part);
+				if (takes) params[question] = takes[1] ? names(takes[1]) : [];
+				const made = /v_columns := array\[([^\]]*)\]/.exec(part);
+				if (made && !takes) columns[question] = names(made[1] as string);
+			});
+		}
+		expect(Object.keys(params).sort()).toEqual(QORPERA_QUESTIONS.map((one) => one.question).sort());
+		expect(Object.keys(columns).sort()).toEqual(Object.keys(params).sort());
+		for (const one of QORPERA_QUESTIONS) {
+			expect(one.params, one.question).toEqual(params[one.question]);
+			expect(one.columns, one.question).toEqual(columns[one.question]);
+		}
+	});
+
 	it("works without the data gateway's door, which then answers only qorpera and offers only the two reads", async () => {
 		const f = await fixture(() => ok({}), {
 			noDoor: true,
@@ -369,7 +400,9 @@ describe("the company data tools", () => {
 		await f.invoke("data_query", { database: "shop", sql: "select :n::int as n", params: { n: 2 } });
 		expect(f.doorCalls[1]?.body).toMatchObject({ database: "shop", sql: "select :n::int as n", params: { n: 2 } });
 		const described = await fixture(() => ok({ databases: [], companyBytes: 0, limitBytes: 1024 }));
-		await described.invoke("data_describe", {});
+		const every = JSON.parse((await described.invoke("data_describe", {})).text);
+		expect(every.databases.map((one: { database: string }) => one.database)).toEqual(["qorpera"]);
+		expect(every.databases[0].questions).toEqual(QORPERA_QUESTIONS);
 		expect(described.platformCalls[0]?.args.p_database).toBeNull();
 		expect(described.doorCalls[0]?.body).not.toHaveProperty("database");
 	});
@@ -1022,6 +1055,8 @@ describe("the company data tools", () => {
 			nullable: false,
 		});
 		expect(parsedCompact.databases[0].tables[1].viewDefinition).toBeUndefined();
+		expect(parsedCompact.databases.at(-1)).toMatchObject({ database: "qorpera" });
+		expect(JSON.parse(shownRich.text).databases.map((one: { database: string }) => one.database)).toEqual(["shop"]);
 	});
 });
 

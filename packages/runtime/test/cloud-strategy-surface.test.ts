@@ -292,6 +292,18 @@ describe("strategy surface and custom studio runtime integration", () => {
 		expect(buildCompanyInterfacesSection(loaded, { currentSlug: "field-notes" })).not.toContain("Analytics Numbers");
 		expect(buildCompanyInterfacesSection(loaded)).not.toContain("Analytics Numbers");
 		expect(extractAnalyticsNumbersSummary("{")).toBeNull();
+		const byName = await loadCompanyInterfacesContext(
+			{
+				schema: "qorpera.company-interfaces/v1",
+				interfaces: [
+					studio("strategy", "strategy"),
+					{ ...studio("business-numbers", "custom"), folderRoot: "surfaces/numbers" },
+				],
+			},
+			() => folder,
+			new AbortController().signal,
+		);
+		expect(byName?.analyticsSummary?.folderRoot).toBe("surfaces/numbers");
 		expect(extractAnalyticsNumbersSummary('{"metrics":{}}')).toBeNull();
 	});
 

@@ -508,7 +508,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-26",
 		title: "Analytics interfaces with live numbers",
-		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers, and take real figures from its numbers when you plan.",
+		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers (propose it as a Studio interface on a folder, of kind dashboard), and take real figures from its numbers when you plan.",
 	},
 ]);
 

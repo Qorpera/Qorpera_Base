@@ -216,6 +216,8 @@ export interface StudioInspectAskReport {
 	readonly rows?: number;
 	readonly value?: string;
 	readonly words?: string;
+	readonly missing?: readonly string[];
+	readonly columns?: readonly string[];
 }
 
 export type StudioInspectAsker = (ask: SurfaceAskSource, context: CloudToolContext) => Promise<StudioInspectAskAnswer>;
@@ -299,12 +301,15 @@ function askRows(answer: { readonly columns: readonly string[]; readonly rows: r
 	return answer.rows.map((row) => Object.fromEntries(answer.columns.map((column, at) => [column, row[at]])));
 }
 
-function askChart(ask: SurfaceAskSource, rows: readonly Record<string, unknown>[]): SurfaceChartDocument | null {
+export function studioAskChart(
+	ask: SurfaceAskSource,
+	rows: readonly Record<string, unknown>[],
+): SurfaceChartDocument | null {
 	const x = ask.x ?? "";
 	const ys = Array.isArray(ask.y) ? ask.y : ask.y === undefined ? [] : [ask.y as string];
 	const kind = ask.kind ?? "line";
 	const categories = [...new Set(rows.map((row) => String(row[x] ?? "")))];
-	const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+	const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
 	const series =
 		kind === "pie" || kind === "funnel"
 			? [
@@ -378,6 +383,24 @@ function createSnapshotReader(snapshot: StudioInspectSnapshot, asks: StudioInspe
 				asks.push({ block, ask: source.ask, state: answer.state, words: answer.words });
 				return { found: false, value: undefined, asked: true };
 			}
+			const named = [
+				source.pick,
+				source.x,
+				source.series,
+				...(Array.isArray(source.y) ? source.y : [source.y as string | undefined]),
+			].filter((column): column is string => column !== undefined);
+			const missing = [...new Set(named.filter((column) => !answer.columns.includes(column)))];
+			if (missing.length > 0) {
+				asks.push({
+					block,
+					ask: source.ask,
+					state: "answered",
+					rows: answer.rows.length,
+					missing,
+					columns: answer.columns,
+				});
+				return { found: false, value: undefined, asked: true };
+			}
 			const rows = askRows(answer);
 			const last = rows.at(-1);
 			const value =
@@ -387,7 +410,7 @@ function createSnapshotReader(snapshot: StudioInspectSnapshot, asks: StudioInspe
 						? last
 						: use === "rows"
 							? rows
-							: askChart(source, rows);
+							: studioAskChart(source, rows);
 			const shown = use === "figure" && value !== undefined && value !== null ? String(value) : undefined;
 			asks.push({
 				block,
@@ -1491,6 +1514,12 @@ export function renderStudioPreviewHtml(options: {
 		})
 		.join("\n");
 
+	for (const one of asks) {
+		if (one.missing)
+			warnings.push(
+				`${one.block} asks ${one.ask} for ${one.missing.join(", ")}, which its answer has no column for; its columns are ${(one.columns ?? []).join(", ")}.`,
+			);
+	}
 	const tokensCss = snapshot.files[IDENTITY_TOKENS_CSS_PATH];
 	const tabBar =
 		tabs.length > 1
@@ -1980,6 +2009,7 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 								...(one.rows !== undefined ? { rows: one.rows } : {}),
 								...(one.value !== undefined ? { value: one.value } : {}),
 								...(one.words !== undefined ? { words: one.words } : {}),
+								...(one.missing !== undefined ? { missing: [...one.missing] } : {}),
 							})),
 						}
 					: {}),

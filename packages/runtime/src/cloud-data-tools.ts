@@ -583,56 +583,68 @@ export function cloudDataTools(options: {
 			const databases = Array.isArray(answer.databases) ? (answer.databases as Record<string, unknown>[]) : null;
 			if (!databases) refusal(502, answer);
 			const room = { companyBytes: answer.companyBytes, limitBytes: answer.limitBytes };
+			const all = request.database === undefined;
+			const withPlatform = (entries: unknown[], platform: unknown) => (all ? [...entries, platform] : entries);
+			const platformNames = { database: QORPERA_DATABASE, questions: QORPERA_QUESTIONS.map((one) => one.question) };
 			return shown([
-				() => answer,
+				() => ({ ...answer, databases: withPlatform(databases, QORPERA_DESCRIBED) }),
 				() => ({
-					databases: databases.map((one) => {
-						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
-						return {
-							...rest,
-							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
-								name: table.name,
-								kind: table.kind,
-								key: table.key,
-								...(table.rows !== undefined ? { rows: table.rows } : {}),
-								...(table.rowsAbout !== undefined ? { rowsAbout: table.rowsAbout } : {}),
-								columns: (Array.isArray(table.columns) ? table.columns : []).map(
-									(column: Record<string, unknown>) => ({
-										name: column.name,
-										type: column.type,
-										settable: column.settable,
-										...(column.nullable !== undefined ? { nullable: column.nullable } : {}),
-									}),
-								),
-							})),
-						};
-					}),
+					databases: withPlatform(
+						databases.map((one) => {
+							const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+							return {
+								...rest,
+								tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+									name: table.name,
+									kind: table.kind,
+									key: table.key,
+									...(table.rows !== undefined ? { rows: table.rows } : {}),
+									...(table.rowsAbout !== undefined ? { rowsAbout: table.rowsAbout } : {}),
+									columns: (Array.isArray(table.columns) ? table.columns : []).map(
+										(column: Record<string, unknown>) => ({
+											name: column.name,
+											type: column.type,
+											settable: column.settable,
+											...(column.nullable !== undefined ? { nullable: column.nullable } : {}),
+										}),
+									),
+								})),
+							};
+						}),
+						QORPERA_DESCRIBED,
+					),
 					...room,
 					note: "Cut short: name one database to see constraints, indexes, view definitions, enums and extensions",
 				}),
 				// Shorter: each table's columns without their types, each question by name.
 				() => ({
-					databases: databases.map((one) => {
-						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
-						return {
-							...rest,
-							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
-								name: table.name,
-								rows: table.rows,
-								columns: (Array.isArray(table.columns) ? table.columns : []).map(
-									(column: Record<string, unknown>) => column.name,
+					databases: withPlatform(
+						databases.map((one) => {
+							const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+							return {
+								...rest,
+								tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+									name: table.name,
+									rows: table.rows,
+									columns: (Array.isArray(table.columns) ? table.columns : []).map(
+										(column: Record<string, unknown>) => column.name,
+									),
+								})),
+								questions: (Array.isArray(one.questions) ? one.questions : []).map(
+									(question: Record<string, unknown>) => question.name,
 								),
-							})),
-							questions: (Array.isArray(one.questions) ? one.questions : []).map(
-								(question: Record<string, unknown>) => question.name,
-							),
-						};
-					}),
+							};
+						}),
+						platformNames,
+					),
 					...room,
 					note: "Cut short: name one database to see its column types and its questions' words",
 				}),
 				() => ({
-					databases: databases.map((one) => one.database),
+					databases: withPlatform(
+						databases.map((one) => one.database),
+						QORPERA_DATABASE,
+					),
 					...room,
 					note: "Too many to show: name one database",
 				}),
