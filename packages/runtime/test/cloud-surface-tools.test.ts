@@ -1157,7 +1157,7 @@ describe("cloud surface runtime tools", () => {
 		expect(combined).toContain("QorperaOS/surfaces/<slug>/notes/");
 		expect(combined).toContain("static mock");
 		expect(combined).toContain("retired");
-		expect(combined).not.toContain("Read vision.md");
+		expect(combined).not.toContain("vision/vision.md");
 		const surfaceEmployee = cloudRuntimeHireBehavior("employee", {
 			has: surfaceHas,
 			visionAgreed: true,

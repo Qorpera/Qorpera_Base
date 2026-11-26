@@ -611,6 +611,57 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 
+	it("allows re-requesting a reconciliation after a workspace refresh drops a superseded one", async () => {
+		const recA = "66666666-6666-4666-8666-666666666661";
+		const recB = "66666666-6666-4666-8666-666666666662";
+		let currentWs = workspace([session(["staged", "staged"])], { reconciliations: [] });
+		const ensureSurfaceReconciliation = vi.fn(async (_surfaceId, ids) => ({
+			id: ids.length === 2 ? recA : recB,
+			surfaceId: SURFACE,
+			compositionKey: ids.length === 2 ? "k-a" : "k-b",
+			baseFingerprint: "1".repeat(40),
+			selectedChangeIds: [...ids],
+			status: "queued" as const,
+			patchManifest: null,
+			commitSha: null,
+			treeSha: null,
+			errorDetail: null,
+			updatedAt: "2026-11-26T00:00:00Z",
+		}));
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => currentWs),
+				ensureSurfaceReconciliation,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(1);
+
+		currentWs = workspace([session(["staged", "staged"])], {
+			reconciliations: [
+				{
+					id: recB,
+					surfaceId: SURFACE,
+					compositionKey: "k-b",
+					baseFingerprint: "1".repeat(40),
+					selectedChangeIds: [CHANGES[0]],
+					status: "queued",
+					patchManifest: null,
+					commitSha: null,
+					treeSha: null,
+					errorDetail: null,
+					updatedAt: "2026-11-26T00:00:01Z",
+				},
+			],
+		});
+		await store.refreshWorkspace(SURFACE);
+		await store.ensureReconciliation(SURFACE, [CHANGES[0], CHANGES[1]], ["src/hero.tsx"]);
+		expect(ensureSurfaceReconciliation).toHaveBeenCalledTimes(2);
+		store.dispose();
+	});
+
 	it("falls back cleanly when reconciling a local surface conflict without a cloud client", async () => {
 		const store = storeWith(undefined);
 		await store.load();

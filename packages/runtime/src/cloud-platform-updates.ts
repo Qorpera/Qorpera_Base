@@ -500,8 +500,8 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		id: "cofounder-pulse-and-real-codebases",
 		kind: "behaviour",
 		date: "2026-11-26",
-		title: "Co-Founder Pulse, real codebases, and narrated tours",
-		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories via manage_code and build the real application instead of static mocks, check open changes before launching duplicate recovery sessions, and synthesize voice/clips.json with narrate_explainer whenever staging tour.json or scenes.js.",
+		title: "Co-Founder Pulse and real-codebase builds",
+		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
 	},
 ]);
 
