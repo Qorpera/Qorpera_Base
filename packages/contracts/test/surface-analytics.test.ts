@@ -207,6 +207,52 @@ describe("an ask source", () => {
 		expect(refusal(layoutWith([block]))).toContain(problem);
 	});
 
+	it("lets a chart's ask name its look: kind, stacked and unit, in the ask's key order", () => {
+		const ask = { unit: "kr.", stacked: true, kind: "bar", y: "amount", x: "kind", ask: "qorpera/money-kinds" };
+		expect(JSON.stringify(firstBlock(layoutWith([chart(ask)])))).toBe(
+			JSON.stringify({
+				type: "chart",
+				from: { ask: "qorpera/money-kinds", x: "kind", y: "amount", kind: "bar", stacked: true, unit: "kr." },
+			}),
+		);
+		for (const kind of ["line", "area", "bar", "pie", "funnel"]) {
+			expect(firstBlock(layoutWith([chart({ ask: "a/b", x: "d", y: "v", kind })]))).toMatchObject({
+				from: { kind },
+			});
+		}
+	});
+
+	it.each<[string, unknown, string]>([
+		[
+			"a kind it does not draw",
+			chart({ ask: "a/b", x: "d", y: "v", kind: "radar" }),
+			".from.kind must be one of line, area, bar, pie, funnel",
+		],
+		["stacked as text", chart({ ask: "a/b", x: "d", y: "v", stacked: "yes" }), ".from.stacked must be true or false"],
+		[
+			"a long unit",
+			chart({ ask: "a/b", x: "d", y: "v", unit: "kroner-per-day" }),
+			".from.unit is longer than 12 chars",
+		],
+		[
+			"a kind on a figure",
+			{ type: "facts", items: [{ label: "A", from: { ask: "a/b", pick: "v", kind: "bar" } }] },
+			"items[0].from.kind is not taken by a figure's ask; it takes pick",
+		],
+		[
+			"a unit on a table",
+			{ type: "table", from: { ask: "a/b", unit: "kr." } },
+			".from.unit is not taken by table.from's ask",
+		],
+		[
+			"stacked on facts.from",
+			{ type: "facts", from: { ask: "a/b", stacked: true } },
+			".from.stacked is not taken by facts.from's ask",
+		],
+	])("refuses a look %s", (_name, block, problem) => {
+		expect(refusal(layoutWith([block]))).toContain(problem);
+	});
+
 	it("is told apart, split, and never resolved from files", () => {
 		const ask: SurfaceAskSource = { ask: "qorpera/orders-now", pick: "orders_today" };
 		expect(isSurfaceAskSource(ask)).toBe(true);
@@ -560,6 +606,19 @@ describe("the Analytics starter", () => {
 			"Numbers",
 		]);
 		expect(starter.colors).toEqual({ preset: "company" });
+		const looks = Object.fromEntries(
+			asksOf(starter).flatMap(({ ask, holder }) =>
+				holder.type === "chart" ? [[holder.id, ask.kind ?? "line"]] : [],
+			),
+		);
+		expect(looks).toEqual({
+			pulse: "line",
+			"sales-days": "bar",
+			balance: "area",
+			months: "bar",
+			kinds: "bar",
+			visits: "line",
+		});
 		expect(starter.tabs[0]?.blocks[0]).toEqual({ type: "title", id: "reading", line: "reading.json#/line" });
 		expect(starter.tabs[4]?.blocks).toEqual([{ type: "report", id: "questions", match: "questions/*.report.json" }]);
 		expect(starter.tabs[5]?.blocks[0]).toMatchObject({
@@ -601,6 +660,7 @@ describe("the Analytics starter", () => {
 		expect(notes).toContain(SURFACE_ASK_FORMAT);
 		expect(notes).toContain(SURFACE_COLORS_FORMAT);
 		expect(SURFACE_ASK_FORMAT).toContain("as the member viewing it");
+		expect(SURFACE_ASK_FORMAT).toContain("kind line|area|bar|pie|funnel, default line");
 		expect(SURFACE_COLORS_FORMAT).toContain('"preset":"company"|"one-colour"|"calm"|"bright"');
 		const asksOnly = parseSurfaceLayout(layoutWith([{ type: "table", from: { ask: "qorpera/site-pages" } }]));
 		expect(describeSurfaceFormats(asksOnly)).toEqual([SURFACE_ASK_FORMAT]);

@@ -40,7 +40,9 @@ export const SURFACE_ASK_PARAM_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
 export const SURFACE_ASK_MAX_PARAMS = 16;
 export const SURFACE_ASK_PARAM_CHARS = 200;
 export const SURFACE_ASK_MAX_Y = 8;
-export const SURFACE_ASK_FIELDS = ["ask", "params", "pick", "x", "y", "series"] as const;
+export const SURFACE_ASK_FIELDS = ["ask", "params", "pick", "x", "y", "series", "kind", "stacked", "unit"] as const;
+export const SURFACE_ASK_CHART_KINDS = ["line", "area", "bar", "pie", "funnel"] as const;
+export const SURFACE_ASK_UNIT_CHARS = 12;
 export const SURFACE_COLOR_PRESETS = ["company", "one-colour", "calm", "bright"] as const;
 export const SURFACE_COLOR_JOBS = ["main", "compare", "up", "down"] as const;
 export const SURFACE_COLORS_MAX_SERIES = 8;
@@ -95,8 +97,12 @@ export interface SurfaceAskSource {
 	readonly x?: string;
 	readonly y?: string | readonly string[];
 	readonly series?: string;
+	readonly kind?: SurfaceAskChartKind;
+	readonly stacked?: boolean;
+	readonly unit?: string;
 }
 
+export type SurfaceAskChartKind = (typeof SURFACE_ASK_CHART_KINDS)[number];
 export type SurfaceLiveSource = SurfaceSource | SurfaceAskSource;
 export type SurfaceAskUse = "chart" | "figure" | "row" | "rows";
 export type SurfaceColorPreset = (typeof SURFACE_COLOR_PRESETS)[number];
@@ -882,7 +888,7 @@ function parseAskParams(value: unknown, label: string): Record<string, SurfaceAs
 
 function checkAskUse(ask: Record<string, unknown>, label: string, use: SurfaceAskUse): void {
 	const takes: Readonly<Record<SurfaceAskUse, readonly string[]>> = {
-		chart: ["x", "y", "series"],
+		chart: ["x", "y", "series", "kind", "stacked", "unit"],
 		figure: ["pick"],
 		row: [],
 		rows: [],
@@ -893,7 +899,7 @@ function checkAskUse(ask: Record<string, unknown>, label: string, use: SurfaceAs
 		row: "facts.from's ask (the answer's last row)",
 		rows: "table.from's ask (the answer's rows)",
 	};
-	for (const key of ["pick", "x", "y", "series"]) {
+	for (const key of ["pick", "x", "y", "series", "kind", "stacked", "unit"]) {
 		if (ask[key] !== undefined && !takes[use].includes(key)) {
 			fail(
 				`${label}.${key}`,
@@ -932,6 +938,17 @@ function parseAsk(value: Record<string, unknown>, label: string, use: SurfaceAsk
 		ask.y = parseColumn(raw.y, `${label}.y`);
 	}
 	if (raw.series !== undefined) ask.series = parseColumn(raw.series, `${label}.series`);
+	if (raw.kind !== undefined) {
+		if (typeof raw.kind !== "string" || !(SURFACE_ASK_CHART_KINDS as readonly string[]).includes(raw.kind)) {
+			fail(`${label}.kind`, `must be one of ${SURFACE_ASK_CHART_KINDS.join(", ")}`);
+		}
+		ask.kind = raw.kind;
+	}
+	if (raw.stacked !== undefined) {
+		if (typeof raw.stacked !== "boolean") fail(`${label}.stacked`, "must be true or false");
+		ask.stacked = raw.stacked;
+	}
+	if (raw.unit !== undefined) ask.unit = parseText(raw.unit, `${label}.unit`, SURFACE_ASK_UNIT_CHARS, "a unit");
 	checkAskUse(ask, label, use);
 	return ask as unknown as SurfaceAskSource;
 }
@@ -1819,7 +1836,7 @@ const ANALYTICS_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "chart",
 					id: "sales-days",
-					from: { ask: "qorpera/orders-days", x: "day", y: ["sales", "refunds"] },
+					from: { ask: "qorpera/orders-days", x: "day", y: ["sales", "refunds"], kind: "bar" },
 					heading: "Sales and refunds by day",
 					colors: { refunds: "down" },
 				},
@@ -1832,20 +1849,34 @@ const ANALYTICS_STARTER_LAYOUT: SurfaceLayout = {
 				{
 					type: "chart",
 					id: "balance",
-					from: { ask: "qorpera/money-balance", x: "day", y: "balance" },
+					from: { ask: "qorpera/money-balance", x: "day", y: "balance", kind: "area", unit: "kr." },
 					heading: "Money in the bank",
 				},
 				{
 					type: "chart",
 					id: "months",
-					from: { ask: "qorpera/money-months", x: "month", y: ["money_in", "money_out"] },
+					from: {
+						ask: "qorpera/money-months",
+						x: "month",
+						y: ["money_in", "money_out"],
+						kind: "bar",
+						unit: "kr.",
+					},
 					heading: "Money in and out",
 					colors: { money_in: "up", money_out: "down" },
 				},
 				{
 					type: "chart",
 					id: "kinds",
-					from: { ask: "qorpera/money-kinds", x: "kind", y: "amount", series: "direction" },
+					from: {
+						ask: "qorpera/money-kinds",
+						x: "kind",
+						y: "amount",
+						series: "direction",
+						kind: "bar",
+						stacked: true,
+						unit: "kr.",
+					},
 					heading: "This month by kind",
 				},
 			],
@@ -1953,7 +1984,7 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	module: SURFACE_TOKENS_FORMAT,
 };
 
-export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"<database>/<question>","params":{"<name>": text, number, true, false or null},"pick","x","y","series"} (pick, x, y and series name the answer's columns). It is asked live when the page opens, as the member viewing it, so each member sees only what they may read; a question they may not read shows as not shared with them. The database qorpera holds the company's own numbers, e.g. qorpera/orders-days. An ask stands alone, never in a list of sources, and only in chart.from (needs x and y, y one column or 1-${SURFACE_ASK_MAX_Y}; series splits one y by that column's values; a series is named by its y column or its series value), facts items (needs pick: that column of the answer's last row), facts.from (the last row's columns as figures) and table.from (the rows; columns picks their columns).`;
+export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"<database>/<question>","params":{"<name>": text, number, true, false or null},"pick","x","y","series"} (pick, x, y and series name the answer's columns). It is asked live when the page opens, as the member viewing it, so each member sees only what they may read; a question they may not read shows as not shared with them. The database qorpera holds the company's own numbers, e.g. qorpera/orders-days. An ask stands alone, never in a list of sources, and only in chart.from (needs x and y, y one column or 1-${SURFACE_ASK_MAX_Y}; series splits one y by that column's values; a series is named by its y column or its series value; kind ${SURFACE_ASK_CHART_KINDS.join("|")}, default line, stacked true|false and unit <=${SURFACE_ASK_UNIT_CHARS} chars set its look), facts items (needs pick: that column of the answer's last row), facts.from (the last row's columns as figures) and table.from (the rows; columns picks their columns).`;
 
 export const SURFACE_COLORS_FORMAT = `"colors" at the layout's top sets every chart's colours once: {"preset":"company"|"one-colour"|"calm"|"bright"} and jobs {"main","compare","up","down","series":[1-${SURFACE_COLORS_MAX_SERIES}]}, each a colour "#rrggbb" or a binding to one, e.g. "/identity/tokens.json#/colors/sand"; jobs left out come from the preset, company when none is named. company follows the Identity colours, one-colour is shades of main, calm is main and greys, bright is eight colours anyone can tell apart, colour-blind included. A chart block's "colors" gives a series by its name a job (main, compare, up, down, series-1 to series-${SURFACE_COLORS_MAX_SERIES}), a colour or a binding, at most ${SURFACE_CHART_COLORS_MAX}; a color in the chart file itself still wins. Say why in the change when you leave the company colours.`;
 
