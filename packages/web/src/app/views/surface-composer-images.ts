@@ -91,7 +91,6 @@ export class SurfaceComposerImages {
 		return this.#available;
 	}
 
-	/** Opens the file picker, for a control other than `button` (the floating composer's "+" menu). */
 	open(): void {
 		if (this.#available) this.#picker.click();
 	}

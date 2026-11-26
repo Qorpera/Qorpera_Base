@@ -44,7 +44,6 @@ export interface ContextMenuOptions {
 	/** Where the pointer was, in viewport pixels. The menu opens down and to the right of it. */
 	x: number;
 	y: number;
-	/** The menu opens up from (x, y) instead: its bottom edge sits at y (a composer at the foot of the page). */
 	up?: boolean;
 	items: MenuEntry[];
 	/** Gets focus back when the menu closes, and a class while it is open. */
