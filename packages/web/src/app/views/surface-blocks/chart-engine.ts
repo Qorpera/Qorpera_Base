@@ -381,11 +381,7 @@ function buildCartesianOption(doc: SurfaceChartDocument, theme: ChartTheme, cont
 							const y = typeof vals[1] === "number" ? formatChartValue(vals[1], doc.unit) : "";
 							const z = typeof vals[2] === "number" ? ` · ${formatChartValue(vals[2])}` : "";
 							const heading = item.name || item.seriesName || "";
-							return tipElement(
-								heading,
-								[{ label: x, value: `${y}${z}` }],
-								String(item.color ?? theme.accent),
-							);
+							return tipElement(heading, [{ label: x, value: `${y}${z}` }], String(item.color ?? theme.accent));
 						},
 					}
 				: {

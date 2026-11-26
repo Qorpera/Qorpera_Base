@@ -404,13 +404,7 @@ export class SurfaceExplainers {
 		this.#mounted.delete(key);
 	}
 
-	#renderMeta(
-		meta: HTMLElement,
-		item: ExplainerItem,
-		frame: AppFrame,
-		stage: HTMLElement,
-		heading: string,
-	): void {
+	#renderMeta(meta: HTMLElement, item: ExplainerItem, frame: AppFrame, stage: HTMLElement, heading: string): void {
 		const duplicateTitle =
 			heading.trim().length > 0 && heading.trim().toLowerCase() === item.title.trim().toLowerCase();
 		const expand = expandButton(item.title, () =>

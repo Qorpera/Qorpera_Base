@@ -53,23 +53,14 @@ function readTag(
 	readonly name: string;
 	readonly nameAt: number;
 	readonly styles: number[];
-	readonly selfClosing: boolean;
 	readonly end: number;
 } {
 	let at = nameAt;
 	while (at < html.length && !/[\t\n\f\r />]/.test(html[at]!)) at++;
 	const name = html.slice(nameAt, at).toLowerCase();
 	const styles: number[] = [];
-	let selfClosing = false;
 	while (at < html.length && html[at] !== ">") {
-		if (SPACE.test(html[at]!)) {
-			at++;
-			continue;
-		}
-		if (html[at] === "/") {
-			let next = at + 1;
-			while (next < html.length && SPACE.test(html[next]!)) next++;
-			if (html[next] === ">") selfClosing = true;
+		if (SPACE.test(html[at]!) || html[at] === "/") {
 			at++;
 			continue;
 		}
@@ -85,7 +76,7 @@ function readTag(
 		if (quote === '"' || quote === "'") at = past(html, quote, at + 1);
 		else while (at < html.length && !/[\t\n\f\r >]/.test(html[at]!)) at++;
 	}
-	return { name, nameAt, styles, selfClosing, end: Math.min(at + 1, html.length) };
+	return { name, nameAt, styles, end: Math.min(at + 1, html.length) };
 }
 
 function randomNonce(): string {
@@ -111,7 +102,6 @@ function neutralizeStyles(
 ): string {
 	const parts: string[] = [];
 	let copied = 0;
-	let foreignDepth = 0;
 	const rename = (from: number, to: string) => {
 		parts.push(html.slice(copied, from), to);
 		copied = from + "style".length;
@@ -127,15 +117,10 @@ function neutralizeStyles(
 		else if (!closing && !LETTER.test(after)) at = open + 1;
 		else {
 			const tag = readTag(html, open + (closing ? 2 : 1));
-			if (tag.name === "svg" || tag.name === "math") {
-				if (closing) foreignDepth = Math.max(0, foreignDepth - 1);
-				else if (!tag.selfClosing) foreignDepth += 1;
-			}
-			const inForeign = foreignDepth > 0;
 			if (tag.name === "style") rename(tag.nameAt, closing ? "noframes" : `noframes ${styleTagMarker}=""`);
 			if (!closing) for (const attribute of tag.styles) rename(attribute, styleAttrName);
 			at = tag.end;
-			if (!closing && !inForeign && RAW_TEXT.has(tag.name)) {
+			if (!closing && RAW_TEXT.has(tag.name)) {
 				const end = new RegExp(`</${tag.name}(?=[\\t\\n\\f\\r />])`, "gi");
 				end.lastIndex = at;
 				const closeAt = tag.name === "plaintext" ? html.length : (end.exec(html)?.index ?? html.length);
@@ -173,10 +158,7 @@ export function serializeHtmlInert(
 	inert: Pick<InertHtmlParse, "tagAttr" | "styleAttr" | "endNoframesToken">,
 ): string {
 	const raw = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : ""}${page.documentElement.outerHTML}`;
-	const tagRe = new RegExp(
-		`<noframes\\b([^>]*?)\\s+${inert.tagAttr}(?:="")?([^>]*)>([\\s\\S]*?)<\\/noframes>`,
-		"gi",
-	);
+	const tagRe = new RegExp(`<noframes\\b([^>]*?)\\s+${inert.tagAttr}(?:="")?([^>]*)>([\\s\\S]*?)<\\/noframes>`, "gi");
 	const attrRe = new RegExp(`\\b${inert.styleAttr}(?=[\\t\\n\\f\\r =>/])`, "gi");
 	return raw
 		.replace(tagRe, "<style$1$2>$3</style>")

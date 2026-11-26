@@ -332,6 +332,19 @@ describe("an HTML page's frame", () => {
 		const restoredCss = frameParsedPage(inertCss.doc, undefined, inertCss)!;
 		const parsedRestored = new DOMParser().parseFromString(restoredCss, "text/html");
 		expect(parsedRestored.querySelector("svg style")?.textContent).toBe(".a > .b { fill: red; }");
+
+		const foreignObjStyle =
+			'<!doctype html><html><body><svg><foreignObject><style>a::after{content:"</noframes>"}</style></foreignObject></svg></body></html>';
+		const inertForeignObj = parseHtmlInert(foreignObjStyle);
+		const restoredForeignObj = serializeHtmlInert(inertForeignObj.doc, inertForeignObj);
+		expect(restoredForeignObj).toContain('<style>a::after{content:"</noframes>"}</style>');
+
+		const unclosedSvgScript =
+			'<!doctype html><html><body><svg><p><script>const tag = "<style>";</script><style>.ok{color:blue}</style></body></html>';
+		const inertUnclosed = parseHtmlInert(unclosedSvgScript);
+		const restoredUnclosed = serializeHtmlInert(inertUnclosed.doc, inertUnclosed);
+		expect(restoredUnclosed).toContain('<script>const tag = "<style>";</script>');
+		expect(restoredUnclosed).toContain("<style>.ok{color:blue}</style>");
 	});
 
 	it("preserves literal data-qorpera-style text inside inlined scripts when serializing an inert parse", () => {

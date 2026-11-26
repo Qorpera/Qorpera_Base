@@ -103,9 +103,7 @@ export function prepareStudioHtmlPreview(
 		if (!css) continue;
 		const style = doc.createElement("noframes");
 		style.setAttribute(parsed.tagAttr, "");
-		style.textContent = css
-			.replace(/<\/(style)/gi, "<\\/$1")
-			.replace(/<\/noframes/gi, parsed.endNoframesToken);
+		style.textContent = css.replace(/<\/(style)/gi, "<\\/$1").replace(/<\/noframes/gi, parsed.endNoframesToken);
 		link.replaceWith(style);
 		modified = true;
 	}
