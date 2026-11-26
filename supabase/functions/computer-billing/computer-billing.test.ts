@@ -1257,4 +1257,82 @@ describe("Good will", () => {
 		});
 		assert.equal(abortedRes.status, 408);
 	});
+
+	it("syncs renamed company names to Stripe customers on invoices and card setup, skipping No name yet", async () => {
+		const renameId = "30000000-0000-4000-8000-000000000099";
+		const f = goodWill(
+			{
+				"POST /v1/customers/cus_A1": { id: "cus_A1", name: "Solstice Roasters" },
+			},
+			{
+				due: () => ({
+					months: [],
+					nameSyncs: [
+						{ renameId, profileId: COMPANY, customerId: "cus_A1", companyName: "Solstice Roasters" },
+						{
+							renameId: "30000000-0000-4000-8000-000000000098",
+							profileId: COMPANY,
+							customerId: "cus_unnamed",
+							companyName: "No name yet",
+						},
+					],
+				}),
+				name_synced: () => ({ synced: true }),
+			},
+		);
+		const invoiceRes = await handleComputerBilling(
+			request("good-will-invoices", {}, { "x-qorpera-billing-key": BILLING_KEY }),
+			f.deps,
+		);
+		assert.equal(invoiceRes.status, 200);
+		assert.deepEqual(f.posts, [
+			{
+				path: "/v1/customers/cus_A1",
+				form: { name: "Solstice Roasters" },
+				idempotencyKey: `qorpera-good-will-name-${renameId}-test`,
+			},
+		]);
+		assert.deepEqual(f.doorCalls.at(-1), {
+			method: "name_synced",
+			args: { profileId: COMPANY, renameId, livemode: false },
+		});
+
+		const cardSync = goodWill(
+			{
+				"POST /v1/customers/cus_A1": { id: "cus_A1", name: "Solstice Roasters" },
+				"POST /v1/checkout/sessions": { id: "cs_sync", url: "https://checkout.stripe.com/c/pay/cs_sync" },
+			},
+			{
+				card_begin: () => ({
+					setupId: "5e700000-0000-4000-8000-000000000099",
+					customerId: "cus_A1",
+					companyName: "Solstice Roasters",
+					nameSyncRenameId: renameId,
+				}),
+				name_synced: () => ({ synced: true }),
+			},
+		);
+		const cardRes = await handleComputerBilling(request("good-will-card", { profileId: COMPANY }), cardSync.deps);
+		assert.equal(cardRes.status, 200);
+		assert.equal(cardSync.posts[0]?.path, "/v1/customers/cus_A1");
+		assert.equal(cardSync.posts[0]?.form.name, "Solstice Roasters");
+		assert.ok(cardSync.doorCalls.some((call) => call.method === "name_synced" && call.args.renameId === renameId));
+
+		const unnamedFirst = goodWill(
+			{
+				"POST /v1/customers": { id: "cus_unnamed_new" },
+				"POST /v1/checkout/sessions": { id: "cs_unnamed", url: "https://checkout.stripe.com/c/pay/cs_unnamed" },
+			},
+			{
+				card_begin: () => ({
+					setupId: "5e700000-0000-4000-8000-000000000098",
+					customerId: null,
+					companyName: "No name yet",
+					nameSyncRenameId: null,
+				}),
+			},
+		);
+		await handleComputerBilling(request("good-will-card", { profileId: COMPANY }), unnamedFirst.deps);
+		assert.equal("name" in (unnamedFirst.posts[0]?.form ?? {}), false);
+	});
 });

@@ -1028,7 +1028,7 @@ it("points the Co-Founder at the company folder's own files (P28b)", () => {
 		"Your job is to hire, lead, and keep the whole picture clear — domain work (research, product, design, engineering, finance, sales, legal) belongs to the owners you hire",
 		"As soon as you know what the company is about, hire the initial team to shape the vision with you: a customer researcher, a market watcher, and a strategist (first assignments due within a day or two), plus a Brand owner for the logo and look",
 		"the official logo QorperaOS/brand/logo.svg",
-		"leaves the company's name alone because Qorpera cannot yet propagate a rename through the registry, mail, and bank",
+		"keeps brand assets and wordmarks aligned whenever founders rename the company",
 		"brand, suppliers and stock",
 		"Set up your daily planning routine.",
 		"Each agent works for one member whose ChatGPT plan carries its work",

@@ -45,6 +45,11 @@ function string(value: unknown): string | undefined {
 	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function usableCompanyName(value: unknown): string | undefined {
+	const name = string(value)?.trim();
+	return name && name.toLowerCase() !== "no name yet" ? name : undefined;
+}
+
 function object(value: unknown): Json | undefined {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Json) : undefined;
 }
@@ -63,14 +68,30 @@ async function companyCustomer(
 	companyName: string | undefined,
 	member: { email: string },
 	known: string | undefined,
+	nameSyncRenameId: string | undefined,
 	deps: GoodWillDependencies,
 ): Promise<string> {
-	if (known) return known;
+	const name = usableCompanyName(companyName);
+	if (known) {
+		if (nameSyncRenameId && name) {
+			await deps.stripe.post(
+				`/v1/customers/${encodeURIComponent(known)}`,
+				{ name },
+				`qorpera-good-will-name-${nameSyncRenameId}-${deps.livemode ? "live" : "test"}`,
+			);
+			await deps.goodWill.call("name_synced", {
+				profileId,
+				renameId: nameSyncRenameId,
+				livemode: deps.livemode,
+			});
+		}
+		return known;
+	}
 	const customer = await deps.stripe.post(
 		"/v1/customers",
 		{
 			email: member.email,
-			...(companyName ? { name: companyName } : {}),
+			...(name ? { name } : {}),
 			"metadata[qorpera_profile_id]": profileId,
 			"metadata[qorpera_kind]": GOOD_WILL_KIND,
 		},
@@ -98,7 +119,14 @@ export async function startGoodWillCard(
 	if (string(begin.refused)) return { status: 409, body: { refused: begin.refused } };
 	const setupId = string(begin.setupId);
 	if (!setupId) throw new Error("The card page could not begin");
-	const customerId = await companyCustomer(profileId, string(begin.companyName), member, string(begin.customerId), deps);
+	const customerId = await companyCustomer(
+		profileId,
+		string(begin.companyName),
+		member,
+		string(begin.customerId),
+		string(begin.nameSyncRenameId),
+		deps,
+	);
 	const metadata: Record<string, string> = {
 		qorpera_kind: GOOD_WILL_KIND,
 		qorpera_setup_id: setupId,
@@ -140,9 +168,31 @@ const GOOD_WILL_BUDGET_MS = 45_000;
 export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<Json> {
 	const due = await deps.goodWill.call("due", { livemode: deps.livemode });
 	const rawMonths = Array.isArray(due.months) ? due.months : [];
+	const rawNameSyncs = Array.isArray(due.nameSyncs) ? due.nameSyncs : [];
 	const maxBatch = deps.maxBatch ?? MAX_GOOD_WILL_BATCH;
 	const maxStatusChecks = deps.maxStatusChecks ?? MAX_GOOD_WILL_STATUS_CHECKS;
 	const now = deps.now ?? Date.now;
+	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
+	const problems: string[] = [];
+	for (const value of rawNameSyncs) {
+		if (now() >= deadline) break;
+		const item = object(value);
+		const renameId = string(item?.renameId);
+		const profileId = string(item?.profileId);
+		const customerId = string(item?.customerId);
+		const name = usableCompanyName(item?.companyName);
+		if (!renameId || !UUID.test(renameId) || !profileId || !UUID.test(profileId) || !customerId || !name) continue;
+		try {
+			await deps.stripe.post(
+				`/v1/customers/${encodeURIComponent(customerId)}`,
+				{ name },
+				`qorpera-good-will-name-${renameId}-${deps.livemode ? "live" : "test"}`,
+			);
+			await deps.goodWill.call("name_synced", { profileId, renameId, livemode: deps.livemode });
+		} catch (error) {
+			problems.push(`name-sync ${profileId}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
 	const withoutInvoice: unknown[] = [];
 	const withInvoice: unknown[] = [];
 	for (const value of rawMonths) {
@@ -156,11 +206,9 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 		if (offset > 0) withInvoice.push(...withInvoice.splice(0, offset));
 	}
 	const months = [...withoutInvoice, ...withInvoice];
-	const deadline = now() + (deps.budgetMs ?? GOOD_WILL_BUDGET_MS);
 	let processed = 0;
 	let statusChecks = 0;
 	let invoiced = 0;
-	const problems: string[] = [];
 	for (const value of months) {
 		if (processed >= maxBatch || statusChecks >= maxStatusChecks || now() >= deadline) break;
 		const month = object(value);
@@ -228,7 +276,7 @@ export async function sendGoodWillInvoices(deps: GoodWillDependencies): Promise<
 						auto_advance: "false",
 						"automatic_tax[enabled]": "true",
 						pending_invoice_items_behavior: "exclude",
-						description: `Goodwill ${period}${string(month?.companyName) ? ` · ${string(month?.companyName)}` : ""}`,
+						description: `Goodwill ${period}${usableCompanyName(month?.companyName) ? ` · ${usableCompanyName(month?.companyName)}` : ""}`,
 						...Object.fromEntries(Object.entries(metadata).map(([name, text]) => [`metadata[${name}]`, text])),
 					},
 					`${key}-invoice`,

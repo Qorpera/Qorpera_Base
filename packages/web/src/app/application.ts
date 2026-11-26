@@ -1021,6 +1021,26 @@ export function mountApplication(
 					if (!valid.has(profileId)) stopWarmCompany(profileId);
 				}
 			}
+			const activeControllers = new Set<CompanyController>(warmCompanies.values());
+			if (company) activeControllers.add(company);
+			for (const ctrl of activeControllers) {
+				const fresh = profiles.find((item) => item.profileId === ctrl.profile.profileId);
+				if (!fresh) continue;
+				const prev = ctrl.profile;
+				if (
+					fresh.profileName !== prev.profileName ||
+					fresh.environmentName !== prev.environmentName ||
+					fresh.nameChangedAt !== prev.nameChangedAt
+				) {
+					ctrl.store.set({ profile: fresh });
+					const ctrlSurfaces = surfacesOf(ctrl);
+					ctrlSurfaces?.setCompanyName(fresh.profileName);
+					if (fresh.profileName !== prev.profileName || fresh.nameChangedAt !== prev.nameChangedAt) {
+						wordmarks.forget(fresh.profileId);
+						ctrlSurfaces?.refreshIdentityFiles();
+					}
+				}
+			}
 			settings?.updateProfiles(profiles);
 			render();
 		});
@@ -1629,6 +1649,7 @@ export function mountApplication(
 						folderListingCaches.get(controller)?.cache.clear();
 						invalidateShellSearchFiles(profile.profileId);
 					}
+					if (resource === "company-profile") void hub.refreshProfilesAfter();
 				});
 				controller.signal.addEventListener("abort", stopSurfaceHints, { once: true });
 				void surfaces.load();

@@ -256,6 +256,7 @@ import {
 import {
 	type CompanyInterfacesContext,
 	extractStrategyInterfaceSummary,
+	parseCompanyInterfacesMeta,
 	parseCompanyInterfacesResponse,
 	parseSurfaceConflictDetails,
 	parseSurfaceTurnOpenChanges,
@@ -2252,20 +2253,21 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			return null;
 		}
 		const interfaces = parseCompanyInterfacesResponse(raw);
-		if (interfaces.length === 0) return null;
+		const company = parseCompanyInterfacesMeta(raw);
+		if (interfaces.length === 0 && !company) return null;
 		const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
 		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
 		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 		if (!strategyRoot && !identityRoot) {
-			return { interfaces, strategySummary: null, identitySummary: null };
+			return { interfaces, company, strategySummary: null, identitySummary: null };
 		}
 		let folderClient: CloudCompanyFolderClient;
 		try {
 			folderClient = getFolder();
 		} catch (error) {
 			if (signal.aborted) throw error;
-			return { interfaces, strategySummary: null, identitySummary: null };
+			return { interfaces, company, strategySummary: null, identitySummary: null };
 		}
 		const readOptionalText = async (path: string, maxBytes: number): Promise<string | null> => {
 			try {
@@ -2284,6 +2286,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		]);
 		return {
 			interfaces,
+			company,
 			strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
 			identitySummary: identityBrief,
 		};

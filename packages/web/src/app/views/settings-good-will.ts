@@ -140,11 +140,15 @@ export class GoodWillView {
 		}
 	}
 
+	update(): void {
+		if (!this.#lifetime.signal.aborted) this.#draw();
+	}
+
 	#draw(): void {
 		const goodWill = this.#goodWill;
 		// Hidden until the first answer, so a cloud without good will never shows it.
 		this.el.hidden = this.#error === "" || (!goodWill && this.#error === undefined);
-		const name = goodWill?.companyName || this.#companyName();
+		const name = this.#companyName() || goodWill?.companyName || "";
 		const head = [
 			h("h2", null, goodWillName()),
 			h(

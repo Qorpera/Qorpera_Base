@@ -27,6 +27,7 @@ export interface HostedProfile {
 	role: HostedProfileRole;
 	contractVersion: number;
 	createdAt: string;
+	nameChangedAt?: string;
 }
 
 export const HOSTED_FRIEND_STATUSES = ["pending", "accepted"] as const;

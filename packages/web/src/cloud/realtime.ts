@@ -6,6 +6,7 @@ export type RealtimeResource =
 	| "staff"
 	| "access"
 	| "company-file"
+	| "company-profile"
 	| "sidebar"
 	| "member-chats"
 	| "machines"
@@ -33,6 +34,7 @@ const HINT_EVENTS: readonly RealtimeResource[] = [
 	"staff",
 	"access",
 	"company-file",
+	"company-profile",
 	"sidebar",
 	"member-chats",
 	"machines",

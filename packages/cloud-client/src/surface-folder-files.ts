@@ -8,6 +8,7 @@ export interface SurfaceFolderEntry<TFile extends SurfaceFolderReadableFile = Su
 	readonly path: string;
 	readonly kind: string;
 	readonly file: TFile | null;
+	readonly updatedAt?: string;
 }
 
 export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = SurfaceFolderReadableFile> {
@@ -28,6 +29,7 @@ export interface SurfaceFolderReader<TFile extends SurfaceFolderReadableFile = S
 export interface SurfaceFolderContents {
 	readonly files: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, StudioBinaryRef>>;
+	readonly updatedAt?: Readonly<Record<string, string>>;
 }
 
 const STUDIO_TEXT_FILE = /\.(?:json|md|markdown|txt|toml|ya?ml|css|m?js|svg|html?)$/i;
@@ -99,8 +101,10 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	const rootPages = await Promise.all(uniqueRoots.map((root) => listFolder(root)));
 	if (signal.aborted) return EMPTY_FOLDER;
 	const subfolders: string[] = [];
-	const candidates: { readonly path: string; readonly file: TFile }[] = [];
+	const candidates: { readonly path: string; readonly file: TFile; readonly updatedAt?: string }[] = [];
 	const binaries: Record<string, StudioBinaryRef> = {};
+	const updatedAt: Record<string, string> = {};
+	let hasUpdatedAt = false;
 	let binaryCount = 0;
 	const seenPaths = new Set<string>();
 	const collectEntries = (entries: readonly SurfaceFolderEntry<TFile>[], folders: string[] | null) => {
@@ -122,6 +126,10 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 			) {
 				seenPaths.add(entry.path);
 				binaries[entry.path] = entry.file;
+				if (typeof entry.updatedAt === "string" && entry.updatedAt) {
+					updatedAt[entry.path] = entry.updatedAt;
+					hasUpdatedAt = true;
+				}
 				binaryCount++;
 				continue;
 			}
@@ -135,7 +143,11 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 				continue;
 			}
 			seenPaths.add(entry.path);
-			candidates.push({ path: entry.path, file: entry.file });
+			candidates.push({
+				path: entry.path,
+				file: entry.file,
+				...(typeof entry.updatedAt === "string" && entry.updatedAt ? { updatedAt: entry.updatedAt } : {}),
+			});
 		}
 	};
 	for (const entries of rootPages) collectEntries(entries, subfolders);
@@ -161,7 +173,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		level = [...new Set(deeper)].slice(0, STUDIO_MAX_SUBFOLDERS - listed);
 	}
 	candidates.sort((a, b) => studioFilePriority(a.path) - studioFilePriority(b.path) || a.file.bytes - b.file.bytes);
-	const selected: { readonly path: string; readonly file: TFile }[] = [];
+	const selected: { readonly path: string; readonly file: TFile; readonly updatedAt?: string }[] = [];
 	let totalBytes = 0;
 	for (const item of candidates) {
 		if (selected.length >= STUDIO_MAX_FILES) break;
@@ -169,7 +181,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 		selected.push(item);
 		totalBytes += item.file.bytes;
 	}
-	if (selected.length === 0) return { files: {}, binaries };
+	if (selected.length === 0) return { files: {}, binaries, ...(hasUpdatedAt ? { updatedAt } : {}) };
 	const decoder = new TextDecoder();
 	const files: Record<string, string> = {};
 	let next = 0;
@@ -180,7 +192,13 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 			const item = selected[index]!;
 			try {
 				const bytes = await folder.readFile(item.file, signal, STUDIO_MAX_FILE_BYTES, { cached: true });
-				if (!signal.aborted) files[item.path] = decoder.decode(bytes);
+				if (!signal.aborted) {
+					files[item.path] = decoder.decode(bytes);
+					if (item.updatedAt) {
+						updatedAt[item.path] = item.updatedAt;
+						hasUpdatedAt = true;
+					}
+				}
 			} catch {
 				if (signal.aborted) return;
 				unread?.(item.path);
@@ -189,7 +207,7 @@ export async function readSurfaceFolderFiles<TFile extends SurfaceFolderReadable
 	};
 	const workers = Math.min(STUDIO_READ_CONCURRENCY, selected.length);
 	await Promise.all(Array.from({ length: workers }, () => worker()));
-	return { files, binaries };
+	return { files, binaries, ...(hasUpdatedAt ? { updatedAt } : {}) };
 }
 
 export function surfaceFolderRoots(surface: { readonly folderRoot: string | null; readonly slug: string }): string[] {

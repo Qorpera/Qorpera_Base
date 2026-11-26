@@ -1,5 +1,6 @@
 import { osRelative } from "@qorpera/cloud-client/company-state-files";
 import { isUuidAnyCase } from "@qorpera/contracts";
+import { CLOUD_COMPANY_RENAME_WAKE_SCHEMA, parseCompanyRenameWakePayload } from "./cloud-company-rename-wake.ts";
 import { CloudControlRpcRefused, cloudControlPause } from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
@@ -61,6 +62,7 @@ const HUMAN_TASK_STATUSES: ReadonlySet<string> = new Set([
 ]);
 const WAKE_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
 /** A light ask's wake payload (deploy/first-node/RUNTIME-LIGHT-ASK.md; migration 20260930761000). */
+export { CLOUD_COMPANY_RENAME_WAKE_SCHEMA };
 export const CLOUD_LIGHT_ASK_WAKE_SCHEMA = "qorpera.light-ask-wake/v1";
 export const CLOUD_SURFACE_SESSION_WAKE_SCHEMA = "qorpera.surface-session-wake/v1";
 /** A todo's or a worker's key, as manage_worker takes it. */
@@ -251,7 +253,8 @@ export interface CloudWakeEnvelope {
 			| "data-change"
 			| "human-task"
 			| "light-ask"
-			| "surface-session";
+			| "surface-session"
+			| "company-rename";
 		id: string;
 		occurrenceKey: string;
 	}>;
@@ -936,6 +939,16 @@ export function parseCloudWakeEnvelope(value: unknown, identity: CloudNativeTool
 		)
 			throw new Error("Invalid surface session wake");
 		wakeUuid(session.surfaceId);
+	} else if (wake.kind === "agent" && source.kind === "company-rename") {
+		parseCompanyRenameWakePayload(payloadBody, wakeUuid(source.id));
+		if (
+			source.occurrenceKey.toLowerCase() !== `company-rename:${uuidKey(source.id)}` ||
+			parentRunId !== null ||
+			wake.routine !== null ||
+			(audience.sessionId === null) !== (policy.final === "forbidden") ||
+			(audience.sessionId !== null && policy.initial !== "optional")
+		)
+			throw new Error("Invalid company rename wake");
 	} else if (wake.kind === "agent" && source.kind === "human-task") {
 		// A human task the agent asked for (H2c): someone else changed it, or its due passed. No parent run and no message:
 		// the task itself, when the run may read its file, says what to do next.

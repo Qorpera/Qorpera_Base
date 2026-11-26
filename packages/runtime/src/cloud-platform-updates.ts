@@ -496,6 +496,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Posts about interfaces: two lines and their figures",
 		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
 	},
+	{
+		id: "company-name-changes",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Company renames wake the Co-Founder",
+		text: "When a founder renames the company in Settings, Qorpera updates the company profile, vision heading, and canonical brand name fields, then wakes you automatically. Search the company with company_search using judgment so common words and historical records stay untouched, note the former name with update_memory, launch staged interface sessions for the wordmark, website, and any affected surfaces, and raise an ask_member card or short note for remaining founder steps like a new email handle, website address, or external registrations.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

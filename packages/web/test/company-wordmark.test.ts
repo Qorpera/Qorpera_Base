@@ -1182,4 +1182,58 @@ describe("sidepanel company selector wordmark", () => {
 		await Promise.resolve();
 		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
 	});
+
+	it("suppresses pre-rename base wordmarks until refreshed while keeping staged previews", () => {
+		const staleIdentity: CompanyIdentityFiles = {
+			...identityFiles({
+				"identity/wordmark.svg": LIGHT_SVG,
+				"identity/wordmark-dark.svg": DARK_SVG,
+			}),
+			updatedAt: {
+				"identity/wordmark.svg": "2026-11-26T08:00:00.000Z",
+				"identity/wordmark-dark.svg": "2026-11-26T08:00:00.000Z",
+			},
+		};
+		const suppressed = resolveCompanyWordmarks(staleIdentity, "2026-11-26T09:00:00.000Z");
+		expect(suppressed.light).toBeUndefined();
+		expect(suppressed.dark).toBeUndefined();
+
+		const refreshed = resolveCompanyWordmarks(
+			{
+				...staleIdentity,
+				updatedAt: {
+					"identity/wordmark.svg": "2026-11-26T09:05:00.000Z",
+					"identity/wordmark-dark.svg": "2026-11-26T08:00:00.000Z",
+				},
+			},
+			"2026-11-26T09:00:00.000Z",
+		);
+		expect(refreshed.light?.kind).toBe("svg");
+		expect(refreshed.dark).toBeUndefined();
+
+		const stagedPreview = resolveCompanyWordmarks(
+			{
+				...staleIdentity,
+				files: {
+					"identity/wordmark.svg": LIGHT_SVG_B,
+					"identity/wordmark-dark.svg": DARK_SVG,
+				},
+			},
+			"2026-11-26T09:00:00.000Z",
+		);
+		expect(stagedPreview.light?.kind).toBe("svg");
+		expect(stagedPreview.dark).toBeUndefined();
+
+		const cache = new CompanyWordmarkCache("test-rename");
+		cache.setAccount(userA.id);
+		cache.set(profileA.profileId, { light: svgUrl(LIGHT_SVG), dark: svgUrl(DARK_SVG) }, "live", undefined, {
+			lightAt: "2026-11-26T08:00:00.000Z",
+			darkAt: "2026-11-26T09:05:00.000Z",
+		});
+		expect(cache.getFor(profileA.profileId, "2026-11-26T09:00:00.000Z")).toEqual({
+			dark: svgUrl(DARK_SVG),
+		});
+		expect(cache.getFor(profileA.profileId, "2026-11-26T10:00:00.000Z")).toBeUndefined();
+		cache.dispose();
+	});
 });

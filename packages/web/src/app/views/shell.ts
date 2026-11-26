@@ -1472,7 +1472,12 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// Co-Founder duplicated them, so a surface-first rail folds it (and its grid button) away visually.
 	const surfaces = surfacesOf(company);
 	container.classList.toggle("has-surface-rail", surfaces !== undefined);
-	parts.companyWordmark.update(company.profile.profileName, surfaces, surfacesDisabledOf(company));
+	parts.companyWordmark.update(
+		company.profile.profileName,
+		surfaces,
+		surfacesDisabledOf(company),
+		company.profile.nameChangedAt,
+	);
 	const searchLabel = `${t("Search")} (${shortcutLabel()})`;
 	parts.searchToggle.setAttribute("aria-label", t("Search"));
 	parts.searchToggle.setAttribute("aria-keyshortcuts", SEARCH_SHORTCUT);

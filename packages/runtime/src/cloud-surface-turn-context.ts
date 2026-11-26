@@ -226,10 +226,34 @@ export interface CompanyInterfaceSummary {
 	readonly isGlobal: boolean;
 }
 
+export interface CompanyIdentityMetadata {
+	readonly id?: string | null;
+	readonly name: string;
+	readonly previousName?: string | null;
+	readonly renamedAt?: string | null;
+}
+
 export interface CompanyInterfacesContext {
 	readonly interfaces: readonly CompanyInterfaceSummary[];
+	readonly company?: CompanyIdentityMetadata | null;
 	readonly strategySummary?: string | null;
 	readonly identitySummary?: string | null;
+}
+
+export function parseCompanyInterfacesMeta(raw: unknown): CompanyIdentityMetadata | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const rec = raw as Record<string, unknown>;
+	if (rec.schema !== "qorpera.company-interfaces/v1") return null;
+	const company = rec.company;
+	if (!company || typeof company !== "object" || Array.isArray(company)) return null;
+	const item = company as Record<string, unknown>;
+	const name = typeof item.name === "string" ? item.name.trim() : "";
+	if (!name) return null;
+	const previousName =
+		typeof item.previousName === "string" && item.previousName.trim() ? item.previousName.trim() : null;
+	const renamedAt = typeof item.renamedAt === "string" && item.renamedAt.trim() ? item.renamedAt.trim() : null;
+	const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : null;
+	return { id, name, previousName, renamedAt };
 }
 
 export function parseCompanyInterfacesResponse(raw: unknown): CompanyInterfaceSummary[] {
@@ -317,11 +341,20 @@ export function buildCompanyInterfacesSection(
 	if (!ctx) return null;
 	const strategySummary = ctx.strategySummary?.trim() || null;
 	const identitySummary = options.includeIdentitySummary === false ? null : ctx.identitySummary?.trim() || null;
-	if (ctx.interfaces.length === 0 && !strategySummary && !identitySummary) return null;
+	const companyName = ctx.company?.name?.trim() || null;
+	if (ctx.interfaces.length === 0 && !strategySummary && !identitySummary && !companyName) return null;
 	const lines: string[] = [
 		"## Company Interfaces",
 		"This company's active Interfaces are its live source of truth. Every Interface below is mounted live under `/company` on this machine, so inspect them directly rather than guessing.",
 	];
+	if (companyName) {
+		const prev = ctx.company?.previousName?.trim();
+		const formerly =
+			prev && prev.toLowerCase() !== "no name yet" && prev !== companyName ? ` (formerly ${prev})` : "";
+		lines.push(
+			`Company name: **${companyName}**${formerly}. Always use this live company name rather than older names found in existing files or templates.`,
+		);
+	}
 	if (options.hasCompanySearch || options.hasReadOnlyData) {
 		const tools: string[] = [];
 		if (options.hasCompanySearch) {

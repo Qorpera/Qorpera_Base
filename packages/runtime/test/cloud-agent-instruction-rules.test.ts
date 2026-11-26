@@ -1247,8 +1247,8 @@ const RULES: [string, string, string, Run[]][] = [
 	],
 	[
 		"7",
-		"the name stays",
-		"leaves the company's name alone because Qorpera cannot yet propagate a rename through the registry, mail, and bank",
+		"brand aligns on rename",
+		"keeps brand assets and wordmarks aligned whenever founders rename the company",
 		FOUNDING,
 	],
 	["7", "learn a little at a time", "1 or 2 natural questions per exchange", FOUNDING],

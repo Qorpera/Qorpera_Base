@@ -6,6 +6,7 @@ import { isUuid, isUuidAnyCase, type JsonValue } from "@qorpera/contracts";
 import type { CloudAgentHead } from "./cloud-agent-head.ts";
 import { CLOUD_FOLDER_LINK_EXAMPLE } from "./cloud-agent-mouth.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import { COMPANY_RENAME_WAKE_PROTOCOL } from "./cloud-company-rename-wake.ts";
 import { type CloudAgentMemoryBlock, unavailableCloudAgentMemory } from "./cloud-memory-tools.ts";
 import {
 	CLOUD_NATIVE_TOOL_AUTHORITY_SCHEMA,
@@ -490,6 +491,7 @@ const WAKE_PROTOCOL = {
 	humanTask: [
 		"\n# This run: a human task\nA human task you follow changed or passed its due date. wake.payload.reason says what happened: done or declined by the person; accepted, returned, or cancelled by a member; person (reassigned); handoff or assigned (now yours); or overdue. wake.payload.task gives its current state and path — read the file and folder first in case it changed again. Follow the human-task skill: verify proof on a done task and accept it, or return it with a reason and new due date; find another route if declined; if overdue, remind, adjust the due date, hand it on, or tell the Co-Founder. Update the waiting todo. When delivery allows, tell the member in your own thread only what they need to know; otherwise finish silently.",
 	],
+	companyRename: COMPANY_RENAME_WAKE_PROTOCOL,
 } as const;
 
 const CONTINUATION_PROTOCOL =
@@ -552,6 +554,7 @@ function wakeProtocol(wake: CloudWakeEnvelope | null): readonly string[] {
 	if (wake.source.kind === "machine-event") return WAKE_PROTOCOL.machineEvent;
 	if (wake.source.kind === "machine-checkin") return WAKE_PROTOCOL.machineCheckin;
 	if (wake.source.kind === "human-task") return WAKE_PROTOCOL.humanTask;
+	if (wake.source.kind === "company-rename") return WAKE_PROTOCOL.companyRename;
 	return wake.source.kind === "office-activation" ? WAKE_PROTOCOL.officeActivation : WAKE_PROTOCOL.coworker;
 }
 

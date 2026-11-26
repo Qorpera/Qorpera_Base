@@ -1047,4 +1047,158 @@ describe("a member's change set to a folder-v2 company", () => {
 		expect(new TextDecoder().decode(fallback)).toBe("canonical read fast path\n");
 		expect(fetched).toEqual([nonCanonicalHash, sample.file.fileSha256]);
 	});
+
+	it("kicks qorpera_company_rename_wake_step best-effort only after vision commits", async () => {
+		const wakeKicks: Array<Record<string, unknown>> = [];
+		let failWake = false;
+		const publisherCalls: string[] = [];
+		const manifests = new Map<string, string>();
+		let intents = 0;
+		const g = await gateway({
+			followUp: () => ({ schema: "qorpera.folder-follow-up-commit/v1", settled: true }),
+		});
+		const server = createServer((req, res) => {
+			serveMemberFolderCommit(req, res, {
+				authority: {
+					member: async () => ({
+						schema: "qorpera.member-folder-writer/v1",
+						actor: { kind: "member", userId },
+						profileId,
+					}),
+					publisher: async (method: string, args: Record<string, unknown>) => {
+						publisherCalls.push(method);
+						if (method === "qorpera_folder_open_upload") {
+							const intentId = `34000000-0000-4000-8000-${String(++intents).padStart(12, "0")}`;
+							manifests.set(intentId, args.p_manifest as string);
+							return {
+								schema: "qorpera.folder-upload/v1",
+								intentId,
+								manifestSha256: digest(args.p_manifest as string),
+								expiresAt: "x",
+								present: [],
+							};
+						}
+						if (method === "qorpera_folder_authorize_object_upload") {
+							return { schema: "qorpera.folder-object-upload/v1", profileId };
+						}
+						if (method === "qorpera_folder_confirm_object") {
+							return { schema: "qorpera.folder-object/v1", sha256: args.p_sha256, bytes: args.p_bytes };
+						}
+						if (method === "qorpera_folder_seal_upload") {
+							const manifest = manifests.get(args.p_intent as string)!;
+							const parsed = JSON.parse(manifest);
+							return {
+								schema: "qorpera.folder-seal/v1",
+								state: "sealed",
+								intentId: args.p_intent,
+								file: {
+									manifestSha256: digest(manifest),
+									fileSha256: parsed.fileSha256,
+									bytes: parsed.bytes,
+									mediaType: parsed.mediaType,
+									executable: parsed.executable,
+								},
+							};
+						}
+						if (method === "qorpera_folder_commit") {
+							return {
+								schema: "qorpera.folder-commit/v1",
+								commitId: "34000000-0000-4000-8000-0000000000c9",
+								seq: 10,
+								replay: false,
+								units: [{ unit: 1, outcome: "saved" }],
+							};
+						}
+						if (method === "qorpera_folder_follow_up_commit") {
+							return { schema: "qorpera.folder-follow-up-commit/v1", settled: true };
+						}
+						if (method === "qorpera_company_rename_wake_step") {
+							wakeKicks.push(args);
+							if (failWake) throw new ObjectDependencyError(404);
+							return { schema: "qorpera.company-rename-wakes/v1", state: "done", woken: 1 };
+						}
+						throw new Error(`unexpected ${method}`);
+					},
+				} as never,
+				followUps: {
+					publisher: async (method: string, args: Record<string, unknown>) => {
+						publisherCalls.push(method);
+						if (method === "qorpera_folder_follow_up_commit") {
+							return { schema: "qorpera.folder-follow-up-commit/v1", settled: true };
+						}
+						if (method === "qorpera_company_rename_wake_step") {
+							wakeKicks.push(args);
+							if (failWake) throw new ObjectDependencyError(404);
+							return { schema: "qorpera.company-rename-wakes/v1", state: "done", woken: 1 };
+						}
+						throw new Error(`unexpected ${method}`);
+					},
+				} as never,
+				store: {
+					async get() {
+						throw new Error("unused");
+					},
+				},
+				replication: {
+					async uploadWithAuthority(_p, _h, _b, cb) {
+						await cb.authorize();
+						await cb.confirm();
+						return "stored" as const;
+					},
+				},
+			}).catch((error: unknown) => {
+				res.writeHead(error instanceof ObjectDependencyError ? error.status : 500);
+				res.end();
+			});
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const { port } = server.address() as { port: number };
+		const post = (units: unknown[], key: string) =>
+			fetch(`http://127.0.0.1:${port}/v1/member-folder-commits/${environmentId}`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${memberToken}`, "content-type": "application/json" },
+				body: JSON.stringify(request(units, key)),
+			});
+
+		const nonVisionRes = await post(
+			[{ op: "write", path: "notes/hello.md", text: "Hello\n" }],
+			"web:34000000-0000-4000-8000-0000000000e2",
+		);
+		expect(nonVisionRes.status).toBe(200);
+		expect(wakeKicks).toHaveLength(0);
+
+		const visionRes = await post(
+			[
+				{
+					op: "write",
+					path: "QorperaOS/vision/vision.md",
+					text: "# Solstice\n\nNew name.\n",
+					expectedVersion: version,
+				},
+			],
+			"web:34000000-0000-4000-8000-0000000000e3",
+		);
+		expect(visionRes.status).toBe(200);
+		expect(wakeKicks).toEqual([{ p_environment_id: environmentId }]);
+		expect(publisherCalls.indexOf("qorpera_folder_follow_up_commit")).toBeLessThan(
+			publisherCalls.indexOf("qorpera_company_rename_wake_step"),
+		);
+
+		failWake = true;
+		const tolerantRes = await post(
+			[
+				{
+					op: "write",
+					path: "QorperaOS/vision/vision.md",
+					text: "# Solstice 2\n\nNew name.\n",
+					expectedVersion: version,
+				},
+			],
+			"web:34000000-0000-4000-8000-0000000000e4",
+		);
+		expect(tolerantRes.status).toBe(200);
+		expect(wakeKicks).toHaveLength(2);
+		expect(g.calls).toHaveLength(0);
+	});
 });
