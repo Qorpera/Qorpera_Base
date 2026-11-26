@@ -68,6 +68,23 @@ describe("mandatory coding Git parser containment", () => {
 		);
 		await expect(run({ ...command, cwd: host })).rejects.toThrow("PATH_INVALID");
 	});
+	it.runIf(linux)("caps Git's processes inside its own user namespace, so the host user's other tasks never stop it", async () => {
+		const command = await fixture();
+		// A stand-in bubblewrap shows the limit bubblewrap itself runs under and the command it would run.
+		const stand = join(command.scratchRoot, "bwrap");
+		await writeFile(
+			stand,
+			'#!/bin/sh\ngrep "^Max processes" /proc/self/limits\nwhile [ "$1" != "--" ]; do shift; done\nshift\necho "$@"\n',
+			{ mode: 0o755 },
+		);
+		const [outside, inside] = (await createCodingBrokerGitRunner({ bubblewrapPath: stand })(command)).trim().split("\n");
+		expect(outside).not.toMatch(/^Max processes\s+512\s/);
+		expect(inside).toBe("/usr/bin/prlimit --nproc=512 -- /usr/bin/git --version");
+		const limits = "!grep '^Max processes' /proc/self/limits";
+		expect(
+			await createCodingBrokerGitRunner(sandbox)({ ...command, args: ["-c", `alias.limits=${limits}`, "limits"] }),
+		).toMatch(/^Max processes\s+512\s+512\s/);
+	});
 	it.runIf(linux)("streams stdin and stdout if asked, up to the caller's limit, and keeps the default's", async () => {
 		const command = await fixture();
 		const run = createCodingBrokerGitRunner(sandbox);
