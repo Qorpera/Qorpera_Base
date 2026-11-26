@@ -44,7 +44,7 @@
 	box-shadow: 0 1px 2px rgb(18 18 17 / 5%), 0 8px 22px -10px rgb(18 18 17 / 16%);
 }
 .surface-notch:has(> .surface-notch-pill:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
-.surface-notch-pill, .surface-pill, .surface-notch-show {
+.surface-notch-pill, .surface-pill {
 	position: absolute; top: 0; left: 50%; translate: -50% 0; display: inline-flex; align-items: center;
 	width: max-content; white-space: nowrap; transition: opacity var(--motion-fast) ease;
 }
@@ -55,14 +55,7 @@
 }
 .surface-notch-pill[hidden] { display: none; }
 .surface-pill[hidden] { display: none; }
-.surface-notch:has(> .surface-notch-show:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
-.surface-notch-show {
-	justify-content: center; width: 44px; height: 28px; padding: 0; border: 0; background: none;
-	color: var(--text-muted); cursor: default; outline: none; transition: color var(--motion-fast) ease;
-}
-.surface-notch-show:hover { color: var(--text); }
-.surface-notch-show[hidden] { display: none; }
-.surface-notch-show .icon { width: 15px; height: 15px; }
+.surface-notch[hidden] { display: none; }
 .surface-hide-panels {
 	display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 999px;
 	background: none; color: var(--text-muted); cursor: default;
@@ -761,6 +754,28 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-send.is-ready { background: var(--primary); color: var(--on-primary); }
 .surface-send:disabled { cursor: default; }
 .surface-send .icon { width: 16px; height: 16px; stroke-width: 2.2; }
+.surface-show-panels, .surface-compose-open {
+	display: grid; place-items: center; align-self: center; width: 34px; height: 34px; flex: none; padding: 0; border: 0; border-radius: 50%;
+	background: none; color: var(--text-muted); cursor: default;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.surface-show-panels:hover, .surface-compose-open:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.surface-show-panels .icon { width: 17px; height: 17px; }
+.surface-compose-open .icon { width: 15px; height: 15px; }
+.surface-show-panels[hidden], .surface-compose-open[hidden] { display: none; }
+.surface-page.is-panels-hidden .surface-composer { transition: width var(--motion-slow) var(--ease-spring); }
+.surface-page.is-panels-hidden .surface-chips:not(:has(.surface-chip.is-pointing)) { display: none; }
+.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) {
+	width: 78px; transition: width var(--motion-base) var(--ease-in) 180ms;
+}
+.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-composer-shell {
+	align-items: center; gap: 2px; padding: 3px;
+}
+.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
+	:is(.surface-point, .surface-attach, .surface-input, .surface-send) { display: none; }
+.surface-page.is-panels-hidden .surface-composer:not(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held)
+	:is(.surface-show-panels, .surface-compose-open) { width: 30px; height: 30px; }
+.surface-page.is-panels-hidden .surface-composer:is(:hover, :has(:is(.surface-input, .surface-point, .surface-attach, .surface-send):focus), .is-held) .surface-compose-open { display: none; }
 
 /* ---- the pushed session side panel -------------------------------------------- */
 .surface-drawer {

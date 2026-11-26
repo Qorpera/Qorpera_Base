@@ -190,7 +190,7 @@ export class SurfaceView {
 		"button",
 		{
 			type: "button",
-			class: "surface-notch-show",
+			class: "surface-show-panels",
 			"aria-label": t("Show panels"),
 			title: t("Show panels"),
 			"data-act": "show-panels",
@@ -198,7 +198,17 @@ export class SurfaceView {
 		},
 		icon("show"),
 	);
-	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar, this.#showPanels);
+	readonly #composeOpen = h(
+		"button",
+		{
+			type: "button",
+			class: "surface-compose-open",
+			"aria-label": t("Describe a change"),
+			"data-act": "open-composer",
+		},
+		icon("edit"),
+	);
+	readonly #notch = h("div", { class: "surface-notch" }, this.#notchPill, this.#notchBar);
 	readonly #panelToggle = h("button", {
 		type: "button",
 		class: "surface-panel-toggle",
@@ -233,7 +243,15 @@ export class SurfaceView {
 	);
 	readonly #input = h("textarea", { class: "surface-input", rows: 1 });
 	readonly #send = h("button", { type: "submit", class: "surface-send" }, icon("send"));
-	readonly #shell = h("div", { class: "surface-composer-shell" }, this.#point, this.#input, this.#send);
+	readonly #shell = h(
+		"div",
+		{ class: "surface-composer-shell" },
+		this.#showPanels,
+		this.#composeOpen,
+		this.#point,
+		this.#input,
+		this.#send,
+	);
 	readonly #composer = h("form", { class: "surface-composer" }, this.#chips, this.#targetRow, this.#shell);
 	readonly #images: SurfaceComposerImages;
 	readonly #toast = h("div", { class: "surface-toast-host", role: "status" });
@@ -563,8 +581,9 @@ export class SurfaceView {
 		const open = !hidden && (this.#barOpen || this.#barPinned);
 		this.el.classList.toggle("is-panels-hidden", hidden);
 		this.#notch.classList.toggle("is-open", open);
-		this.#notch.classList.toggle("is-panels-hidden", hidden);
+		this.#notch.hidden = hidden;
 		this.#showPanels.hidden = !hidden;
+		this.#composeOpen.hidden = !hidden;
 		this.#notchPill.hidden = hidden || this.#barPinned;
 		this.#notchPill.inert = open;
 		this.#notchPill.setAttribute("aria-expanded", String(open));
@@ -575,7 +594,7 @@ export class SurfaceView {
 
 	#setPanelsHidden(hidden: boolean): void {
 		if (this.#panelsHidden === hidden) return;
-		const hadFocus = this.#notch.contains(document.activeElement);
+		const hadFocus = this.#notch.contains(document.activeElement) || this.#showPanels === document.activeElement;
 		this.#panelsHidden = hidden;
 		this.#barOpen = false;
 		this.#barShown = "";
@@ -588,11 +607,8 @@ export class SurfaceView {
 	}
 
 	#fitNotch(): void {
-		const layer = this.#panelsHidden
-			? this.#showPanels
-			: this.#notch.classList.contains("is-open")
-				? this.#notchBar
-				: this.#notchPill;
+		if (this.#panelsHidden) return;
+		const layer = this.#notch.classList.contains("is-open") ? this.#notchBar : this.#notchPill;
 		const width = layer.offsetWidth;
 		const height = layer.offsetHeight;
 		if (width > 0 && height > 0) {
@@ -1815,12 +1831,13 @@ export class SurfaceView {
 			chips.push(
 				h(
 					"span",
-					{ class: "surface-chip" },
+					{ class: "surface-chip is-running" },
 					h("span", { class: "surface-state is-running" }),
 					running === 1 ? t("1 session running") : t("{count} sessions running in parallel", { count: running }),
 				),
 			);
 		this.#chips.replaceChildren(...chips);
+		this.#paintFold();
 		if (this.#target) {
 			const label = this.#target.componentHint?.trim() || this.#target.tagName.toLowerCase();
 			const snippet = this.#target.textSnippet.trim();
@@ -1903,6 +1920,7 @@ export class SurfaceView {
 		this.#localFrame?.contentWindow?.postMessage({ type: SURFACE_INSPECTOR_MODE_MESSAGE, active }, "*");
 		this.el.classList.toggle("is-pointing", active);
 		if (surface) this.#drawChrome(surface);
+		this.#paintFold();
 	}
 
 	#onPick(target: PointToChangeTarget): void {
@@ -1913,6 +1931,7 @@ export class SurfaceView {
 		this.el.classList.toggle("is-pointing", false);
 		const surface = this.surface;
 		if (surface) this.#drawChrome(surface);
+		this.#paintFold();
 		this.focus();
 	}
 
@@ -1989,6 +2008,16 @@ export class SurfaceView {
 
 	#syncSend(): void {
 		this.#send.classList.toggle("is-ready", this.#input.value.trim().length > 0 && !this.#images.problem);
+		this.#paintFold();
+	}
+
+	#paintFold(): void {
+		const held =
+			this.#input.value.trim().length > 0 ||
+			this.#pointing ||
+			Boolean(this.#target) ||
+			this.#images.files.length > 0;
+		this.#composer.classList.toggle("is-held", held);
 	}
 
 	async #submit(): Promise<void> {
@@ -2101,6 +2130,11 @@ export class SurfaceView {
 				return;
 			case "show-panels":
 				this.#setPanelsHidden(false);
+				return;
+			case "open-composer":
+				this.#composer.classList.add("is-held");
+				this.#input.focus({ preventScroll: true });
+				this.#paintFold();
 				return;
 			case "point":
 				this.#setPointing(!this.#pointing);
