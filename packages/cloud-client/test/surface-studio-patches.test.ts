@@ -795,10 +795,7 @@ describe("studio surface folder_patch overlay engine", () => {
 					{ changeId: cTokB, ops: [writeOp("tokens.json", '{"accent":"#222"}\n')] },
 					{
 						changeId: cWordmark,
-						ops: [
-							writeOp("wordmark.svg", "<svg>b</svg>\n"),
-							writeOp("wordmark-dark.svg", "<svg>b-dark</svg>\n"),
-						],
+						ops: [writeOp("wordmark.svg", "<svg>b</svg>\n"), writeOp("wordmark-dark.svg", "<svg>b-dark</svg>\n")],
 					},
 				],
 				"identity",
