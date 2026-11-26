@@ -489,6 +489,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Members can rename a website's address",
 		text: "Owners and admins can now edit a website's platform subdomain from its address menu while keeping its base domain locked. Because a site's name can change after it is first published, do not rely on a remembered address from older notes when updating or taking down a site with publish_site or unpublish_site; read the site's current name first so updates reach the existing website instead of creating a new one.",
 	},
+	{
+		id: "surface-posts-in-two-lines",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Posts about interfaces: two lines and their figures",
+		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
