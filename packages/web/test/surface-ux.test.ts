@@ -124,7 +124,8 @@ describe("session crew", () => {
 		expect(crewLook(session([], { state: "running" }))).toMatchObject({ tone: "working", activity: "Working" });
 		expect(crewLook(session([], { state: "needs_input" }))).toMatchObject({ activity: "Idle", label: "Paused" });
 		expect(crewLook(session([], { state: "needs_input" })).ask).toBeUndefined();
-		expect(crewLook(session([], { state: "failed" }))).toMatchObject({ tone: "attention", ask: "bang" });
+		expect(crewLook(session([], { state: "failed" }))).toMatchObject({ tone: "attention" });
+		expect(crewLook(session([], { state: "failed" })).ask).toBeUndefined();
 		expect(crewLook(session(["conflicted"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["staged"]))).toMatchObject({ tone: "ready", activity: "Idle", alive: true });
 		expect(crewLook(session(["merged"]))).toMatchObject({ tone: "merged" });

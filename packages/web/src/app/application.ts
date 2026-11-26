@@ -2619,7 +2619,6 @@ export function mountApplication(
 				() => (settings ? settings.focus() : main.focus({ preventScroll: true })),
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
-				api,
 				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
 				(count) => {
 					if (disposed || notices !== createdNotices || count === shownAccountAlerts) return;

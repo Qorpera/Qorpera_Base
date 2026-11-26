@@ -299,6 +299,15 @@ function messageRow(
 			{ class: "surface-message is-session", title: fmtTime(message.createdAt) },
 			cachedMarkdown(message.text),
 		);
+	if (message.authorKind === "agent") {
+		const label = message.authorLabel?.trim() || t("Co-Founder");
+		return h(
+			"div",
+			{ class: "surface-message-group is-agent" },
+			h("span", { class: "surface-message-author" }, label),
+			h("p", { class: "surface-message is-member is-agent", title: fmtTime(message.createdAt) }, message.text),
+		);
+	}
 	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
 
@@ -2239,6 +2248,7 @@ export class SurfaceSessionDrawer {
 				const id = `msg:${session.id}:${message.id}`;
 				const contentKey = JSON.stringify([
 					message.authorKind,
+					message.authorLabel ?? "",
 					message.text,
 					message.createdAt,
 					message.changeId ?? "",

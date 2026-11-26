@@ -327,7 +327,6 @@ describe("company notices", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			onCountChange,
 		);
 		document.body.append(view.el);
@@ -372,7 +371,6 @@ describe("company notices", () => {
 				undefined,
 				undefined,
 				named ? (staffAgentId) => names[staffAgentId] : undefined,
-				undefined,
 				named ? (userId) => names[userId] : undefined,
 			);
 			document.body.append(view.el);
@@ -471,7 +469,6 @@ describe("company notices", () => {
 				undefined,
 				undefined,
 				undefined,
-				undefined,
 				named ? (userId) => names[userId] : undefined,
 			);
 			document.body.append(view.el);
@@ -511,15 +508,8 @@ describe("company notices", () => {
 			})),
 		};
 		const lifetime = new AbortController();
-		const view = new ExecutionNotices(
-			client,
-			lifetime.signal,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			(count) => counts.push(count),
+		const view = new ExecutionNotices(client, lifetime.signal, undefined, undefined, undefined, undefined, (count) =>
+			counts.push(count),
 		);
 		document.body.append(view.el);
 		cleanup.push(() => view.dispose());

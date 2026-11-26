@@ -515,7 +515,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-26",
 		title: "Silent coding, quiet approvals and pull-only Surfaces",
-		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace commands run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
+		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace file edits run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
 	},
 ]);
 

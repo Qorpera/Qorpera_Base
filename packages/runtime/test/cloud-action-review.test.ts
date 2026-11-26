@@ -28,6 +28,8 @@ import {
 	siteAccessCheck,
 	workerWorkCheck,
 } from "@qorpera/runtime/cloud-action-review";
+import { cloudClaudeFileAction } from "@qorpera/runtime/cloud-claude-home-review";
+import { cloudHomeFileAction, cloudHomePatchAction } from "@qorpera/runtime/cloud-codex-home";
 import type { CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { CloudControlRpcEnded, CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
@@ -72,10 +74,29 @@ describe("which calls are reviewed", () => {
 		["update_skill", { action: "delete", name: "call-the-bank" }, "internal"],
 		["update_skill", { action: "create", name: "call-the-bank" }, "internal"],
 		["update_skill", { action: "update", name: "call-the-bank" }, "internal"],
-		["home_change", { changes: [{ machinePath: "/company/src/app.ts", kind: "update" }] }, "internal"],
+		["home_change", { changes: [{ path: "src/app.ts", kind: "update" }] }, "internal"],
 		["home_change", { changes: [{ machinePath: "/tmp/build/out.txt", kind: "create" }] }, "internal"],
-		["home_change", { changes: [{ machinePath: "/company/QorperaOS/rules/r.md", kind: "update" }] }, "external"],
+		["home_change", { changes: [{ path: "QorperaOS/rules/r.md", kind: "update" }] }, "external"],
+		["home_change", { changes: [{ path: "../etc/passwd", kind: "update" }] }, "external"],
+		[
+			"home_change",
+			{ changes: [{ machinePath: "/tmp/a.txt", kind: "update", to: "QorperaOS/rules/r.md" }] },
+			"external",
+		],
+		["home_change", { changes: [{ machinePath: "/tmp/a.txt", kind: "update", to: "/etc/hosts" }] }, "external"],
+		["home_change", { changes: [{ machinePath: "/tmp/a.txt", kind: "update", to: "src/moved.txt" }] }, "internal"],
 		["home_change", { changes: [{ machinePath: "/etc/hosts", kind: "update" }] }, "external"],
+		["home_change", { method: "fs/writeFile", paths: ["/company/src/app.ts"], recursive: false }, "internal"],
+		["home_change", { method: "fs/remove", paths: ["/company"], recursive: true }, "external"],
+		[
+			"home_change",
+			{ method: "fs/rename", paths: ["/tmp/a.txt", "/company/QorperaOS/agents/a/agent.md"], recursive: false },
+			"external",
+		],
+		["home_change", { tool: "Write", path: "src/app.ts" }, "internal"],
+		["home_change", { tool: "Edit", machinePath: "/tmp/out.txt" }, "internal"],
+		["home_change", { tool: "Write", path: "QorperaOS/connections/c.md" }, "external"],
+		["home_change", { tool: "Edit", machinePath: "/etc/hosts" }, "external"],
 		["computer_shell", { action: { kind: "shell", command: "ls" } }, "external"],
 		// The shell reaches the internet: starting a command and typing into one are reviewed.
 		["computer_shell", { action: { kind: "shell", action: "start", command: "ls", waitMs: 0 } }, "external"],
@@ -263,6 +284,105 @@ describe("which calls are reviewed", () => {
 		expect(cloudActionEffect(tool("gmail_search_messages", "connector"), {}, effects)).toBe("read");
 		expect(cloudActionEffect(tool("gmail_send_message", "connector"), {}, effects)).toBe("external");
 		expect(cloudActionEffect(tool("gmail_unknown", "connector"), {}, effects)).toBe("external");
+	});
+
+	it("classifies real Codex and Claude home_change action shapes", () => {
+		const machine = { id: RULE, name: "home" };
+		const effectOf = (action: { tool: string; argumentsText: string }) =>
+			cloudActionEffect(tool(action.tool), JSON.parse(action.argumentsText) as JsonValue);
+
+		expect(
+			effectOf(
+				cloudHomePatchAction(machine, {
+					callId: "c1",
+					changes: [{ path: "/company/src/app.ts", kind: "update", diff: "+x" }],
+					paths: new Set(["/company/src/app.ts"]),
+				}),
+			),
+		).toBe("internal");
+		expect(
+			effectOf(
+				cloudHomePatchAction(machine, {
+					callId: "c2",
+					changes: [{ path: "/tmp/out.txt", kind: "create", movePath: "/company/src/out.txt", diff: "" }],
+					paths: new Set(["/tmp/out.txt", "/company/src/out.txt"]),
+				}),
+			),
+		).toBe("internal");
+		expect(
+			effectOf(
+				cloudHomePatchAction(machine, {
+					callId: "c3",
+					changes: [{ path: "/tmp/out.txt", kind: "update", movePath: "/company/QorperaOS/rules/r.md", diff: "" }],
+					paths: new Set(["/tmp/out.txt", "/company/QorperaOS/rules/r.md"]),
+				}),
+			),
+		).toBe("external");
+		expect(
+			effectOf(
+				cloudHomePatchAction(machine, {
+					callId: "c4",
+					changes: [{ path: "/company/src/app.ts", kind: "update", movePath: "/etc/hosts", diff: "" }],
+					paths: new Set(["/company/src/app.ts", "/etc/hosts"]),
+				}),
+			),
+		).toBe("external");
+		expect(effectOf(cloudHomeFileAction(machine, "fs/writeFile", { path: "/company/src/a.ts" }, "f1"))).toBe(
+			"internal",
+		);
+		expect(
+			effectOf(
+				cloudHomeFileAction(
+					machine,
+					"fs/rename",
+					{ sourcePath: "/tmp/a.ts", destinationPath: "/company/QorperaOS/agents/ada/agent.md" },
+					"f2",
+				),
+			),
+		).toBe("external");
+		expect(effectOf(cloudHomeFileAction(machine, "fs/remove", { path: "/company", recursive: true }, "f3"))).toBe(
+			"external",
+		);
+		expect(
+			effectOf(
+				cloudClaudeFileAction(machine, {
+					id: "cl1",
+					tool: "Write",
+					path: "/company/src/a.ts",
+					input: { content: "hi" },
+				}),
+			),
+		).toBe("internal");
+		expect(
+			effectOf(
+				cloudClaudeFileAction(machine, {
+					id: "cl2",
+					tool: "Edit",
+					path: "/tmp/scratch.txt",
+					input: { old_string: "a", new_string: "b" },
+				}),
+			),
+		).toBe("internal");
+		expect(
+			effectOf(
+				cloudClaudeFileAction(machine, {
+					id: "cl3",
+					tool: "Write",
+					path: "/company/QorperaOS/connections/github.md",
+					input: { content: "x" },
+				}),
+			),
+		).toBe("external");
+		expect(
+			effectOf(
+				cloudClaudeFileAction(machine, {
+					id: "cl4",
+					tool: "Write",
+					path: "/etc/hosts",
+					input: { content: "x" },
+				}),
+			),
+		).toBe("external");
 	});
 
 	it("lets input to the run's own offline commands through, and reviews input to any other (F3 4d)", () => {

@@ -1,5 +1,14 @@
 set local lock_timeout = '3s';
 
+alter table public.qorpera_surface_sessions
+	add column turn_member_initiated boolean;
+
+alter table public.qorpera_surface_session_messages
+	add column author_label text check (author_label is null or char_length(author_label) <= 120),
+	drop constraint qorpera_surface_session_messages_author_kind_check,
+	add constraint qorpera_surface_session_messages_author_kind_check
+		check (author_kind in ('member', 'session', 'system', 'note', 'agent'));
+
 create table public.qorpera_surface_escalations (
 	id uuid primary key default extensions.gen_random_uuid(),
 	profile_id uuid not null references public.qorpera_profiles(id) on delete cascade,
@@ -9,6 +18,7 @@ create table public.qorpera_surface_escalations (
 	summary text not null check (char_length(summary) <= 4000),
 	question jsonb,
 	wake_id uuid references public.qorpera_wake_occurrences(id) on delete set null,
+	resolved_at timestamptz,
 	created_at timestamptz not null default clock_timestamp()
 );
 create index qorpera_surface_escalations_session_idx
@@ -110,7 +120,8 @@ begin
 		update public.qorpera_surface_escalations
 		set wake_id = v_wake_id
 		where id = v_esc.id;
-	exception when insufficient_privilege then
+	exception when others then
+		raise warning 'qorpera_surface_emit_cofounder_escalation failed for escalation %: % (%)', v_esc.id, sqlerrm, sqlstate;
 		return v_esc.id;
 	end;
 
@@ -132,6 +143,7 @@ declare
 	v_peek public.qorpera_surface_sessions%rowtype;
 	v_session public.qorpera_surface_sessions%rowtype;
 	v_body text := btrim(coalesce(p_message, ''));
+	v_origin_label text := left(coalesce(nullif(btrim(coalesce(p_origin_label, '')), ''), 'Co-Founder'), 120);
 begin
 	if p_profile_id is null or p_session_id is null or char_length(v_body) < 1 or char_length(v_body) > 16000 then
 		raise exception 'Surface session steering requires sessionId and message (1..16000 chars)' using errcode = '22023';
@@ -145,6 +157,17 @@ begin
 	end if;
 	if v_peek.state = 'discarded' or coalesce(v_peek.is_internal, false) then
 		raise exception 'Cannot steer a discarded or internal surface session' using errcode = '55000';
+	end if;
+	if v_peek.state not in ('needs_input', 'failed')
+		and not exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.session_id = v_peek.id and ch.status = 'conflicted'
+		)
+		and not exists (
+			select 1 from public.qorpera_surface_escalations e
+			where e.session_id = v_peek.id and e.resolved_at is null
+		) then
+		raise exception 'Only paused, failed, or conflicted surface sessions can be steered' using errcode = '55000';
 	end if;
 
 	if v_peek.worker_id is not null then
@@ -161,6 +184,17 @@ begin
 	if v_session.state = 'discarded' or coalesce(v_session.is_internal, false) then
 		raise exception 'Cannot steer a discarded or internal surface session' using errcode = '55000';
 	end if;
+	if v_session.state not in ('needs_input', 'failed')
+		and not exists (
+			select 1 from public.qorpera_surface_changes ch
+			where ch.session_id = v_session.id and ch.status = 'conflicted'
+		)
+		and not exists (
+			select 1 from public.qorpera_surface_escalations e
+			where e.session_id = v_session.id and e.resolved_at is null
+		) then
+		raise exception 'Only paused, failed, or conflicted surface sessions can be steered' using errcode = '55000';
+	end if;
 
 	if p_change_id is not null and not exists (
 		select 1 from public.qorpera_surface_changes ch
@@ -171,8 +205,14 @@ begin
 		raise exception 'Surface change not found in session' using errcode = '22023';
 	end if;
 
-	insert into public.qorpera_surface_session_messages(profile_id, session_id, author_kind, author_user_id, body, change_id)
-	values (v_session.profile_id, p_session_id, 'member', null, v_body, p_change_id);
+	insert into public.qorpera_surface_session_messages(
+		profile_id, session_id, author_kind, author_user_id, author_label, body, change_id
+	)
+	values (v_session.profile_id, p_session_id, 'agent', null, v_origin_label, v_body, p_change_id);
+
+	update public.qorpera_surface_escalations
+	set resolved_at = clock_timestamp()
+	where session_id = p_session_id and resolved_at is null;
 
 	update public.qorpera_surface_sessions
 	set
@@ -182,6 +222,8 @@ begin
 		lease_expires_at = null,
 		lease_token = null,
 		wake_id = case when worker_id is not null then null else wake_id end,
+		turn_requested_by_user_id = null,
+		turn_member_initiated = false,
 		retry_count = 0,
 		updated_at = clock_timestamp()
 	where id = p_session_id
@@ -204,6 +246,15 @@ from pg_proc p
 where p.pronamespace = 'public'::regnamespace
 	and p.oid = any(array[
 		'public.qorpera_record_runtime_observation(uuid,jsonb)'::regprocedure,
+		'public.qorpera_surface_turn_requester(public.qorpera_surface_sessions)'::regprocedure,
+		'public.qorpera_surface_turn_member_initiated(public.qorpera_surface_sessions)'::regprocedure,
+		'public.qorpera_surface_session_json(public.qorpera_surface_sessions)'::regprocedure,
+		'public.qorpera_reply_surface_session(uuid,text,boolean,uuid)'::regprocedure,
+		'public.qorpera_surface_reply_target_change_id(uuid)'::regprocedure,
+		'public.qorpera_surface_build_fix_take(public.qorpera_surface_sessions,uuid,integer)'::regprocedure,
+		'public.qorpera_surface_enqueue_session_run(uuid,uuid)'::regprocedure,
+		'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
+		'public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure,
 		'public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure,
 		'public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)'::regprocedure,
 		'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
@@ -232,6 +283,125 @@ end $$;
 select pg_temp.surf_esc_patch('public.qorpera_record_runtime_observation(uuid,jsonb)', array[
 	$old$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',/* 20260930913000 */'inspect_surface','stage_surface_artifact','compose_surface_layout',$old$,
 	$new$'surface_reply','surface_ask',/* 20260930887000 */'narrate_explainer',/* 20260930913000 */'inspect_surface','stage_surface_artifact','compose_surface_layout',/* WHY: 20260930922000 admits Co-Founder surface steering tool observations */'steer_surface_session',$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_turn_requester(public.qorpera_surface_sessions)', array[
+	$old$select coalesce(p_session.turn_requested_by_user_id, p_session.created_by_user_id)$old$,
+	$new$select case
+		when p_session.turn_member_initiated is false then null::uuid /* WHY: 20260930922000 clears member requester on agent-steered turns */
+		else coalesce(p_session.turn_requested_by_user_id, p_session.created_by_user_id)
+	end$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_turn_member_initiated(public.qorpera_surface_sessions)', array[
+	$old$	select p_session.id is not null and (
+		p_session.turn_requested_by_user_id is not null
+		or (p_session.origin_kind in ('member', 'point_to_change', 'cross_surface') and p_session.created_by_user_id is not null)
+	)$old$,
+	$new$	select p_session.id is not null and (
+		case
+			when p_session.turn_member_initiated is not null then p_session.turn_member_initiated /* WHY: 20260930922000 honors explicit agent-steered vs member-reply turns */
+			else p_session.turn_requested_by_user_id is not null
+				or (p_session.origin_kind in ('member', 'point_to_change', 'cross_surface') and p_session.created_by_user_id is not null)
+		end
+	)$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_session_json(public.qorpera_surface_sessions)', array[
+	$old$				'authorUserId', m.author_user_id,$old$,
+	$new$				'authorUserId', m.author_user_id,
+				'authorLabel', m.author_label, /* WHY: 20260930922000 exposes agent steering attribution */$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_reply_surface_session(uuid,text,boolean,uuid)', array[
+	$old$		wake_id = case when worker_id is not null then null else wake_id end,
+		turn_requested_by_user_id = v_user_id,
+		retry_count = 0,$old$,
+	$new$		wake_id = case when worker_id is not null then null else wake_id end,
+		turn_requested_by_user_id = v_user_id,
+		turn_member_initiated = true, /* WHY: 20260930922000 restores member-initiated status on member replies */
+		retry_count = 0,$new$,
+	$old$	return public.qorpera_surface_session_json(v_session);$old$,
+	$new$	update public.qorpera_surface_escalations
+	set resolved_at = clock_timestamp()
+	where session_id = p_session_id and resolved_at is null;
+
+	return public.qorpera_surface_session_json(v_session);$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_reply_target_change_id(uuid)', array[
+	$old$	from public.qorpera_surface_session_messages m
+	where m.session_id = p_session_id
+		and m.author_kind = 'member'$old$,
+	$new$	from public.qorpera_surface_session_messages m
+	where m.session_id = p_session_id
+		and m.author_kind in ('member', 'agent') /* WHY: 20260930922000 honors agent steering change targeting */$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_build_fix_take(public.qorpera_surface_sessions,uuid,integer)', array[
+	$old$where m.session_id = p_session.id and m.author_kind = 'member' and m.created_at > v_handback.queued_at$old$,
+	$new$where m.session_id = p_session.id and m.author_kind in ('member', 'agent') /* WHY: 20260930922000 lets agent steering supersede queued build fixes */ and m.created_at > v_handback.queued_at$new$,
+	$old$			where m.session_id = p_session.id and m.author_kind = 'member'
+				and m.created_at > coalesce(($old$,
+	$new$			where m.session_id = p_session.id and m.author_kind in ('member', 'agent')
+				and m.created_at > coalesce(($new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_enqueue_session_run(uuid,uuid)', array[
+	$old$	else
+		v_requester := coalesce(
+			(select m.user_id from public.qorpera_profile_members m
+				where m.profile_id = v_peek.profile_id and m.user_id = v_peek.created_by_user_id),$old$,
+	$new$	else
+		v_requester := coalesce(
+			(select m.user_id from public.qorpera_profile_members m
+				where m.profile_id = v_peek.profile_id and m.user_id = public.qorpera_surface_turn_requester(v_peek)), /* WHY: 20260930922000 avoids billing the prior member on agent-steered turns */$new$,
+	$old$				where m.session_id = v_session.id
+					and m.author_kind = 'member'
+					and m.created_at > v_worker.updated_at$old$,
+	$new$				where m.session_id = v_session.id
+					and m.author_kind in ('member', 'agent')
+					and m.created_at > v_worker.updated_at$new$,
+	$old$			where m.session_id = v_session.id
+				and m.author_kind = 'member'
+				and ($old$,
+	$new$			where m.session_id = v_session.id
+				and m.author_kind in ('member', 'agent')
+				and ($new$,
+	$old$				where m.session_id = v_session.id and m.author_kind = 'member'
+				order by m.created_at desc, m.id desc$old$,
+	$new$				where m.session_id = v_session.id and m.author_kind in ('member', 'agent')
+				order by m.created_at desc, m.id desc$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)', array[
+	$old$'sponsor', public.qorpera_surface_resolve_sponsor(c.profile_id, coalesce(c.turn_requested_by_user_id, c.created_by_user_id)),$old$,
+	$new$'sponsor', public.qorpera_surface_resolve_sponsor(c.profile_id, case when c.turn_member_initiated is false then null::uuid else coalesce(c.turn_requested_by_user_id, c.created_by_user_id) end), /* WHY: 20260930922000 avoids billing the prior member on agent-steered turns */$new$
+]);
+
+select pg_temp.surf_esc_patch('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)', array[
+	$old$select m.id, m.created_at, m.author_kind, m.author_user_id, m.profile_id, btrim(m.body) as body,$old$,
+	$new$select m.id, m.created_at, m.author_kind, m.author_user_id, m.author_label, m.profile_id, btrim(m.body) as body,$new$,
+	$old$				and (
+					m.author_kind in ('member', 'session')$old$,
+	$new$				and (
+					m.author_kind in ('member', 'agent', 'session') /* WHY: 20260930922000 includes agent steering messages in session context */$new$,
+	$old$				case
+					when s.author_kind = 'session' then 'You'
+					when s.author_kind = 'system' then 'System'
+					else coalesce(nullif(left(regexp_replace(btrim(coalesce(pm.display_name, '')), '\s+', ' ', 'g'), 80), ''),
+						'A teammate')
+				end$old$,
+	$new$				case
+					when s.author_kind = 'session' then 'You'
+					when s.author_kind = 'system' then 'System'
+					when s.author_kind = 'agent' then coalesce(nullif(left(regexp_replace(btrim(coalesce(s.author_label, '')), '\s+', ' ', 'g'), 80), ''), 'Co-Founder')
+					else coalesce(nullif(left(regexp_replace(btrim(coalesce(pm.display_name, '')), '\s+', ' ', 'g'), 80), ''),
+						'A teammate')
+				end$new$,
+	$old$		'originKind', v_session.origin_kind,$old$,
+	$new$		'originKind', v_session.origin_kind,
+		'memberInitiated', public.qorpera_surface_turn_member_initiated(v_session),$new$
 ]);
 
 select pg_temp.surf_esc_patch('public.qorpera_surface_summary_json(public.qorpera_surfaces)', array[
@@ -316,6 +486,14 @@ select pg_temp.surf_esc_patch('public.qorpera_pin_wake_occurrence()', array[
 	$old$	v_surf_worker public.qorpera_runtime_workers%rowtype;$old$,
 	$new$	v_surf_worker public.qorpera_runtime_workers%rowtype;
 	v_surf_esc public.qorpera_surface_escalations%rowtype; /* WHY: 20260930922000 pins surface-escalation wakes */$new$,
+	$old$		else
+			new.requested_by_user_id := coalesce(
+				(select m.user_id from public.qorpera_profile_members m
+					where m.profile_id = new.profile_id and m.user_id = v_surf_session.created_by_user_id),$old$,
+	$new$		else
+			new.requested_by_user_id := coalesce(
+				(select m.user_id from public.qorpera_profile_members m
+					where m.profile_id = new.profile_id and m.user_id = public.qorpera_surface_turn_requester(v_surf_session)),$new$,
 	$old$	elsif new.wake_kind = 'agent' and new.source_kind = 'human-task' then$old$,
 	$new$	elsif new.wake_kind = 'agent' and new.source_kind = 'surface-escalation' then
 		select * into v_surf_esc from public.qorpera_surface_escalations e
@@ -460,6 +638,7 @@ begin
 		select distinct pg_get_userbyid(proowner)
 		from pg_proc
 		where oid = any(array[
+			'public.qorpera_reply_surface_session(uuid,text,boolean,uuid)'::regprocedure,
 			'public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)'::regprocedure,
 			'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
 			'public.qorpera_pin_wake_occurrence()'::regprocedure,
@@ -472,7 +651,7 @@ begin
 		if v_owner in ('anon', 'authenticated', 'service_role', 'qorpera_secret_broker') then
 			raise exception '20260930922000: patched function has an API owner: %', v_owner;
 		end if;
-		execute format('grant select on public.qorpera_surface_escalations to %I', v_owner);
+		execute format('grant select, update on public.qorpera_surface_escalations to %I', v_owner);
 		execute format(
 			'grant execute on function public.qorpera_surface_escalation_ready(), '
 			|| 'public.qorpera_surface_emit_cofounder_escalation(uuid, text, text, jsonb) to %I',

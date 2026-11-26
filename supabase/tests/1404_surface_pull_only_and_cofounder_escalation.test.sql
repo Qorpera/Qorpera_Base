@@ -58,7 +58,13 @@ declare
 	v_sess_fail uuid;
 	v_sess_merge uuid;
 	v_sess_discarded uuid;
+	v_sess_ready uuid;
+	v_sess_contrib uuid;
+	v_sess_f3 uuid;
+	v_sess_row public.qorpera_surface_sessions%rowtype;
 	v_claimed jsonb;
+	v_turn jsonb;
+	v_enqueued jsonb;
 	v_lease uuid;
 	v_change_1 uuid;
 	v_change_2 uuid;
@@ -310,18 +316,115 @@ begin
 		v_company, v_sess_input, 'Highlight the Pro tier first.', 'Co-Founder', null
 	);
 	reset role;
+	select * into strict v_sess_row from public.qorpera_surface_sessions where id = v_sess_input;
 	perform pg_temp.spe_assert(
 		v_steered ->> 'state' = 'queued'
 		and (v_steered -> 'question') = 'null'::jsonb
+		and v_steered ->> 'turnRequestedByUserId' is null
+		and v_sess_row.turn_requested_by_user_id is null
+		and v_sess_row.turn_member_initiated is false
+		and not public.qorpera_surface_turn_member_initiated(v_sess_row)
+		and public.qorpera_surface_turn_requester(v_sess_row) is null
 		and exists (
 			select 1 from public.qorpera_surface_session_messages m
 			where m.session_id = v_sess_input
-				and m.author_kind = 'member'
+				and m.author_kind = 'agent'
 				and m.author_user_id is null
+				and m.author_label = 'Co-Founder'
 				and m.change_id is null
 				and m.body = 'Highlight the Pro tier first.'
+		)
+		and exists (
+			select 1 from jsonb_array_elements(v_steered -> 'messages') msg
+			where msg ->> 'authorKind' = 'agent'
+				and msg ->> 'authorLabel' = 'Co-Founder'
+				and msg ->> 'text' = 'Highlight the Pro tier first.'
 		),
-		'native_surface_steer_session appends unattributed member guidance, clears question, and re-queues session: ' || v_steered::text
+		'native_surface_steer_session records agent guidance, clears member turn authority, and re-queues session: ' || v_steered::text
+	);
+
+	perform pg_temp.spe_as(v_contrib);
+	set local role authenticated;
+	v_sess_contrib := (public.qorpera_start_surface_session(v_surface, 'Contributor draft', 'Contrib draft') ->> 'id')::uuid;
+	reset role;
+	update public.qorpera_surface_sessions set state = 'needs_input' where id = v_sess_contrib;
+	select * into strict v_sess_row from public.qorpera_surface_sessions where id = v_sess_contrib;
+	perform pg_temp.spe_assert(
+		public.qorpera_surface_turn_member_initiated(v_sess_row)
+		and public.qorpera_surface_turn_requester(v_sess_row) = v_contrib,
+		'contributor session starts member-initiated for contributor'
+	);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_steered := public.qorpera_native_surface_steer_session(
+		v_company, v_sess_contrib, 'Adjust spacing for desktop.', 'Operations Lead', null
+	);
+	reset role;
+	update public.qorpera_surfaces set source_kind = 'folder', folder_root = 'website' where id = v_surface;
+	insert into public.qorpera_coding_executors(environment_id, owner, enabled) values (v_env, 'exec-1404', true);
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where (elem ->> 'sessionId')::uuid = v_sess_contrib;
+	v_turn := public.qorpera_native_surface_read_session_turn(v_company, v_sess_contrib, v_lease);
+	v_enqueued := public.qorpera_surface_enqueue_session_run(v_sess_contrib, v_lease);
+	reset role;
+	update public.qorpera_surfaces set source_kind = 'code_repo', folder_root = null where id = v_surface;
+	select * into strict v_sess_row from public.qorpera_surface_sessions where id = v_sess_contrib;
+	perform pg_temp.spe_assert(
+		not public.qorpera_surface_turn_member_initiated(v_sess_row)
+		and public.qorpera_surface_turn_requester(v_sess_row) is null
+		and (v_turn ->> 'memberInitiated')::boolean is false
+		and (v_turn ->> 'prompt') like '%Operations Lead:%Adjust spacing for desktop.%'
+		and exists (
+			select 1 from public.qorpera_surface_session_messages m
+			where m.session_id = v_sess_contrib
+				and m.author_kind = 'agent'
+				and m.author_label = 'Operations Lead'
+				and m.author_user_id is null
+		),
+		'steered contributor session drops member-initiated status and carries agent origin label into turn prompt: ' || v_turn::text
+	);
+	perform pg_temp.spe_assert(
+		v_enqueued ->> 'status' = 'enqueued'
+		and (v_enqueued ->> 'wakeId' is not null or v_enqueued ->> 'workerId' is not null),
+		'steered contributor session enqueues cleanly: ' || coalesce(v_enqueued::text, 'null')
+	);
+	if v_enqueued ->> 'wakeId' is not null then
+		select * into strict v_wake
+		from public.qorpera_wake_occurrences
+		where id = (v_enqueued ->> 'wakeId')::uuid;
+		perform pg_temp.spe_assert(
+			v_wake.requested_by_user_id = v_owner
+			and v_wake.requested_by_user_id <> v_contrib
+			and (v_wake.payload ->> 'memberInitiated')::boolean is false,
+			'steered session wake runs non-member-initiated under company owner instead of prior contributor: ' || to_jsonb(v_wake)::text
+		);
+	else
+		perform pg_temp.spe_assert(
+			exists (
+				select 1 from public.qorpera_runtime_workers w
+				where w.id = (v_enqueued ->> 'workerId')::uuid
+					and w.requested_by_user_id = v_owner
+					and w.owner_user_id = v_owner
+					and w.requested_by_user_id <> v_contrib
+					and w.dispatch ->> 'followUp' = 'Adjust spacing for desktop.'
+			),
+			'steered coding worker runs under company owner with agent followUp instead of prior contributor: ' || coalesce(v_enqueued::text, 'null')
+		);
+	end if;
+
+	perform pg_temp.spe_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_reply_surface_session(v_sess_contrib, 'Looks good, proceed.', true, null);
+	reset role;
+	select * into strict v_sess_row from public.qorpera_surface_sessions where id = v_sess_contrib;
+	perform pg_temp.spe_assert(
+		public.qorpera_surface_turn_member_initiated(v_sess_row)
+		and public.qorpera_surface_turn_requester(v_sess_row) = v_owner,
+		'subsequent member reply restores member-initiated status and turn requester'
 	);
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
@@ -332,13 +435,19 @@ begin
 	reset role;
 	perform pg_temp.spe_assert(
 		v_steered ->> 'state' = 'queued'
+		and public.qorpera_surface_reply_target_change_id(v_sess_merge) = v_change_1
+		and exists (
+			select 1 from public.qorpera_surface_escalations e
+			where e.id = v_esc_conflict.id and e.resolved_at is not null
+		)
 		and exists (
 			select 1 from public.qorpera_surface_session_messages m
 			where m.session_id = v_sess_merge
+				and m.author_kind = 'agent'
 				and m.change_id = v_change_1
 				and m.body = 'Tighten the hero headline on this change.'
 		),
-		'native_surface_steer_session attaches valid change_id to the steering message'
+		'native_surface_steer_session attaches valid change_id, resolves open escalation, and exposes it as reply target'
 	);
 
 	v_errcode := null;
@@ -346,13 +455,58 @@ begin
 		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 		set local role service_role;
 		perform public.qorpera_native_surface_steer_session(
-			v_company, v_sess_input, 'Wrong change.', 'Co-Founder', v_change_1
+			v_company, v_sess_merge, 'Duplicate steer after resolution.', 'Co-Founder', null
+		);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.spe_assert(v_errcode = '55000', 'steering rejects already-queued session once escalation is resolved: ' || coalesce(v_errcode, 'null'));
+
+	v_errcode := null;
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		set local role service_role;
+		perform public.qorpera_native_surface_steer_session(
+			v_company, v_sess_fail, 'Wrong change.', 'Co-Founder', v_change_1
 		);
 	exception when others then
 		v_errcode := sqlstate;
 	end;
 	reset role;
 	perform pg_temp.spe_assert(v_errcode = '22023', 'steering rejects change_id from another session: ' || coalesce(v_errcode, 'null'));
+
+	perform pg_temp.spe_as(v_owner);
+	set local role authenticated;
+	v_sess_ready := (public.qorpera_start_surface_session(v_surface, 'Completed check', 'Ready session') ->> 'id')::uuid;
+	reset role;
+	update public.qorpera_surface_sessions set state = 'ready' where id = v_sess_ready;
+	v_errcode := null;
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		set local role service_role;
+		perform public.qorpera_native_surface_steer_session(
+			v_company, v_sess_ready, 'Steer idle ready session.', 'Co-Founder', null
+		);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.spe_assert(v_errcode = '55000', 'steering rejects ready sessions without conflict: ' || coalesce(v_errcode, 'null'));
+
+	update public.qorpera_surface_sessions set state = 'completed' where id = v_sess_ready;
+	v_errcode := null;
+	begin
+		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+		set local role service_role;
+		perform public.qorpera_native_surface_steer_session(
+			v_company, v_sess_ready, 'Steer completed session.', 'Co-Founder', null
+		);
+	exception when others then
+		v_errcode := sqlstate;
+	end;
+	reset role;
+	perform pg_temp.spe_assert(v_errcode = '55000', 'steering rejects completed sessions: ' || coalesce(v_errcode, 'null'));
 
 	update public.qorpera_surface_sessions set state = 'discarded' where id = v_sess_discarded;
 	v_errcode := null;
@@ -368,7 +522,7 @@ begin
 	reset role;
 	perform pg_temp.spe_assert(v_errcode = '55000', 'steering rejects discarded sessions: ' || coalesce(v_errcode, 'null'));
 
-	update public.qorpera_surface_sessions set state = 'ready', is_internal = true where id = v_sess_discarded;
+	update public.qorpera_surface_sessions set state = 'needs_input', is_internal = true where id = v_sess_discarded;
 	v_errcode := null;
 	begin
 		perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
@@ -381,6 +535,51 @@ begin
 	end;
 	reset role;
 	perform pg_temp.spe_assert(v_errcode = '55000', 'steering rejects internal sessions: ' || coalesce(v_errcode, 'null'));
+
+	perform pg_temp.spe_as(v_owner);
+	set local role authenticated;
+	v_sess_f3 := (public.qorpera_start_surface_session(v_surface, 'Resilience test', 'Resilience') ->> 'id')::uuid;
+	reset role;
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	v_claimed := public.qorpera_surface_claim_pending_jobs_for_lane(16, 'sessions');
+	select (elem ->> 'leaseToken')::uuid into strict v_lease
+	from jsonb_array_elements(v_claimed -> 'sessions') elem
+	where (elem ->> 'sessionId')::uuid = v_sess_f3;
+	reset role;
+	create or replace function pg_temp.spe_fail_esc_wake()
+	returns trigger language plpgsql as $trg$
+	begin
+		if new.source_kind = 'surface-escalation' then
+			raise exception 'simulated lock timeout' using errcode = '55P03';
+		end if;
+		return new;
+	end $trg$;
+	create trigger spe_fail_esc_wake_trg
+		before insert on public.qorpera_wake_occurrences
+		for each row execute function pg_temp.spe_fail_esc_wake();
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+	perform public.qorpera_surface_complete_session_turn(
+		v_sess_f3,
+		'needs_input',
+		'Still need clarification even if wake insert fails.',
+		jsonb_build_object('text', 'Still need clarification even if wake insert fails.'),
+		'{}'::text[],
+		null,
+		v_lease
+	);
+	reset role;
+	drop trigger spe_fail_esc_wake_trg on public.qorpera_wake_occurrences;
+	select * into strict v_sess_row from public.qorpera_surface_sessions where id = v_sess_f3;
+	perform pg_temp.spe_assert(
+		v_sess_row.state = 'needs_input'
+		and exists (
+			select 1 from public.qorpera_surface_escalations e
+			where e.session_id = v_sess_f3 and e.reason = 'needs_input' and e.wake_id is null
+		),
+		'wake insertion errors do not roll back turn completion and keep escalation row with null wake_id'
+	);
 
 	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
 	set local role service_role;

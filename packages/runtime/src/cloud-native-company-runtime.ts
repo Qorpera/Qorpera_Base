@@ -2617,6 +2617,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
 			originKind:
 				typeof sessionTurnRaw.originKind === "string" ? sessionTurnRaw.originKind : String(payload.originKind),
+			...(typeof sessionTurnRaw.memberInitiated === "boolean"
+				? { memberInitiated: sessionTurnRaw.memberInitiated }
+				: {}),
 			originRef: sessionTurnRaw.originRef ?? null,
 			...(conflictPaths.length > 0 ? { conflictPaths } : {}),
 			...(conflictDetails.length > 0 ? { conflictDetails } : {}),
@@ -2762,6 +2765,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			turnBrief: string;
 			prompt: string;
 			isInternal?: boolean;
+			memberInitiated?: boolean;
 			buildTools: (runIdentity: CloudNativeToolIdentity, operations: CloudNativeToolOperations) => CloudNativeTool[];
 			turnSignal: AbortSignal;
 		}): Promise<SurfaceSessionTurnExecutionOutcome> => {
@@ -2911,7 +2915,12 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			const runtimeInstructions = isInternalTurn
 				? `${spec.instructions}\n\nWhen finished staging the combined resolution via stage_surface_patch, call surface_reply with a concise summary. Do not ask questions.`
 				: `${spec.instructions}\n\nWhen finished staging changes or inspecting the surface, call surface_reply with a concise founder-facing summary. Never pause for taste or layout preferences — stage a clean Preview instead. Call surface_ask strictly on a genuine hard blocker (it escalates to the Co-Founder).`;
-			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\n${isInternalTurn ? "Task" : "Founder request"}:\n${spec.prompt}`;
+			const promptHeading = isInternalTurn
+				? "Task"
+				: spec.memberInitiated === false
+					? "Agent direction"
+					: "Founder request";
+			const fullPrompt = `${spec.turnBrief}${memberImagesSection ? `\n\n${memberImagesSection}` : ""}\n\n${promptHeading}:\n${spec.prompt}`;
 			const contextText = `${runtimeInstructions}\n${fullPrompt}`;
 			const contextSha256 = createHash("sha256").update(contextText).digest("hex");
 			const contextBytes = Buffer.byteLength(contextText);
@@ -3094,6 +3103,9 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							turnBrief: turnReq.turnBrief,
 							prompt: turnReq.input.prompt,
 							isInternal: turnReq.input.isInternal === true,
+							...(typeof turnReq.input.memberInitiated === "boolean"
+								? { memberInitiated: turnReq.input.memberInitiated }
+								: {}),
 							turnSignal: turnReq.signal,
 							buildTools: (runIdentity, operations) => {
 								const folderTools =

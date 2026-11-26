@@ -1,5 +1,4 @@
 import { withAbortScopes } from "../../cloud/abort-scope.ts";
-import type { CloudApi } from "../../cloud/api.ts";
 import { formatUsdCents, formatUsdMicrodollars } from "../../cloud/gemini-key.ts";
 import type { MemberNotification, WebMemberNotifications } from "../../cloud/member-notifications.ts";
 import {
@@ -15,8 +14,6 @@ import { t } from "../../ui/preferences.ts";
 import { goodWillName, kroner, monthName } from "./good-will-format.ts";
 
 type Client = Pick<WebMemberNotifications, "listNotifications" | "acknowledgeNotification">;
-/** A worker's own run, which has no conversation: the notice line offers its Stop (gap 4b). */
-export type WorkerRuns = Pick<CloudApi, "workerRunControl" | "stopWorkerRun">;
 /** What the band needs to ask a ChatGPT plan's member to turn on work while away (Sign in with ChatGPT). */
 export interface PlanOffer {
 	native: Pick<WebNativeSubscription, "listConnections"> &
@@ -205,7 +202,6 @@ export class ExecutionNotices {
 		restoreFocus?: () => void,
 		plan?: PlanOffer,
 		agentName?: (staffAgentId: string) => string | undefined,
-		_workerRuns?: WorkerRuns,
 		memberName?: (userId: string) => string | undefined,
 		onCountChange?: (count: number) => void,
 	) {

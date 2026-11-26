@@ -222,21 +222,68 @@ const PROTECTED_COMPANY_PREFIXES = [
 	"/company/qorperaos/agents",
 ] as const;
 
-function isLocalWorkspaceHomeChange(args: Record<string, JsonValue>): boolean {
-	if (!Array.isArray(args.changes) || args.changes.length === 0) return false;
-	for (const entry of args.changes) {
-		const change = jsonObject(entry);
-		const raw = typeof change.machinePath === "string" ? change.machinePath : change.path;
-		if (typeof raw !== "string" || !raw.startsWith("/") || raw.includes("\0")) return false;
-		const normalized = posix.normalize(raw);
-		const lower = normalized.toLowerCase();
-		const inWorkspace = LOCAL_HOME_WORKSPACE_ROOTS.some(
-			(root) => normalized === root || normalized.startsWith(`${root}/`),
-		);
-		if (!inWorkspace) return false;
-		if (PROTECTED_COMPANY_PREFIXES.some((prefix) => lower === prefix || lower.startsWith(`${prefix}/`))) return false;
+function normalizeWorkspaceHomePath(raw: unknown, relativeIsCompany: boolean): string | null {
+	if (typeof raw !== "string" || raw.length === 0 || raw.includes("\0") || raw.includes("\\")) return null;
+	const resolved = raw.startsWith("/")
+		? posix.normalize(raw)
+		: relativeIsCompany
+			? posix.resolve("/company", raw)
+			: null;
+	if (!resolved) return null;
+	return resolved.length > 1 ? resolved.replace(/\/+$/, "") : resolved;
+}
+
+function isAllowedLocalWorkspacePath(resolved: string): boolean {
+	const inWorkspace = LOCAL_HOME_WORKSPACE_ROOTS.some((root) => resolved.startsWith(`${root}/`));
+	if (!inWorkspace) return false;
+	const lower = resolved.toLowerCase();
+	return !PROTECTED_COMPANY_PREFIXES.some((prefix) => lower === prefix || lower.startsWith(`${prefix}/`));
+}
+
+function checkHomeTarget(record: Record<string, JsonValue>, checkMoveTo: boolean): boolean {
+	const hasMachinePath = record.machinePath !== undefined && record.machinePath !== null;
+	const hasPath = record.path !== undefined && record.path !== null;
+	if (!hasMachinePath && !hasPath) return false;
+	if (hasMachinePath) {
+		const resolved = normalizeWorkspaceHomePath(record.machinePath, false);
+		if (!resolved || !isAllowedLocalWorkspacePath(resolved)) return false;
+	}
+	if (hasPath) {
+		const resolved = normalizeWorkspaceHomePath(record.path, true);
+		if (!resolved || !isAllowedLocalWorkspacePath(resolved)) return false;
+	}
+	if (checkMoveTo && record.to !== undefined && record.to !== null) {
+		const destination = normalizeWorkspaceHomePath(record.to, true);
+		if (!destination || !isAllowedLocalWorkspacePath(destination)) return false;
 	}
 	return true;
+}
+
+function isLocalWorkspaceHomeChange(args: Record<string, JsonValue>): boolean {
+	let matchedShape = false;
+	if (args.changes !== undefined) {
+		if (!Array.isArray(args.changes) || args.changes.length === 0) return false;
+		for (const entry of args.changes) {
+			if (!checkHomeTarget(jsonObject(entry), true)) return false;
+		}
+		matchedShape = true;
+	}
+	if (args.paths !== undefined) {
+		if (!Array.isArray(args.paths) || args.paths.length === 0) return false;
+		for (const entry of args.paths) {
+			const resolved = normalizeWorkspaceHomePath(entry, false);
+			if (!resolved || !isAllowedLocalWorkspacePath(resolved)) return false;
+		}
+		matchedShape = true;
+	}
+	if (
+		typeof args.tool === "string" &&
+		((args.machinePath !== undefined && args.machinePath !== null) || (args.path !== undefined && args.path !== null))
+	) {
+		if (!checkHomeTarget(args, false)) return false;
+		matchedShape = true;
+	}
+	return matchedShape;
 }
 
 /**
@@ -484,61 +531,28 @@ export function cloudActionEffect(
 /** What an action on a machine's screen the fixed machine rule decided is recorded with (machine_screen, 20260930708000). */
 export const CLOUD_MACHINE_SCREEN_WORK_REASON =
 	"Testing a product or driving an app on a company machine's desktop is part of every agent's job, and the review found that this action sends no company data, follows no outside instructions, deletes nothing outside the company's machines and folder, moves no money and goes against no member's words.";
-/** The same when the company has Ask first rules: a member checks it on a card rather than the review refusing it. */
-export const CLOUD_MACHINE_SCREEN_WORK_ASK_REASON =
-	"Testing a product or driving an app on a company machine's desktop is part of every agent's job, so the review did not refuse this action; the company has Ask first rules, so a member checks it.";
-/** What a command the fixed machine rule decided is recorded with, before the reviewer's own reason. */
 export const CLOUD_MACHINE_WORK_REASON =
 	"Installing tools, building, testing, reading files and fetching public pages on a company machine is part of every agent's job, and the review found that this command sends no company data, follows no outside instructions, deletes nothing outside the company's machines and folder, moves no money and goes against no member's words.";
-/** The same when the company has Ask first rules: a member checks it on a card rather than the review refusing it. */
-export const CLOUD_MACHINE_WORK_ASK_REASON =
-	"Installing tools, building, testing, reading files and fetching public pages on a company machine is part of every agent's job, so the review did not refuse this command; the company has Ask first rules, so a member checks it.";
 
-/**
- * Normal work on a company machine runs by a fixed rule, not the reviewer's reading of the request or the mandate
- * (4 November 2026: a package install, a browser test setup, and fetches of public VAT and competitor pages were denied
- * or held as "not clearly authorized" though the mandate names them). A machine command the reviewer finds sends no
- * company data, follows no outside instructions, deletes or overwrites nothing outside the company's machines and folder and moves no money, signs
- * nothing, changes no access and goes against no member's words or the vision is allowed, whatever its decision. When
- * the company has an Ask first rule, it is asked on a card instead (a reviewer may name the rule only in its reason). A
- * verdict that cites an Ask first rule or names a built-in check, or has no guards, is left as it is. The reviewer's own
- * decision and reason stay on the record after the rule's. An action on a machine's screen (machine_screen,
- * 20260930708000) is the same work done with the mouse and the keyboard, under the same rule, so it keeps parity with
- * `machine_run "desktop click X Y"`.
- */
 export function machineWorkCheck(
 	call: Pick<CloudActionCall, "tool">,
 	verdict: CloudActionVerdict,
-	/** The company's Ask first rules, by id in lower case. */
 	askFirst: ReadonlySet<string>,
 	incomplete = false,
 ): CloudActionVerdict {
 	if (call.tool.source !== "runtime") return verdict;
 	if (call.tool.name === "machine_run" || call.tool.name === "home_command" || call.tool.name === "home_change")
-		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_WORK_REASON, CLOUD_MACHINE_WORK_ASK_REASON, incomplete);
-	if (call.tool.name === "machine_screen")
-		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_SCREEN_WORK_REASON, CLOUD_MACHINE_SCREEN_WORK_ASK_REASON);
+		return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_WORK_REASON, incomplete);
+	if (call.tool.name === "machine_screen") return fixedWorkRule(verdict, askFirst, CLOUD_MACHINE_SCREEN_WORK_REASON);
 	return verdict;
 }
 
 export const CLOUD_WORKER_WORK_REASON =
 	"Starting or steering its own workers on its work is part of every agent's job, and the review found that this brief sends no company data, follows no outside instructions, deletes nothing outside the company's machines and folder, moves no money and goes against no member's words.";
-/** The same when the company has Ask first rules: a member checks it on a card rather than the review refusing it. */
-export const CLOUD_WORKER_WORK_ASK_REASON =
-	"Starting or steering its own workers on its work is part of every agent's job, so the review did not refuse this brief; the company has Ask first rules, so a member checks it.";
 
-/**
- * An agent's own workers run by the same fixed rule as its machine commands (7 November 2026: Rumlig's Product and
- * Engineering Leads were refused handing their own demo and QA work to their own workers, as "outside this worker's
- * assigned task", and each refusal stopped the work until a member wrote in that agent's conversation). Starting or
- * steering a worker (manage_worker dispatch or followup) whose brief the reviewer finds trips none of the guards is
- * allowed, whatever its decision; every action the worker then takes is reviewed as its own. Ask first rules, built-in
- * checks and any guard keep the reviewer's verdict, as for machine commands.
- */
 export function workerWorkCheck(
 	call: Pick<CloudActionCall, "tool" | "parsed">,
 	verdict: CloudActionVerdict,
-	/** The company's Ask first rules, by id in lower case. */
 	askFirst: ReadonlySet<string>,
 ): CloudActionVerdict {
 	const action =
@@ -551,16 +565,13 @@ export function workerWorkCheck(
 		(action !== "dispatch" && action !== "followup")
 	)
 		return verdict;
-	return fixedWorkRule(verdict, askFirst, CLOUD_WORKER_WORK_REASON, CLOUD_WORKER_WORK_ASK_REASON);
+	return fixedWorkRule(verdict, askFirst, CLOUD_WORKER_WORK_REASON);
 }
 
-/** The fixed rule both share: a verdict with guards, none true, no built-in check and no cited Ask first rule is
- * allowed, or asked on a card when the company has Ask first rules; the reviewer's decision and reason follow. */
 function fixedWorkRule(
 	verdict: CloudActionVerdict,
 	askFirst: ReadonlySet<string>,
 	reason: string,
-	_askReason: string,
 	incomplete = false,
 ): CloudActionVerdict {
 	const guards = verdict.guards;
