@@ -10,7 +10,11 @@ import {
 import { withAbortScope, withAbortScopes, withTimeoutScope } from "./abort-scope.ts";
 import { type AppAutoRedeployHooks, parseAppDeployConfig, runPostLandAppAutoRedeploy } from "./app-auto-redeploy.ts";
 import type { CompanyMachineSecretsManager } from "./company-machine-secrets.ts";
-import type { SurfacePreviewBuildOutcome, SurfacePreviewRecipe } from "./surface-preview-runner.ts";
+import type {
+	SurfacePreviewBuildOutcome,
+	SurfacePreviewBuiltManifest,
+	SurfacePreviewRecipe,
+} from "./surface-preview-runner.ts";
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const PREVIEW_BUILDER_KIND = "surface-preview-build";
@@ -369,6 +373,8 @@ export interface CodingPreviewBuild {
 	readonly treeSha: string;
 	readonly recipe: SurfacePreviewRecipe;
 	readonly attempt: number;
+	readonly surfaceTitle?: string | null;
+	readonly productFolderRoots?: readonly string[];
 }
 
 export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
@@ -393,6 +399,17 @@ export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
 		Number(recipe.timeoutSeconds) > 600
 	)
 		throw new Error("Invalid preview build");
+	const surfaceTitle =
+		typeof item.surfaceTitle === "string" && Buffer.byteLength(item.surfaceTitle) <= 400
+			? item.surfaceTitle
+			: item.surfaceTitle === null
+				? null
+				: undefined;
+	const productFolderRoots = Array.isArray(item.productFolderRoots)
+		? item.productFolderRoots
+				.filter((root): root is string => typeof root === "string" && root.trim().length > 0)
+				.slice(0, 32)
+		: undefined;
 	return {
 		buildId: item.buildId,
 		commitSha: item.commitSha,
@@ -404,6 +421,8 @@ export function parseCodingPreviewBuild(value: unknown): CodingPreviewBuild {
 			timeoutSeconds: Number(recipe.timeoutSeconds),
 		},
 		attempt: Number(item.attempt),
+		...(surfaceTitle !== undefined ? { surfaceTitle } : {}),
+		...(productFolderRoots !== undefined ? { productFolderRoots } : {}),
 	};
 }
 
@@ -999,7 +1018,11 @@ export class CloudCodingExecutor {
 				const finishBuild = async (
 					buildId: string | null,
 					outcome: "built" | "failed" | "none",
-					extra: { builtTreeSha?: string; errorDetail?: string } = {},
+					extra: {
+						builtTreeSha?: string | null;
+						native?: SurfacePreviewBuiltManifest;
+						errorDetail?: string;
+					} = {},
 				) => {
 					await again("qorpera_complete_surface_preview_build", {
 						...args,
@@ -1007,6 +1030,15 @@ export class CloudCodingExecutor {
 						p_outcome: outcome,
 						p_built_tree_sha: extra.builtTreeSha ?? null,
 						p_error_detail: extra.errorDetail ?? null,
+						...(extra.native
+							? {
+									p_manifest_sha256: extra.native.manifestSha256,
+									p_manifest_json: extra.native.manifest,
+									p_file_count: extra.native.fileCount,
+									p_total_bytes: extra.native.totalBytes,
+									p_has_credential_inputs: extra.native.hasCredentialInputs,
+								}
+							: {}),
 					});
 				};
 				const checkBuild = async () =>
@@ -1116,7 +1148,10 @@ export class CloudCodingExecutor {
 					const result = await this.#host.buildPreview(claimed, build, active);
 					end();
 					if (result.outcome === "built") {
-						await finishBuild(build.buildId, "built", { builtTreeSha: result.builtTreeSha });
+						await finishBuild(build.buildId, "built", {
+							builtTreeSha: result.builtTreeSha,
+							...(result.native ? { native: result.native } : {}),
+						});
 						return "completed";
 					}
 					await finishBuild(build.buildId, "failed", { errorDetail: result.errorDetail });

@@ -159,6 +159,8 @@ import type {
 import { checkDirectory, code, publish, readRecord } from "./lxd-office-journal-files.ts";
 import { LINE_PIPE_BYTES, LinePipe, sftpBytes, sftpLines } from "./machine-exec-server.ts";
 import { HomeOutputGate } from "./machine-home-folder.ts";
+import type { BlobUploadFetch } from "./site-blob-upload.ts";
+import { collectAndUploadPreviewBuildToEdge } from "./surface-preview-build-upload.ts";
 import { previewBuildOutcome, type SurfacePreviewBuildOutcome } from "./surface-preview-runner.ts";
 
 export const CODING_HOST_RPCS = [
@@ -354,6 +356,11 @@ export interface LxdCodingExecutorHostOptions {
 	snapshotBuilder?: CodingSnapshotBuilder;
 	standbyPool?: CodingStandbyPool;
 	setupLifecycle?: CodingSetupLifecycle;
+	nativeEdge?: {
+		readonly routerInternalUrl: string;
+		readonly controlToken: string;
+		readonly fetchImpl?: BlobUploadFetch;
+	};
 }
 type FolderOptions = NonNullable<LxdCodingExecutorHostOptions["folder"]>;
 /** A session this process hot-plugged into its member's machine during a turn,
@@ -3384,6 +3391,9 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		signal: AbortSignal,
 	): Promise<SurfacePreviewBuildOutcome> {
 		const gitClaim = requireGitClaim(claim);
+		const nativeEdge = this.#options.nativeEdge;
+		const execPipeClient = this.#options.client.execInstancePipe;
+		const useNativeEdge = Boolean(nativeEdge && this.#options.folder && execPipeClient);
 		const run = await this.#runChecks(
 			gitClaim,
 			{
@@ -3398,7 +3408,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					},
 				],
 				attempt: build.attempt,
-				site: { folder: build.recipe.folder, name: null, title: null },
+				site: useNativeEdge ? null : { folder: build.recipe.folder, name: null, title: null },
 				rootLinks: true,
 				maxParallel: 1,
 				failFast: true,
@@ -3409,7 +3419,42 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			},
 			signal,
 		);
-		return previewBuildOutcome(run, build.recipe);
+		if (!useNativeEdge || !nativeEdge || !execPipeClient) {
+			return previewBuildOutcome(run, build.recipe);
+		}
+		if (run.state !== "passed") {
+			return previewBuildOutcome(run, build.recipe);
+		}
+		const ready = this.#active(claim);
+		if (!ready.folder) {
+			return previewBuildOutcome(run, build.recipe);
+		}
+		const uid = ready.folder.uid;
+		const runName = codeChecksRunName(claim.sequence, build.attempt);
+		if (runName === null) {
+			return previewBuildOutcome(run, build.recipe);
+		}
+		const srcDir = `/home/qorpera-${uid}/.qorpera-checks/${runName}/src`;
+		const outputDir = build.recipe.folder === "." ? srcDir : `${srcDir}/${build.recipe.folder}`;
+		const worker32 = claim.workerId.replaceAll("-", "").toLowerCase();
+		const companyMountDir = `${CODING_GUEST.folder}/mounts/${worker32}`;
+		const secretValues = this.#commandSecrets?.values(ready.machine.machineId) ?? [];
+		const instanceName = lxdCodingMachineName(ready.machine.machineId);
+		return collectAndUploadPreviewBuildToEdge({
+			execPipe: (request, execSignal) =>
+				execPipeClient.call(this.#options.client, ready.machine.project, instanceName, request, execSignal),
+			uid,
+			gid: uid,
+			outputDir,
+			recipeFolder: build.recipe.folder,
+			companyMountDir,
+			productFolderRoots: build.productFolderRoots,
+			secretValues,
+			routerInternalUrl: nativeEdge.routerInternalUrl,
+			controlToken: nativeEdge.controlToken,
+			fetchImpl: nativeEdge.fetchImpl,
+			signal,
+		});
 	}
 	/** One run of a repository's checks on a clean copy of `commit` in the turn's session's machine (own code storage,
 	 * step 3; STEP3-CHECKS-PLAN.md 6.2 to 6.4). Each command (the copy, then each check in the file's order) is one of the

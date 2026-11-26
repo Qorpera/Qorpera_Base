@@ -15,11 +15,13 @@ use crate::routes::{
     HostScope, ManifestFile, ResolvedHost, RouteTable, SharedRoutes, SiteRecord, StaticResolution,
 };
 use crate::security::{
-    check_cross_site_write, constant_time_eq, extract_client_ip_cow, inject_preview_banner,
-    parse_cookie, prefers_danish, render_almost_ready_page, render_app_unavailable_page,
-    render_not_found_page, render_not_live_page, render_password_page, render_takedown_page,
-    sanitize_next_path, sanitize_redirect_location, sign_preview_cookie, sign_session_cookie,
-    verify_preview_cookie, verify_session_cookie, HSTS_HEADER, SITE_SESSION_COOKIE,
+    check_cross_site_write, constant_time_eq, extract_client_ip_cow, frame_ancestors_csp,
+    inject_preview_banner, inject_preview_inspector, parse_cookie, prefers_danish,
+    render_almost_ready_page, render_app_unavailable_page, render_not_found_page,
+    render_not_live_page, render_password_page, render_preview_inspector_script,
+    render_takedown_page, sanitize_next_path, sanitize_redirect_location, sign_preview_cookie,
+    sign_session_cookie, sign_surface_preview_cookie, verify_preview_cookie, verify_session_cookie,
+    verify_surface_preview_cookie, HSTS_HEADER, INSPECTOR_PATH, SITE_SESSION_COOKIE,
 };
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
@@ -65,6 +67,7 @@ pub struct RedeemedTicket {
 #[derive(Debug, Clone)]
 pub struct RedeemedMemberPass {
     pub site_id: String,
+    pub version_id: Option<String>,
     pub password_version: i32,
     pub max_age: u64,
 }
@@ -277,6 +280,11 @@ impl EdgeAuthBackend for PostgresAuthBackend {
             }
             Some(RedeemedMemberPass {
                 site_id: val.get("site_id")?.as_str()?.to_string(),
+                version_id: val
+                    .get("version_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
                 password_version: val.get("password_version")?.as_i64()? as i32,
                 max_age: val.get("max_age")?.as_u64().unwrap_or(43200),
             })
@@ -431,6 +439,7 @@ pub struct RouterState {
     pub routes: Arc<SharedRoutes>,
     pub limiter: Arc<RateLimiter>,
     pub unlock_limiter: Arc<RateLimiter>,
+    pub member_limiter: Arc<RateLimiter>,
     pub activity: Arc<ActivityTracker>,
     pub waker: Arc<WakeCoordinator>,
     pub proxy_client: PooledProxyClient,
@@ -438,6 +447,7 @@ pub struct RouterState {
     pub cookie_secret: Vec<u8>,
     pub trusted_proxies: Vec<IpAddr>,
     pub web_origins: Vec<String>,
+    frame_ancestors_header: HeaderValue,
     pub dns_servers: Vec<SocketAddr>,
     pub database_url: Option<String>,
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
@@ -465,6 +475,9 @@ impl RouterState {
         });
         let ready = Arc::new(AtomicBool::new(cfg.database_url.is_none()));
         let proxy_client = PooledProxyClient::new();
+        let web_origins = vec!["https://app.qorpera.com".to_string()];
+        let frame_ancestors_header = HeaderValue::from_str(&frame_ancestors_csp(&web_origins))
+            .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
         Self {
             blobs,
             routes: Arc::new(SharedRoutes::new(RouteTable::from_snapshot(initial))),
@@ -474,6 +487,7 @@ impl RouterState {
                 cfg.unlock_limit_burst,
                 32_768,
             )),
+            member_limiter: Arc::new(RateLimiter::new(10.0, 40.0, 32_768)),
             activity: Arc::new(ActivityTracker::new()),
             waker: Arc::new(WakeCoordinator::with_client(
                 cfg.app_host_url.clone(),
@@ -485,7 +499,8 @@ impl RouterState {
             control_token: cfg.control_token.clone(),
             cookie_secret: cfg.cookie_secret.clone(),
             trusted_proxies: cfg.trusted_proxies.clone(),
-            web_origins: vec!["https://app.qorpera.com".to_string()],
+            web_origins,
+            frame_ancestors_header,
             dns_servers,
             database_url: cfg.database_url.clone(),
             auth_backend,
@@ -530,6 +545,8 @@ impl RouterState {
 
     pub fn with_web_origins(mut self, origins: Vec<String>) -> Self {
         if !origins.is_empty() {
+            self.frame_ancestors_header = HeaderValue::from_str(&frame_ancestors_csp(&origins))
+                .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
             self.web_origins = origins;
         }
         self
@@ -1254,20 +1271,33 @@ async fn handle_public(
         return html_response(StatusCode::GONE, render_takedown_page(), true);
     }
 
+    if matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_))
+        && (req.headers().contains_key("service-worker")
+            || req
+                .headers()
+                .get("sec-fetch-dest")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.eq_ignore_ascii_case("serviceworker")))
+    {
+        return html_response(StatusCode::NOT_FOUND, render_not_found_page(), true);
+    }
+
     if scope == HostScope::NextHost && req.method() == Method::GET && req.uri().path() == "/.qorpera/enter" {
         let host_s = host.to_string();
         drop(route_table);
         return handle_preview_enter(state, &site, &host_s, req).await;
     }
 
-    if scope == HostScope::OwnHost && is_member_pass_post {
+    if matches!(scope, HostScope::OwnHost | HostScope::PreviewSlot(_)) && is_member_pass_post {
         let host_s = host.to_string();
         let client_ip_s = client_ip.to_string();
         drop(route_table);
-        return handle_member_pass(state, &site, &host_s, &client_ip_s, req).await;
+        return handle_member_pass(state, &site, scope, &host_s, &client_ip_s, req).await;
     }
 
-    let is_public = global_public_enabled && site.is_public && scope != HostScope::NextHost;
+    let is_public = global_public_enabled
+        && site.is_public
+        && !matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_));
     let now_unix = if canonical_redirect.is_some() || !is_public {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1317,7 +1347,7 @@ async fn handle_public(
     }
 
     if !is_public
-        && scope != HostScope::NextHost
+        && !matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_))
         && req.uri().path() == "/.qorpera/unlock"
         && req.method() == Method::POST
     {
@@ -1351,6 +1381,21 @@ async fn handle_public(
                     )
                 }
             }),
+            HostScope::PreviewSlot(slot) => parse_cookie(req.headers(), SITE_SESSION_COOKIE).map_or(false, |cookie| {
+                if let Some(ver_id) = verify_surface_preview_cookie(
+                    &cookie,
+                    &state.cookie_secret,
+                    &site.id,
+                    slot,
+                    site.password_version,
+                    now_unix,
+                ) {
+                    preview_version_id = Some(ver_id);
+                    true
+                } else {
+                    false
+                }
+            }),
             HostScope::OwnHost | HostScope::CustomDomain => {
                 parse_cookie(req.headers(), SITE_SESSION_COOKIE).map_or(false, |cookie| {
                     verify_session_cookie(
@@ -1365,6 +1410,9 @@ async fn handle_public(
             }
         };
         if !authorized {
+            if matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_)) {
+                return not_live_response(StatusCode::UNAUTHORIZED, accept_language(&req).as_deref());
+            }
             return refusal_response(
                 &site,
                 StatusCode::UNAUTHORIZED,
@@ -1375,8 +1423,29 @@ async fn handle_public(
         }
     }
 
+    if matches!(scope, HostScope::PreviewSlot(_)) && req.uri().path() == INSPECTOR_PATH {
+        drop(route_table);
+        return preview_inspector_response(&state, req.method());
+    }
+
+    let preview_mode = match scope {
+        HostScope::NextHost => PreviewMode::NextBanner,
+        HostScope::PreviewSlot(_) => PreviewMode::SurfaceInspector,
+        HostScope::OwnHost | HostScope::CustomDomain => PreviewMode::None,
+    };
+    let frame_ancestors = if preview_mode == PreviewMode::SurfaceInspector {
+        Some(&state.frame_ancestors_header)
+    } else {
+        None
+    };
+
     let Some(chosen) = site.deployment_for(scope, preview_version_id.as_deref()) else {
-        return html_response(StatusCode::NOT_FOUND, render_not_found_page(), true);
+        let mut res = html_response(StatusCode::NOT_FOUND, render_not_found_page(), true);
+        if let Some(csp) = frame_ancestors {
+            res.headers_mut()
+                .insert(HeaderName::from_static("content-security-policy"), csp.clone());
+        }
+        return res;
     };
     let deployment = chosen.deployment;
 
@@ -1415,7 +1484,8 @@ async fn handle_public(
                         etag_hdr,
                         status,
                         is_public,
-                        scope == HostScope::NextHost,
+                        preview_mode,
+                        frame_ancestors,
                         &site.slug,
                         &req,
                     )
@@ -1424,7 +1494,12 @@ async fn handle_public(
             }
             StaticResolution::NotFound => {
                 if deployment.kind == DeploymentKind::Static {
-                    return html_response(StatusCode::NOT_FOUND, render_not_found_page(), !is_public);
+                    let mut res = html_response(StatusCode::NOT_FOUND, render_not_found_page(), !is_public);
+                    if let Some(csp) = frame_ancestors {
+                        res.headers_mut()
+                            .insert(HeaderName::from_static("content-security-policy"), csp.clone());
+                    }
+                    return res;
                 }
             }
         }
@@ -1634,9 +1709,44 @@ pub fn parse_web_origins(raw: Option<&str>) -> Vec<String> {
     if out.is_empty() { default() } else { out }
 }
 
+fn preview_inspector_response(state: &RouterState, method: &Method) -> Response<BoxBody> {
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
+            .header("allow", "GET, HEAD")
+            .header("cache-control", "no-store, no-transform")
+            .body(full_body(Bytes::new()))
+            .unwrap();
+    }
+    let script = Bytes::from(render_preview_inspector_script(&state.web_origins));
+    let len = script.len();
+    let body = if *method == Method::HEAD {
+        full_body(Bytes::new())
+    } else {
+        full_body(script)
+    };
+    let mut res = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/javascript; charset=utf-8")
+        .header("content-length", len.to_string())
+        .header("cache-control", "no-store, no-transform")
+        .header("strict-transport-security", HSTS_HEADER)
+        .header("x-content-type-options", "nosniff")
+        .header("x-robots-tag", "noindex, nofollow, noarchive")
+        .header("cross-origin-resource-policy", "same-origin")
+        .body(body)
+        .unwrap();
+    res.headers_mut().insert(
+        HeaderName::from_static("content-security-policy"),
+        state.frame_ancestors_header.clone(),
+    );
+    res
+}
+
 async fn handle_member_pass(
     state: Arc<RouterState>,
     site: &crate::routes::SiteRecord,
+    scope: HostScope,
     host: &str,
     client_ip: &str,
     req: Request<Incoming>,
@@ -1657,7 +1767,7 @@ async fn handle_member_pass(
     }
 
     let limit_key = format!("member|{}|{client_ip}", site.id);
-    let decision = state.unlock_limiter.check(&limit_key);
+    let decision = state.member_limiter.check(&limit_key);
     if !decision.allowed {
         return Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
@@ -1668,8 +1778,16 @@ async fn handle_member_pass(
     }
 
     let language = accept_language(&req);
+    let is_preview_slot = matches!(scope, HostScope::PreviewSlot(_));
+    let refused_with_path = |path: &str| {
+        if is_preview_slot {
+            not_live_response(StatusCode::UNAUTHORIZED, language.as_deref())
+        } else {
+            refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), path, true)
+        }
+    };
     let Some(backend) = state.auth_backend.as_ref() else {
-        return refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), "/", true);
+        return refused_with_path("/");
     };
     let body_bytes = match read_limited_body(
         req.into_body(),
@@ -1692,31 +1810,52 @@ async fn handle_member_pass(
     let form = String::from_utf8_lossy(&body_bytes);
     let pass = query_param(&form, "pass").unwrap_or_default();
     let next_path = sanitize_next_path(&query_param(&form, "path").unwrap_or_else(|| "/".to_string()));
-    let refused = || refusal_response(site, StatusCode::UNAUTHORIZED, language.as_deref(), &next_path, true);
     if pass.is_empty() {
-        return refused();
+        return refused_with_path(&next_path);
     }
     let Some(redeemed) = backend.redeem_member_pass(host.to_string(), pass).await else {
-        return refused();
+        return refused_with_path(&next_path);
     };
     if redeemed.site_id != site.id {
-        return refused();
+        return refused_with_path(&next_path);
     }
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let token = sign_session_cookie(
-        &state.cookie_secret,
-        &redeemed.site_id,
-        "site",
-        redeemed.password_version,
-        now_unix + redeemed.max_age,
-    );
+    let token = match scope {
+        HostScope::PreviewSlot(slot) => {
+            let Some(version_id) = redeemed.version_id.as_deref().filter(|v| !v.is_empty()) else {
+                return refused_with_path(&next_path);
+            };
+            sign_surface_preview_cookie(
+                &state.cookie_secret,
+                &redeemed.site_id,
+                slot,
+                version_id,
+                redeemed.password_version,
+                now_unix + redeemed.max_age,
+            )
+        }
+        _ => sign_session_cookie(
+            &state.cookie_secret,
+            &redeemed.site_id,
+            "site",
+            redeemed.password_version,
+            now_unix + redeemed.max_age,
+        ),
+    };
     let set_cookie = format!(
         "{SITE_SESSION_COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=None; Partitioned",
         redeemed.max_age
     );
-    safe_redirect_response(StatusCode::SEE_OTHER, &next_path, Some(&set_cookie))
+    let mut res = safe_redirect_response(StatusCode::SEE_OTHER, &next_path, Some(&set_cookie));
+    if is_preview_slot {
+        res.headers_mut().insert(
+            HeaderName::from_static("content-security-policy"),
+            state.frame_ancestors_header.clone(),
+        );
+    }
+    res
 }
 
 async fn handle_unlock(
@@ -1855,6 +1994,13 @@ async fn ensure_db_blob(
     .unwrap_or(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewMode {
+    None,
+    NextBanner,
+    SurfaceInspector,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn serve_static_file(
     blobs: &BlobStore,
@@ -1865,7 +2011,8 @@ async fn serve_static_file(
     etag_hdr: Option<HeaderValue>,
     status: u16,
     is_public: bool,
-    is_preview: bool,
+    preview_mode: PreviewMode,
+    frame_ancestors: Option<&HeaderValue>,
     slug: &str,
     req: &Request<Incoming>,
 ) -> Response<BoxBody> {
@@ -1878,7 +2025,11 @@ async fn serve_static_file(
             .unwrap();
     }
 
-    if status == 200 && !is_preview {
+    let is_html = file.content_type.starts_with("text/html");
+    let transforms_html = is_html && preview_mode != PreviewMode::None;
+    let allow_conditional_and_encoding = !transforms_html && preview_mode != PreviewMode::NextBanner;
+
+    if status == 200 && allow_conditional_and_encoding {
         if let Some(inm) = req.headers().get("if-none-match").and_then(|v| v.to_str().ok()) {
             let etag_str = etag_hdr.as_ref().and_then(|v| v.to_str().ok()).unwrap_or("");
             if !etag_str.is_empty() && etag_matches(inm, etag_str) {
@@ -1892,6 +2043,9 @@ async fn serve_static_file(
                     content_type_hdr,
                     etag_hdr,
                     is_public,
+                    preview_mode,
+                    is_html,
+                    frame_ancestors,
                     None,
                     full_body(Bytes::new()),
                 );
@@ -1899,9 +2053,8 @@ async fn serve_static_file(
         }
     }
 
-    let is_html = file.content_type.starts_with("text/html");
     if let Some(range_hdr) = req.headers().get("range").and_then(|v| v.to_str().ok()) {
-        if status == 200 && !is_preview {
+        if status == 200 && allow_conditional_and_encoding {
             if let Some(range) = parse_single_range(range_hdr, file.bytes) {
                 match range {
                     RangeSpec::Valid(start, end) => {
@@ -1950,6 +2103,9 @@ async fn serve_static_file(
                             content_type_hdr,
                             etag_hdr,
                             is_public,
+                            preview_mode,
+                            is_html,
+                            frame_ancestors,
                             None,
                             body,
                         );
@@ -1967,22 +2123,26 @@ async fn serve_static_file(
         }
     }
 
-    let accepted = if is_preview {
-        AcceptedEncodings::IDENTITY
-    } else {
+    let accepted = if allow_conditional_and_encoding {
         req.headers()
             .get("accept-encoding")
             .and_then(|v| v.to_str().ok())
             .map_or(AcceptedEncodings::IDENTITY, AcceptedEncodings::from_header)
+    } else {
+        AcceptedEncodings::IDENTITY
     };
 
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-    if is_preview && is_html {
+    if transforms_html {
         let payload = match blobs.get_encoded(&file.sha256, AcceptedEncodings::IDENTITY).await {
             Ok(p) => p,
             Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable"),
         };
-        let final_bytes = Bytes::from(inject_preview_banner(&payload.bytes, slug));
+        let final_bytes = match preview_mode {
+            PreviewMode::NextBanner => Bytes::from(inject_preview_banner(&payload.bytes, slug)),
+            PreviewMode::SurfaceInspector => Bytes::from(inject_preview_inspector(&payload.bytes)),
+            PreviewMode::None => payload.bytes,
+        };
         let len = final_bytes.len();
         let body = if *req.method() == Method::HEAD {
             full_body(Bytes::new())
@@ -1997,8 +2157,11 @@ async fn serve_static_file(
             resolved_path,
             file,
             content_type_hdr,
-            etag_hdr,
+            None,
             is_public,
+            preview_mode,
+            is_html,
+            frame_ancestors,
             None,
             body,
         );
@@ -2046,6 +2209,9 @@ async fn serve_static_file(
         content_type_hdr,
         etag_hdr,
         is_public,
+        preview_mode,
+        is_html,
+        frame_ancestors,
         encoding,
         body,
     )
@@ -2062,11 +2228,18 @@ fn build_static_response(
     content_type_hdr: HeaderValue,
     etag_hdr: Option<HeaderValue>,
     is_public: bool,
+    preview_mode: PreviewMode,
+    is_html: bool,
+    frame_ancestors: Option<&HeaderValue>,
     encoding: Option<&'static str>,
     body: BoxBody,
 ) -> Response<BoxBody> {
     let cache_control = if !is_public {
-        "private, no-cache, no-transform"
+        if preview_mode == PreviewMode::SurfaceInspector && !is_html && file.immutable {
+            "private, max-age=31536000, immutable"
+        } else {
+            "private, no-cache, no-transform"
+        }
     } else if file.immutable {
         "public, max-age=31536000, immutable"
     } else {
@@ -2075,7 +2248,7 @@ fn build_static_response(
     let mut res = Response::new(body);
     *res.status_mut() = status;
     let headers = res.headers_mut();
-    headers.reserve(12);
+    headers.reserve(13);
 
     headers.insert(HeaderName::from_static("content-type"), content_type_hdr);
     if let Some(etag_val) = etag_hdr {
@@ -2136,6 +2309,10 @@ fn build_static_response(
                 headers.insert(name, val);
             }
         }
+    }
+    if let Some(csp) = frame_ancestors {
+        headers.remove(HeaderName::from_static("x-frame-options"));
+        headers.insert(HeaderName::from_static("content-security-policy"), csp.clone());
     }
     res
 }

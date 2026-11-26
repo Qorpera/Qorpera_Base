@@ -102,4 +102,12 @@ describe("surface notch track spacing", () => {
 		expect(phoneShell).toContain("transform: scale(var(--phone-scale, 1))");
 		expect(phoneShell).toContain("transform-origin: 0 0");
 	});
+
+	it("clears the top-right panel toggle button when showing the preview status pill with drawer collapsed", () => {
+		const clearance = declarations(
+			".surface-page:not(.has-drawer):not(.is-panels-hidden):has(> .surface-panel-toggle:not([hidden])) .surface-frames:not(.is-compare) .surface-preview-pill",
+		);
+		expect(clearance).toContain("right: 66px");
+		expect(clearance).toContain("max-width: calc(100% - 80px)");
+	});
 });

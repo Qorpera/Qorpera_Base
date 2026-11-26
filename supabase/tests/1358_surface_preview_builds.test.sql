@@ -129,7 +129,7 @@ begin
 		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text)',
 		'public.qorpera_check_surface_preview_build(uuid,uuid)',
 		'public.qorpera_begin_surface_preview_build(uuid,uuid)',
-		'public.qorpera_complete_surface_preview_build(uuid,uuid,uuid,text,text,text)'
+		'public.qorpera_complete_surface_preview_build(uuid,uuid,uuid,text,text,text,text,jsonb,integer,bigint,boolean)'
 	] loop
 		perform pg_temp.spb_assert(
 			has_function_privilege('service_role', v_function, 'EXECUTE')

@@ -877,6 +877,7 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
         "member-pass-123",
         RedeemedMemberPass {
             site_id: "site-1".to_string(),
+            version_id: None,
             password_version: 3,
             max_age: 43200,
         },
@@ -2034,6 +2035,7 @@ async fn websites_not_live_yet_and_served_from_database_versions() {
         "member-pass-1",
         RedeemedMemberPass {
             site_id: "site-closed".to_string(),
+            version_id: None,
             password_version: 4,
             max_age: 43200,
         },
@@ -2610,4 +2612,237 @@ async fn a_pointed_domain_gets_a_certificate_and_an_almost_ready_page_until_veri
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert!(hdrs.get("retry-after").is_none());
     assert!(!String::from_utf8(body.to_vec()).unwrap().contains("almost ready"));
+}
+
+#[tokio::test]
+async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_sw_block() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+
+    let v1_html = Bytes::from("<!doctype html><html><body><h1>Preview V1</h1></body></html>");
+    let v2_html = Bytes::from("<!doctype html><html><body><h1>Preview V2</h1></body></html>");
+    let chunk_js = Bytes::from("export const chunk = 'cached-surface-preview-asset';\n".repeat(40));
+    let v1_sha = sha256_hex(&v1_html);
+    let v2_sha = sha256_hex(&v2_html);
+    let chunk_sha = sha256_hex(&chunk_js);
+    blobs.put(&v1_sha, v1_html.clone(), true).await.unwrap();
+    blobs.put(&v2_sha, v2_html.clone(), true).await.unwrap();
+    blobs.put(&chunk_sha, chunk_js.clone(), true).await.unwrap();
+
+    let mut v1_files = HashMap::new();
+    v1_files.insert("index.html".to_string(), html_file(v1_sha.clone(), v1_html.len()));
+    v1_files.insert(
+        "assets/app-a1b2c3d4.js".to_string(),
+        ManifestFile {
+            sha256: chunk_sha.clone(),
+            bytes: chunk_js.len(),
+            content_type: "application/javascript; charset=utf-8".to_string(),
+            immutable: true,
+        },
+    );
+    let mut v2_files = HashMap::new();
+    v2_files.insert("index.html".to_string(), html_file(v2_sha.clone(), v2_html.len()));
+    v2_files.insert(
+        "assets/app-a1b2c3d4.js".to_string(),
+        ManifestFile {
+            sha256: chunk_sha.clone(),
+            bytes: chunk_js.len(),
+            content_type: "application/javascript; charset=utf-8".to_string(),
+            immutable: true,
+        },
+    );
+
+    let mut v1_dep = static_deployment("dep-v1", v1_files);
+    v1_dep.manifest.headers.push(HeaderRule {
+        path_prefix: "/".to_string(),
+        headers: HashMap::from([
+            ("x-frame-options".to_string(), "DENY".to_string()),
+            ("content-security-policy".to_string(), "frame-ancestors 'none'".to_string()),
+        ]),
+    });
+    let v2_dep = static_deployment("dep-v2", v2_files);
+
+    let mut site = site_record("site-surf", "atelier-nord", true, Some(sha256_hex(b"pw")));
+    site.preview_deployments.insert("ver-1".to_string(), v1_dep);
+    site.preview_deployments.insert("ver-2".to_string(), v2_dep);
+
+    let snapshot = EdgeSnapshot {
+        hosts_domain: "qorpera.site".to_string(),
+        hosts_enabled: true,
+        public_enabled: true,
+        domains_enabled: true,
+        sites: vec![site],
+        ..Default::default()
+    };
+
+    let auth = Arc::new(MemoryAuthBackend::default());
+    auth.insert_member_pass(
+        "atelier-nord--p0.qorpera.site",
+        "pass-v1",
+        RedeemedMemberPass {
+            site_id: "site-surf".to_string(),
+            version_id: Some("ver-1".to_string()),
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+    auth.insert_member_pass(
+        "atelier-nord--p1.qorpera.site",
+        "pass-v2",
+        RedeemedMemberPass {
+            site_id: "site-surf".to_string(),
+            version_id: Some("ver-2".to_string()),
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+    auth.insert_member_pass(
+        "atelier-nord--p0.qorpera.site",
+        "pass-missing-version",
+        RedeemedMemberPass {
+            site_id: "site-surf".to_string(),
+            version_id: None,
+            password_version: 4,
+            max_age: 43200,
+        },
+    );
+
+    let mut cfg = test_config(None);
+    cfg.auth_backend = Some(Arc::clone(&auth) as Arc<dyn EdgeAuthBackend>);
+    let state = Arc::new(RouterState::new(blobs, snapshot, &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_p, _i) = bound.spawn();
+
+    let tls_allow = |domain: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/_internal/tls/allow?domain={domain}"))
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    };
+    assert_eq!(http_call(int_addr, tls_allow("atelier-nord--p0.qorpera.site")).await.0, StatusCode::OK);
+    assert_eq!(http_call(int_addr, tls_allow("atelier-nord--p7.qorpera.site")).await.0, StatusCode::OK);
+    assert_eq!(http_call(int_addr, tls_allow("atelier-nord--p8.qorpera.site")).await.0, StatusCode::FORBIDDEN);
+
+    let (st, _, body) = http_call(pub_addr, get("atelier-nord--p0.qorpera.site", "/", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let unauth = String::from_utf8(body.to_vec()).unwrap();
+    assert!(unauth.contains("Not live yet") && !unauth.contains("<form"));
+
+    let (st, _, _) = http_call(pub_addr, get("atelier-nord--p0.qorpera.site", "/__qorpera/inspector.js", &[])).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let post_pass = |host: &str, pass: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/__qorpera/member")
+            .header("host", host)
+            .header("origin", "https://app.qorpera.com")
+            .header("sec-fetch-site", "cross-site")
+            .body(Full::new(Bytes::from(format!("pass={pass}&path=/"))))
+            .unwrap()
+    };
+
+    assert_eq!(
+        http_call(pub_addr, post_pass("atelier-nord--p0.qorpera.site", "pass-missing-version")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let (st, hdrs, _) = http_call(pub_addr, post_pass("atelier-nord--p0.qorpera.site", "pass-v1")).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let set_cookie = hdrs.get("set-cookie").unwrap().to_str().unwrap();
+    assert!(set_cookie.contains("SameSite=None") && set_cookie.contains("Partitioned"));
+    assert_eq!(
+        hdrs.get("content-security-policy").unwrap(),
+        "frame-ancestors 'self' https://app.qorpera.com"
+    );
+    let cookie_p0 = first_cookie(&hdrs);
+
+    let (st, hdrs, _) = http_call(pub_addr, post_pass("atelier-nord--p1.qorpera.site", "pass-v2")).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let cookie_p1 = first_cookie(&hdrs);
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        get("atelier-nord--p1.qorpera.site", "/", &[("cookie", cookie_p0.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        get("atelier-nord--p0.qorpera.site", "/", &[("cookie", cookie_p0.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let html_v1 = String::from_utf8(body.to_vec()).unwrap();
+    assert!(html_v1.contains("Preview V1"));
+    assert!(html_v1.contains("<script src=\"/__qorpera/inspector.js\" defer></script>"));
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
+    assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
+    assert!(hdrs.get("x-frame-options").is_none());
+    assert_eq!(
+        hdrs.get("content-security-policy").unwrap(),
+        "frame-ancestors 'self' https://app.qorpera.com"
+    );
+
+    let (st, _, body) = http_call(
+        pub_addr,
+        get("atelier-nord--p1.qorpera.site", "/", &[("cookie", cookie_p1.as_str())]),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("Preview V2"));
+
+    let (st, hdrs, body) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/__qorpera/inspector.js",
+            &[("cookie", cookie_p0.as_str())],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("content-type").unwrap(), "text/javascript; charset=utf-8");
+    let script = String::from_utf8(body.to_vec()).unwrap();
+    assert!(script.contains("qorpera-inspector-pick") && script.contains("https://app.qorpera.com"));
+
+    let (st, hdrs, br_body) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/assets/app-a1b2c3d4.js",
+            &[("cookie", cookie_p0.as_str()), ("accept-encoding", "br, gzip")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get("cache-control").unwrap(), "private, max-age=31536000, immutable");
+    assert_eq!(hdrs.get("content-encoding").unwrap(), "br");
+    assert!(br_body.len() < chunk_js.len());
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/assets/app-a1b2c3d4.js",
+            &[("cookie", cookie_p0.as_str()), ("if-none-match", &format!("\"{chunk_sha}\""))],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/sw.js",
+            &[("cookie", cookie_p0.as_str()), ("service-worker", "script")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
 }
