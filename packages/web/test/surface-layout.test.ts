@@ -60,7 +60,11 @@ function studio(overrides: Partial<SurfaceSummary> = {}): SurfaceSummary {
 
 async function open(
 	baseFiles: Readonly<Record<string, string>>,
-	options: { readonly ops?: readonly StudioPatchOp[]; readonly surface?: SurfaceSummary } = {},
+	options: {
+		readonly ops?: readonly StudioPatchOp[];
+		readonly surface?: SurfaceSummary;
+		readonly briefSummary?: string | null;
+	} = {},
 ) {
 	const surface = options.surface ?? studio();
 	const changes = options.ops
@@ -70,7 +74,10 @@ async function open(
 		fakeClient({
 			listSurfaces: vi.fn(async () => [surface]),
 			getSurfaceWorkspace: vi.fn(async () =>
-				workspace(changes.length ? [session(["staged"], { surfaceId: surface.id, changes })] : [], { surface }),
+				workspace(changes.length ? [session(["staged"], { surfaceId: surface.id, changes })] : [], {
+					surface,
+					...(options.briefSummary !== undefined ? { briefSummary: options.briefSummary } : {}),
+				}),
 			),
 		}),
 	);
@@ -1872,11 +1879,11 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 	});
 
 	it("marks brief-fallback hero copy with is-brief while leaving explicit product taglines unclamped", async () => {
-		const briefSurface = studio({ briefMarkdown: "Long free-form creation brief for the product surface." });
-		const fallback = await open({}, { surface: briefSurface });
+		const fallback = await open({}, { briefSummary: "Long free-form creation brief for the product surface." });
 		const fallbackLine = fallback.view.el.querySelector<HTMLElement>(".studio-product-line")!;
-		expect(fallbackLine.textContent).toContain("Long free-form creation brief");
+		expect(fallbackLine.textContent).toBe("Long free-form creation brief for the product surface.");
 		expect(fallbackLine.classList.contains("is-brief")).toBe(true);
+		expect(fallbackLine.classList.contains("is-empty")).toBe(false);
 		fallback.view.dispose();
 		fallback.store.dispose();
 	});
