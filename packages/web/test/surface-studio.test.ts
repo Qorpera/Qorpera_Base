@@ -741,6 +741,27 @@ describe("SurfaceStudioView", () => {
 		);
 		expect(cased).toContain('content: "<\\/STYLE>";');
 		expect(cased).toContain('const tag = "<\\/SCRIPT>";');
+
+		const pngRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 4096,
+			mediaType: "image/png",
+		};
+		const withBinaries = prepareStudioHtmlPreview(
+			'<!doctype html><html><body><img src="img/hero.png"><img src="../outside.png"></body></html>',
+			"surfaces/headband/modules/pod/index.html",
+			{},
+			"",
+			{
+				"surfaces/headband/modules/pod/img/hero.png": pngRef,
+				"surfaces/outside.png": pngRef,
+			},
+			"surfaces/headband",
+		);
+		expect(withBinaries).toContain('data-qorpera-src="modules/pod/img/hero.png"');
+		expect(withBinaries).not.toContain('src="img/hero.png"');
+		expect(withBinaries).not.toContain('data-qorpera-src="outside.png"');
 	});
 
 	it("hands the page frame only text that reads back as the page it checked", () => {

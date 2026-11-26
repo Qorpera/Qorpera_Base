@@ -1570,11 +1570,18 @@ export async function checkStagedSurfaceLayout(
 	return "checked";
 }
 
+export interface SurfaceChangeMetadata {
+	readonly title: string;
+	readonly summary: string;
+	readonly optionGroupKey: string | null;
+}
+
 export interface SurfacePatchSessionTracker {
 	readonly openChanges: readonly SurfaceSessionOpenChange[];
 	readonly openById: ReadonlyMap<string, SurfaceSessionOpenChange>;
 	readonly currentOpsByChangeId: ReadonlyMap<string, readonly StudioPatchOp[]>;
 	readonly stagedEntries: readonly { readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }[];
+	getChangeMeta(changeId: string): SurfaceChangeMetadata | undefined;
 	resolveTargetChangeId(input: {
 		readonly explicitChangeId: string | null;
 		readonly createNew: boolean;
@@ -1586,6 +1593,8 @@ export interface SurfacePatchSessionTracker {
 		readonly ops: readonly StudioPatchOp[];
 		readonly replaceAll?: boolean;
 		readonly optionGroup?: string | null;
+		readonly title?: string;
+		readonly summary?: string;
 	}): void;
 }
 
@@ -1597,11 +1606,18 @@ export function createSurfacePatchSessionTracker(
 	const replyChangeId = options.replyChangeId?.trim() || null;
 	const isInternalReconciliation = options.isInternalReconciliation === true;
 	const updatedInTurn = new Set<string>();
+	const stagedInTurnIds = new Set<string>();
 	const currentOpsByChangeId = new Map<string, readonly StudioPatchOp[]>();
+	const changeMetaById = new Map<string, SurfaceChangeMetadata>();
 	for (const item of openChanges) {
 		if (item.patchManifest && item.patchManifest.length > 0) {
 			currentOpsByChangeId.set(item.changeId, item.patchManifest);
 		}
+		changeMetaById.set(item.changeId, {
+			title: item.title,
+			summary: item.summary,
+			optionGroupKey: item.optionGroupKey ?? null,
+		});
 	}
 	const stagedEntries: Array<{ readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }> = [];
 	return {
@@ -1609,7 +1625,24 @@ export function createSurfacePatchSessionTracker(
 		openById,
 		currentOpsByChangeId,
 		stagedEntries,
+		getChangeMeta(changeId) {
+			return changeMetaById.get(changeId);
+		},
 		resolveTargetChangeId(input) {
+			if (input.explicitChangeId && stagedInTurnIds.has(input.explicitChangeId)) {
+				if (input.createNew) {
+					throw new CloudToolArgumentRefusal(
+						"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+					);
+				}
+				const existingMeta = changeMetaById.get(input.explicitChangeId);
+				if (input.optionGroup && existingMeta && existingMeta.optionGroupKey !== input.optionGroup) {
+					throw new CloudToolArgumentRefusal(
+						"Cannot change optionGroup when updating an existing change; omit changeId or pass createNew: true to stage an option in a different group.",
+					);
+				}
+				return input.explicitChangeId;
+			}
 			return resolveFollowUpTargetChangeId({
 				explicitChangeId: input.explicitChangeId,
 				createNew: input.createNew,
@@ -1621,21 +1654,34 @@ export function createSurfacePatchSessionTracker(
 			});
 		},
 		recordStaged(input) {
+			const effectiveId = input.targetChangeId ?? input.resultChangeId;
 			const targetOpen = input.targetChangeId ? openById.get(input.targetChangeId) : undefined;
+			const prevMeta = changeMetaById.get(effectiveId);
+			stagedInTurnIds.add(input.resultChangeId);
 			if (input.targetChangeId) {
 				updatedInTurn.add(input.targetChangeId);
-				const prevOps = input.replaceAll ? [] : (currentOpsByChangeId.get(input.targetChangeId) ?? []);
-				const nextOps = input.replaceAll
-					? input.ops
-					: mergeFolderPatchOps(options.folderRoot, prevOps, input.ops, targetOpen?.baseFiles ?? null);
-				currentOpsByChangeId.set(input.targetChangeId, nextOps);
-				if (input.replaceAll) {
-					for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
-						if (stagedEntries[i]?.changeId === input.targetChangeId) stagedEntries.splice(i, 1);
-					}
+			}
+			const prevOps = input.replaceAll ? [] : (currentOpsByChangeId.get(effectiveId) ?? []);
+			const nextOps = input.replaceAll
+				? input.ops
+				: mergeFolderPatchOps(options.folderRoot, prevOps, input.ops, targetOpen?.baseFiles ?? null);
+			currentOpsByChangeId.set(effectiveId, nextOps);
+			if (input.replaceAll && input.targetChangeId) {
+				for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
+					if (stagedEntries[i]?.changeId === input.targetChangeId) stagedEntries.splice(i, 1);
 				}
 			}
-			if (!input.optionGroup && !targetOpen?.optionGroupKey) {
+			const resolvedGroup = input.optionGroup ?? prevMeta?.optionGroupKey ?? targetOpen?.optionGroupKey ?? null;
+			const nextTitle = input.title ?? prevMeta?.title ?? targetOpen?.title ?? "";
+			const nextSummary = input.summary ?? prevMeta?.summary ?? targetOpen?.summary ?? "";
+			if (nextTitle || prevMeta) {
+				changeMetaById.set(input.resultChangeId, {
+					title: nextTitle,
+					summary: nextSummary,
+					optionGroupKey: resolvedGroup,
+				});
+			}
+			if (!resolvedGroup) {
 				stagedEntries.push({ changeId: input.resultChangeId, ops: input.ops });
 			}
 		},
@@ -1890,6 +1936,8 @@ export function createStageSurfacePatchTool(
 				ops: parsed.ops,
 				replaceAll: parsed.replaceAll === true,
 				optionGroup: parsed.optionGroup ?? null,
+				title: parsed.title,
+				summary: parsed.summary,
 			});
 			return {
 				kind: "text",

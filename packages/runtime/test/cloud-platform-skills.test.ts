@@ -10,6 +10,7 @@ const STUDIO_TOOLS = [
 	"stage_surface_patch",
 	"compose_surface_layout",
 	"stage_surface_artifact",
+	"make_picture",
 	"inspect_surface",
 	"surface_reply",
 	"surface_ask",

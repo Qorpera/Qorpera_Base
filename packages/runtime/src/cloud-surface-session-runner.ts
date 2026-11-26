@@ -68,6 +68,7 @@ import {
 	type CloudSurfaceToolsPort,
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
+	createSurfacePatchSessionTracker,
 	type SurfaceLayoutStaging,
 	type SurfaceOpsActionToolPort,
 	type SurfacePatchToolPort,
@@ -1235,6 +1236,12 @@ export async function runSurfaceSessionTurn(
 							}),
 						]
 					: [];
+			const patchTracker = createSurfacePatchSessionTracker({
+				openChanges: sessionOpenChanges,
+				replyChangeId,
+				isInternalReconciliation,
+				folderRoot,
+			});
 			const pictureTool =
 				!isInternalReconciliation && ports.makePicture
 					? [
@@ -1244,6 +1251,7 @@ export async function runSurfaceSessionTurn(
 								stageBytes: ports.makePicture.stageBytes,
 								surfacePatch: trackedSurfacePatch,
 								pictures: ports.makePicture.pictures,
+								patchTracker,
 							}),
 						]
 					: [];
@@ -1254,6 +1262,7 @@ export async function runSurfaceSessionTurn(
 					openChanges: sessionOpenChanges,
 					replyChangeId,
 					isInternalReconciliation,
+					tracker: patchTracker,
 				}),
 				...narrateTool,
 				...pictureTool,

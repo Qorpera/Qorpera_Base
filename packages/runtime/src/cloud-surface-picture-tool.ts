@@ -28,7 +28,7 @@ import {
 	MAX_CLOUD_PICTURE_PROMPT_BYTES,
 } from "./cloud-picture-channel.ts";
 import type { CloudRuntimeToolOperation } from "./cloud-runtime-observability.ts";
-import type { SurfacePatchToolPort } from "./cloud-surface-tools.ts";
+import type { SurfacePatchSessionTracker, SurfacePatchToolPort } from "./cloud-surface-tools.ts";
 import { fitsOneResult } from "./cloud-worker-tools.ts";
 
 export const STUDIO_MAKE_PICTURE_SCHEMA = "qorpera.studio-picture/v1";
@@ -44,16 +44,28 @@ export interface StudioPictureToolOptions {
 	readonly stageBytes: (bytes: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<StudioBinaryRef>;
 	readonly surfacePatch: SurfacePatchToolPort;
 	readonly pictures: CloudPictureChannel;
+	readonly patchTracker?: SurfacePatchSessionTracker;
 }
 
 interface StudioPictureArgs {
 	readonly path: string;
 	readonly prompt: string;
-	readonly title: string;
-	readonly summary: string;
+	readonly title?: string;
+	readonly summary?: string;
 	readonly changeId?: string;
+	readonly createNew: boolean;
 	readonly optionGroup?: string;
 	readonly optionGroupTitle?: string;
+}
+
+function readablePictureTitle(relPath: string): string {
+	const base = relPath.split("/").pop() ?? "";
+	const stem = base
+		.replace(/\.png$/i, "")
+		.replace(/[-_]+/g, " ")
+		.trim();
+	const label = stem ? `Add ${stem}` : "Add product visual";
+	return label.slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS);
 }
 
 export function normalizeStudioPicturePath(raw: unknown, folderRoot: string): string {
@@ -131,7 +143,16 @@ function studioPictureRefusal(error: unknown): never {
 
 export function createStudioPictureTool(options: StudioPictureToolOptions): CloudNativeTool {
 	const parseArgs = (value: unknown): StudioPictureArgs => {
-		const allowed = ["path", "prompt", "title", "summary", "changeId", "optionGroup", "optionGroupTitle"];
+		const allowed = [
+			"path",
+			"prompt",
+			"title",
+			"summary",
+			"changeId",
+			"createNew",
+			"optionGroup",
+			"optionGroupTitle",
+		];
 		if (
 			value === null ||
 			typeof value !== "object" ||
@@ -141,7 +162,7 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 			!Object.hasOwn(value, "prompt")
 		) {
 			throw new CloudToolArgumentRefusal(
-				"make_picture takes path and prompt, plus optional title, summary, changeId, optionGroup, and optionGroupTitle",
+				"make_picture takes path and prompt, plus optional title, summary, changeId, createNew, optionGroup, and optionGroupTitle",
 			);
 		}
 		const rec = value as Record<string, unknown>;
@@ -154,10 +175,9 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 				`prompt must be plain text of 1 to ${MAX_CLOUD_PICTURE_PROMPT_BYTES} bytes (line breaks allowed)`,
 			);
 		}
-		const base = relPath.split("/").pop() ?? "picture.png";
 		const title =
 			rec.title === undefined
-				? `Add ${base}`.slice(0, SURFACE_MAX_CHANGE_TITLE_CHARS)
+				? undefined
 				: typeof rec.title === "string" &&
 						rec.title.trim().length > 0 &&
 						rec.title.trim().length <= SURFACE_MAX_CHANGE_TITLE_CHARS
@@ -168,7 +188,7 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 		}
 		const summary =
 			rec.summary === undefined
-				? `Generated PNG image at ${relPath}.`.slice(0, SURFACE_MAX_CHANGE_SUMMARY_CHARS)
+				? undefined
 				: typeof rec.summary === "string" &&
 						rec.summary.trim().length > 0 &&
 						rec.summary.trim().length <= SURFACE_MAX_CHANGE_SUMMARY_CHARS
@@ -185,6 +205,15 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 					: null;
 		if (changeId === null) {
 			throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+		}
+		const createNew = rec.createNew === undefined ? false : typeof rec.createNew === "boolean" ? rec.createNew : null;
+		if (createNew === null) {
+			throw new CloudToolArgumentRefusal("createNew must be a boolean");
+		}
+		if (changeId && createNew) {
+			throw new CloudToolArgumentRefusal(
+				"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+			);
 		}
 		const optionGroup =
 			rec.optionGroup === undefined
@@ -214,11 +243,23 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 		return {
 			path: relPath,
 			prompt,
-			title,
-			summary,
+			...(title !== undefined ? { title } : {}),
+			...(summary !== undefined ? { summary } : {}),
 			...(changeId ? { changeId } : {}),
+			createNew,
 			...(optionGroup ? { optionGroup } : {}),
 			...(optionGroupTitle ? { optionGroupTitle } : {}),
+		};
+	};
+
+	const resolveTitleAndSummary = (
+		args: StudioPictureArgs,
+		targetChangeId: string | null,
+	): { readonly title: string; readonly summary: string } => {
+		const existing = targetChangeId ? options.patchTracker?.getChangeMeta(targetChangeId) : undefined;
+		return {
+			title: args.title ?? existing?.title ?? readablePictureTitle(args.path),
+			summary: args.summary ?? existing?.summary ?? "Added a generated visual for Preview.",
 		};
 	};
 
@@ -228,7 +269,7 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 		images: true,
 		description: [
 			"Generate one bespoke PNG image using the member's configured image model and stage it as a Preview file inside this interface folder at relative path (for example pictures/hero.png).",
-			"The tool returns the generated image inline so you can inspect it immediately. If it needs refinement, call make_picture again with a better prompt and the returned changeId to update that staged change in place.",
+			"The tool returns the generated image inline so you can inspect it immediately. When attaching a picture to an existing staged change or option, pass its changeId and omit title and summary so the change keeps its existing title and summary.",
 			`path must end in .png under this interface folder (max ${MAX_CLOUD_PICTURE_BYTES / MIB} MiB). Never pass a generated picture off as a photo of a real person, real place, or competitor's real product.`,
 		].join("\n"),
 		inputSchema: {
@@ -252,18 +293,25 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 					type: "string",
 					minLength: 1,
 					maxLength: SURFACE_MAX_CHANGE_TITLE_CHARS,
-					description: "Short change title shown in Changes.",
+					description:
+						"Short founder-facing change title shown in Changes. Omit when attaching to changeId to preserve its title.",
 				},
 				summary: {
 					type: "string",
 					minLength: 1,
 					maxLength: SURFACE_MAX_CHANGE_SUMMARY_CHARS,
-					description: "Concise founder-facing summary of the staged picture.",
+					description:
+						"Concise founder-facing summary of the staged picture. Omit when attaching to changeId to preserve its summary.",
 				},
 				changeId: {
 					type: "string",
 					description:
-						"Optional open change UUID to update in place when regenerating or adding to an existing change.",
+						"Optional open change UUID to update in place when regenerating or adding a visual to an existing change.",
+				},
+				createNew: {
+					type: "boolean",
+					description:
+						"Set true when intentionally staging a separate new change alongside existing open changes in this session.",
 				},
 				optionGroup: {
 					type: "string",
@@ -279,18 +327,35 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 		},
 		parseArguments(value) {
 			const args = parseArgs(value);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			return {
 				path: args.path,
 				prompt: args.prompt,
-				title: args.title,
-				summary: args.summary,
-				...(args.changeId ? { changeId: args.changeId } : {}),
+				title,
+				summary,
+				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(args.createNew ? { createNew: true } : {}),
 				...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
 				...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
 			};
 		},
 		async execute(rawArgs, context: CloudToolContext) {
 			const args = parseArgs(rawArgs);
+			const targetChangeId = options.patchTracker
+				? options.patchTracker.resolveTargetChangeId({
+						explicitChangeId: args.changeId ?? null,
+						createNew: args.createNew,
+						optionGroup: args.optionGroup ?? null,
+					})
+				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			context.observation?.update({ inputBytes: Buffer.byteLength(args.prompt) });
 			let made: CloudPictureMade;
 			try {
@@ -318,20 +383,29 @@ export function createStudioPictureTool(options: StudioPictureToolOptions): Clou
 				bytes: ref.bytes,
 				mediaType: ref.mediaType,
 			};
+			const ops = [{ op: "write_file" as const, path: args.path, file: closedRef }];
 			const staged = await options.surfacePatch.stageSurfacePatch(
 				options.sessionId,
 				{
-					title: args.title,
-					summary: args.summary,
-					ops: [{ op: "write_file", path: args.path, file: closedRef }],
+					title,
+					summary,
+					ops,
 					notePaths: [],
 					finishSession: false,
-					...(args.changeId ? { changeId: args.changeId } : {}),
+					...(targetChangeId ? { changeId: targetChangeId } : {}),
 					...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
 					...(args.optionGroupTitle ? { optionGroupTitle: args.optionGroupTitle } : {}),
 				},
 				context,
 			);
+			options.patchTracker?.recordStaged({
+				targetChangeId,
+				resultChangeId: staged.changeId,
+				ops,
+				optionGroup: args.optionGroup ?? null,
+				title,
+				summary,
+			});
 			const revised =
 				made.revisedPrompt !== undefined && made.revisedPrompt !== args.prompt
 					? Buffer.byteLength(made.revisedPrompt) <= MAX_CLOUD_PICTURE_PROMPT_BYTES && !made.revisedPromptCut

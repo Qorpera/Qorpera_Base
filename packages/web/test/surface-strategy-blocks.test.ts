@@ -1647,6 +1647,147 @@ describe("Studio module bridge security, empty tabs, chart lifecycle, tour recov
 		store.dispose();
 	});
 
+	it("serves binary and relative assets through the frame file bridge for modules and standalone HTML pages while blocking path escape", async () => {
+		const surface = strategySurface();
+		const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]);
+		const pngRef = {
+			manifestSha256: "1".repeat(64),
+			fileSha256: "2".repeat(64),
+			bytes: pngBytes.byteLength,
+			mediaType: "image/png",
+		};
+		const readBinary = vi.fn(async () => pngBytes);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surface]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+			}),
+		);
+		await store.load();
+		await store.openSurface(surface.slug);
+		const life = new AbortController();
+		const files: Record<string, string> = {
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: "qorpera.surface-layout/v1",
+				tabs: [
+					{
+						id: "lab",
+						title: "Lab",
+						blocks: [
+							{ type: "module", from: "modules/pod", heading: "Pod" },
+							{ type: "artifacts", heading: "Pages" },
+						],
+					},
+				],
+			}),
+			[`${ROOT}/modules/pod/index.html`]: '<!doctype html><img src="img/hero.png">',
+			[`${ROOT}/modules/pod/data.json`]: '{"ok":true}',
+			[`${ROOT}/memo.html`]: '<!doctype html><img src="pictures/shot.png">',
+		};
+		const baseBinaries = {
+			[`${ROOT}/modules/pod/img/hero.png`]: pngRef,
+			[`${ROOT}/pictures/shot.png`]: pngRef,
+		};
+		const view = new SurfaceStudioView({
+			store,
+			surface,
+			signal: life.signal,
+			baseFiles: files,
+			baseBinaries,
+			readBinary,
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+
+		const rawAnswers: Record<string, unknown>[] = [];
+		const origPortPost = MessagePort.prototype.postMessage;
+		vi.spyOn(MessagePort.prototype, "postMessage").mockImplementation(function (
+			this: MessagePort,
+			message: unknown,
+			...rest: unknown[]
+		) {
+			if (message && typeof message === "object" && (message as { type?: unknown }).type === "qorpera-app-answer") {
+				rawAnswers.push(message as Record<string, unknown>);
+			}
+			return origPortPost.apply(this, [message, ...(rest as [])]);
+		});
+
+		const moduleFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-module-frame")!;
+		const postModule = vi.spyOn(moduleFrame.contentWindow!, "postMessage");
+		const readyMod = new MessageEvent("message", { data: { type: PAGE_READY } });
+		Object.defineProperty(readyMod, "source", { value: moduleFrame.contentWindow });
+		window.dispatchEvent(readyMod);
+		const lastModCall = postModule.mock.calls.at(-1) as unknown[] | undefined;
+		const modMsg = lastModCall?.[0] as { html: string; base: string };
+		const modPort = (lastModCall?.[2] as MessagePort[])[0]!;
+		expect(modMsg.base).toBe("modules/pod");
+		expect(modMsg.html).toContain('data-qorpera-src="modules/pod/img/hero.png"');
+
+		const askPort = (port: MessagePort) => {
+			let nextId = 0;
+			const waiting = new Map<number, (answer: Record<string, unknown>) => void>();
+			port.onmessage = (event) => {
+				const data = event.data as Record<string, unknown>;
+				const resolve = waiting.get(typeof data.id === "number" ? data.id : 0);
+				if (resolve) {
+					waiting.delete(data.id as number);
+					resolve(data);
+				}
+			};
+			return async (method: string, params: Record<string, unknown>) => {
+				const idx = rawAnswers.length;
+				const data = await new Promise<Record<string, unknown>>((resolve) => {
+					const id = ++nextId;
+					waiting.set(id, resolve);
+					port.postMessage({ type: "qorpera-app-call", id, method, params });
+				});
+				return rawAnswers[idx] ?? data;
+			};
+		};
+
+		const callModule = askPort(modPort);
+		const modImgRes = await callModule("file", { path: "img/hero.png", base: "modules/pod" });
+		expect(modImgRes.ok).toBe(true);
+		expect(modImgRes.value).toBeInstanceOf(Blob);
+		expect((modImgRes.value as Blob).type).toBe("image/png");
+		expect((modImgRes.value as Blob).size).toBe(pngBytes.byteLength);
+
+		const modLazyRes = await callModule("file", { path: "modules/pod/img/hero.png", base: "" });
+		expect(modLazyRes.ok).toBe(true);
+		expect(modLazyRes.value).toBeInstanceOf(Blob);
+
+		const modJsonRes = await callModule("file", { path: "data.json", base: "modules/pod" });
+		expect(modJsonRes.ok).toBe(true);
+		expect((modJsonRes.value as Blob).type).toContain("application/json");
+
+		const modEscape = await callModule("file", { path: "../../../identity/logo.svg", base: "modules/pod" });
+		expect(modEscape.ok).toBe(false);
+
+		const modListRes = (await callModule("list", { path: "modules/pod/img" })) as {
+			ok: boolean;
+			value?: { path: string; bytes: number }[];
+		};
+		expect(modListRes.ok).toBe(true);
+		expect(modListRes.value).toEqual([
+			{ name: "hero.png", path: "modules/pod/img/hero.png", kind: "file", bytes: pngBytes.byteLength },
+		]);
+
+		const artifactFrame = view.el.querySelector<HTMLIFrameElement>("iframe.studio-html-frame")!;
+		const callArtifact = connectFrame(artifactFrame);
+		const artIdx = rawAnswers.length;
+		await callArtifact("file", { path: "pictures/shot.png", base: "" });
+		const artImgRes = rawAnswers[artIdx]!;
+		expect(artImgRes.ok).toBe(true);
+		expect(artImgRes.value).toBeInstanceOf(Blob);
+		expect((artImgRes.value as Blob).type).toBe("image/png");
+		expect(await callArtifact("file", { path: "../other/secret.png", base: "" })).toMatchObject({ ok: false });
+
+		expect(readBinary).toHaveBeenCalledTimes(3);
+		life.abort();
+		view.dispose();
+		store.dispose();
+	});
+
 	it("mounts fullscreen module tell bar inside its dialog, cancels on close, and keeps inline tell out of unrelated dialogs", async () => {
 		const origShowModal = HTMLDialogElement.prototype.showModal;
 		const origShow = HTMLDialogElement.prototype.show;
