@@ -36,6 +36,7 @@ import { openMenu } from "../src/ui/context-menu.ts";
 import { linkHref } from "../src/ui/dom.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
 import { RailLayout } from "../src/ui/rail-layout.ts";
+import { uiScale } from "../src/ui/scale.ts";
 import { fixture, id, profileA, staff, stubFigureMotion, userA } from "./fixtures.ts";
 import {
 	CHANGES,
@@ -1530,23 +1531,67 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.dataset.phoneCutout).toBe("island");
 		expect(viewport.style.getPropertyValue("--phone-status")).toBe("54px");
 
-		const pickPhone = (label: string) => {
+		const openPicker = () => {
 			view.el.querySelector<HTMLButtonElement>('[data-act="phone-models"]')!.click();
-			const rows = [...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')];
-			expect(rows.map((row) => row.textContent)).toEqual([
-				"iPhone 16393 × 852",
-				"iPhone 16 Pro Max440 × 956",
+			return document.querySelector<HTMLElement>(".context-menu:not(.context-submenu)")!;
+		};
+		const rowText = (menu: HTMLElement) =>
+			[...menu.querySelectorAll<HTMLElement>(":scope > [role^=menuitem]")].map((row) => row.textContent);
+		const pickPhone = (label: string, group?: string) => {
+			const menu = openPicker();
+			expect(rowText(menu)).toEqual([
+				"iPhone 18",
+				"iPhone 17",
+				"iPhone 16",
+				"iPhone 15",
+				"iPhone 14",
+				"iPhone 13",
+				"iPhone 12",
 				"iPhone SE375 × 667",
 				"Pixel 9412 × 915",
 			]);
-			rows.find((row) => row.textContent?.startsWith(label))!.click();
+			let rows = [...menu.querySelectorAll<HTMLButtonElement>(':scope > [role="menuitemradio"]')];
+			if (group) {
+				[...menu.querySelectorAll<HTMLButtonElement>('[aria-haspopup="menu"]')]
+					.find((row) => row.textContent === group)!
+					.click();
+				rows = [...document.querySelectorAll<HTMLButtonElement>('.context-submenu [role="menuitemradio"]')];
+			}
+			rows
+				.find(
+					(row) =>
+						/^\d+ × \d+$/.test(row.textContent?.slice(label.length) ?? "") && row.textContent?.startsWith(label),
+				)!
+				.click();
 		};
 		expect(view.el.querySelector(".surface-bar .surface-phone-pick")?.textContent).toBe("iPhone 16");
+
+		openPicker();
+		const current = document.querySelector<HTMLButtonElement>('.context-menu [aria-haspopup="menu"]:nth-child(3)')!;
+		expect(current.getAttribute("aria-label")).toBe("iPhone 16, current: iPhone 16");
+		expect(document.querySelectorAll('.context-menu [aria-haspopup="menu"][aria-label]')).toHaveLength(1);
+		current.click();
+		expect(rowText(document.querySelector<HTMLElement>(".context-submenu")!)).toEqual([
+			"iPhone 16393 × 852",
+			"iPhone 16 Plus430 × 932",
+			"iPhone 16 Pro402 × 874",
+			"iPhone 16 Pro Max440 × 956",
+			"iPhone 16e390 × 844",
+		]);
+		openMenu()?.close();
+
+		pickPhone("iPhone 12 mini", "iPhone 12");
+		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
+		expect(viewport.style.getPropertyValue("--phone-h")).toBe("812px");
+		expect(viewport.dataset.phoneCutout).toBe("notch");
+		expect(viewport.style.getPropertyValue("--phone-notch")).toBe("200px");
+		expect(localStorage.getItem("qorpera.web.surface-phone-model.v1")).toBe("iphone-12-mini");
 
 		pickPhone("iPhone SE");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("667px");
 		expect(viewport.dataset.phoneCutout).toBe("none");
+		expect(viewport.style.getPropertyValue("--phone-notch")).toBe("");
 		expect(viewport.style.getPropertyValue("--phone-status")).toBe("20px");
 		expect(view.el.querySelector(".surface-phone-pick")?.textContent).toBe("iPhone SE");
 		expect(localStorage.getItem("qorpera.web.surface-phone-model.v1")).toBe("iphone-se");
@@ -1690,6 +1735,34 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.dataset.phoneZoomed).toBeUndefined();
 		expect(Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"))).toBeCloseTo(baseScale, 3);
 		expect(localStorage.length).toBe(0);
+
+		view.dispose();
+		store.dispose();
+	});
+
+	it("rests the phone at 110 % of its real size when there is room and fits it below that when there is not", async () => {
+		stubFigureMotion();
+		localStorage.clear();
+		const store = storeWith(undefined, {
+			companyName: "Thetaband",
+			localInteractive: true,
+			synthesize: () => ({ companyId: COMPANY, sites: [], pages: ["mailbox"] }),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "phone-app");
+		document.body.append(view.el);
+		await flush();
+		const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
+		const rect = vi.spyOn(viewport, "getBoundingClientRect");
+		const scaleAt = (width: number, height: number) => {
+			rect.mockReturnValue(new DOMRect(0, 0, width, height));
+			view.update();
+			return Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));
+		};
+
+		const ui = uiScale();
+		expect(scaleAt(1440, 1300 * ui)).toBeCloseTo(1.1, 3);
+		expect(scaleAt(1440, 1000 * ui)).toBeCloseTo((1000 * ui - Math.ceil(188 * ui)) / (852 + 32), 3);
 
 		view.dispose();
 		store.dispose();
