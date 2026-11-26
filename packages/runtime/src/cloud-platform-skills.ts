@@ -31,6 +31,7 @@ export const SURFACE_STARTER_SKILLS: Readonly<Record<SurfaceStarterKind, string>
 	product: "product-studio",
 	identity: "identity-studio",
 	strategy: "strategy-studio",
+	analytics: "custom-surface",
 	custom: "custom-surface",
 };
 

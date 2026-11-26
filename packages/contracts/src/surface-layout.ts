@@ -34,6 +34,30 @@ export const SURFACE_ROW_MAX_BLOCKS = 3;
 export const SURFACE_BRAND_GROUNDS = ["light", "dark"] as const;
 export const SURFACE_PICTURE_EXTENSIONS = [".svg", ".png", ".webp", ".jpg", ".jpeg"] as const;
 
+export const SURFACE_ASK_DATABASE_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+export const SURFACE_ASK_QUESTION_PATTERN = /^(?=.{1,60}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SURFACE_ASK_PARAM_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+export const SURFACE_ASK_MAX_PARAMS = 16;
+export const SURFACE_ASK_PARAM_CHARS = 200;
+export const SURFACE_ASK_MAX_Y = 8;
+export const SURFACE_ASK_FIELDS = ["ask", "params", "pick", "x", "y", "series"] as const;
+export const SURFACE_COLOR_PRESETS = ["company", "one-colour", "calm", "bright"] as const;
+export const SURFACE_COLOR_JOBS = ["main", "compare", "up", "down"] as const;
+export const SURFACE_COLORS_MAX_SERIES = 8;
+export const SURFACE_CHART_COLORS_MAX = 16;
+export const SURFACE_CHART_COLOR_JOBS = [
+	...SURFACE_COLOR_JOBS,
+	"series-1",
+	"series-2",
+	"series-3",
+	"series-4",
+	"series-5",
+	"series-6",
+	"series-7",
+	"series-8",
+] as const;
+const LAYOUT_HEX_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 const SURFACE_LAYOUT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const SURFACE_BLOCK_TYPES = [
@@ -62,6 +86,33 @@ export type SurfaceLayoutNodeType = SurfaceBlockType | "row";
 
 export type SurfaceSourceChoice = string | { readonly value: unknown };
 export type SurfaceSource = SurfaceSourceChoice | readonly SurfaceSourceChoice[];
+export type SurfaceAskParam = string | number | boolean | null;
+
+export interface SurfaceAskSource {
+	readonly ask: string;
+	readonly params?: Readonly<Record<string, SurfaceAskParam>>;
+	readonly pick?: string;
+	readonly x?: string;
+	readonly y?: string | readonly string[];
+	readonly series?: string;
+}
+
+export type SurfaceLiveSource = SurfaceSource | SurfaceAskSource;
+export type SurfaceAskUse = "chart" | "figure" | "row" | "rows";
+export type SurfaceColorPreset = (typeof SURFACE_COLOR_PRESETS)[number];
+export type SurfaceColorJob = (typeof SURFACE_COLOR_JOBS)[number];
+export type SurfaceChartColorJob = (typeof SURFACE_CHART_COLOR_JOBS)[number];
+
+export interface SurfaceLayoutColors {
+	readonly preset?: SurfaceColorPreset;
+	readonly main?: string;
+	readonly compare?: string;
+	readonly up?: string;
+	readonly down?: string;
+	readonly series?: readonly string[];
+}
+
+export type SurfaceChartColors = Readonly<Record<string, string>>;
 export type SurfaceBrandGround = (typeof SURFACE_BRAND_GROUNDS)[number];
 
 interface SurfaceBlockBase {
@@ -107,7 +158,7 @@ export interface SurfaceTypeSpecimenBlock extends SurfaceBlockBase {
 
 export interface SurfaceFactItem {
 	readonly label: string;
-	readonly from: SurfaceSource;
+	readonly from: SurfaceLiveSource;
 }
 
 export interface SurfaceFactsItemsBlock extends SurfaceBlockBase {
@@ -118,7 +169,7 @@ export interface SurfaceFactsItemsBlock extends SurfaceBlockBase {
 
 export interface SurfaceFactsFromBlock extends SurfaceBlockBase {
 	readonly type: "facts";
-	readonly from: SurfaceSource;
+	readonly from: SurfaceLiveSource;
 	readonly take: number;
 	readonly skip: readonly string[];
 	readonly heading?: string;
@@ -140,7 +191,7 @@ export interface SurfaceTableColumn {
 
 export interface SurfaceTableBlock extends SurfaceBlockBase {
 	readonly type: "table";
-	readonly from: SurfaceSource;
+	readonly from: SurfaceLiveSource;
 	readonly columns?: readonly SurfaceTableColumn[];
 	readonly heading?: string;
 	readonly caption?: string;
@@ -194,10 +245,11 @@ export interface SurfaceLandscapeBlock extends SurfaceBlockBase {
 
 export interface SurfaceChartBlock extends SurfaceBlockBase {
 	readonly type: "chart";
-	readonly from: SurfaceSource;
+	readonly from: SurfaceLiveSource;
 	readonly heading?: string;
 	readonly caption?: string;
 	readonly height?: "auto" | number;
+	readonly colors?: SurfaceChartColors;
 }
 
 export interface SurfaceReportFileBlock extends SurfaceBlockBase {
@@ -285,11 +337,13 @@ export interface SurfaceTab<N> {
 
 export interface SurfaceLayout {
 	readonly schema: typeof SURFACE_LAYOUT_SCHEMA;
+	readonly colors?: SurfaceLayoutColors;
 	readonly tabs: readonly SurfaceTab<SurfaceLayoutNode>[];
 }
 
 export interface SurfaceLayoutRead {
 	readonly schema: typeof SURFACE_LAYOUT_SCHEMA;
+	readonly colors?: SurfaceLayoutColors;
 	readonly tabs: readonly SurfaceTab<SurfaceReadNode>[];
 }
 
@@ -312,6 +366,7 @@ export type SurfaceBlockFieldKind =
 	| "items"
 	| "cards"
 	| "columns"
+	| "colors"
 	| "blocks";
 
 export interface SurfaceBlockField {
@@ -320,6 +375,7 @@ export interface SurfaceBlockField {
 	readonly required: boolean;
 	readonly note: string;
 	readonly accepts?: readonly string[];
+	readonly ask?: SurfaceAskUse;
 }
 
 export interface SurfaceBlockDefinition {
@@ -397,8 +453,14 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		family: "facts",
 		summary: `short key figures (with from, only values of <=${SURFACE_FACT_FIGURE_CHARS} chars); ? where missing`,
 		fields: [
-			{ name: "items", kind: "items", required: false, note: "each figure named" },
-			{ name: "from", kind: "source", required: false, note: "an object, or a list of {label, value}" },
+			{ name: "items", kind: "items", required: false, note: "each figure named", ask: "figure" },
+			{
+				name: "from",
+				kind: "source",
+				required: false,
+				note: "an object, or a list of {label, value}",
+				ask: "row",
+			},
 			{ name: "take", kind: "take", required: false, note: "default 4" },
 			{ name: "skip", kind: "keys", required: false, note: "keys to leave out" },
 			HEADING_FIELD,
@@ -420,7 +482,7 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		family: "specs",
 		summary: "rows and columns",
 		fields: [
-			{ name: "from", kind: "source", required: true, note: "a list of objects" },
+			{ name: "from", kind: "source", required: true, note: "a list of objects", ask: "rows" },
 			{ name: "columns", kind: "columns", required: false, note: "default every key" },
 			HEADING_FIELD,
 			{ name: "caption", kind: "caption", required: false, note: "a line under it" },
@@ -468,10 +530,11 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 		family: "chart",
 		summary: "interactive chart (line, bar, area, scatter, pie, sankey, radar, funnel, heatmap)",
 		fields: [
-			{ name: "from", kind: "source", required: true, note: "chart.json" },
+			{ name: "from", kind: "source", required: true, note: "chart.json", ask: "chart" },
 			HEADING_FIELD,
 			{ name: "caption", kind: "caption", required: false, note: "under it" },
 			{ name: "height", kind: "height", required: false, note: "auto" },
+			{ name: "colors", kind: "colors", required: false, note: "series name to job or colour" },
 		],
 	},
 	{
@@ -552,8 +615,11 @@ const FIELD_KIND_WORDS: Readonly<Record<SurfaceBlockFieldKind, string>> = {
 	items: `[{label, from}] 1-${SURFACE_FACTS_MAX}`,
 	cards: `[{title, from}] 1-${SURFACE_CARDS_MAX}`,
 	columns: "[{key, label}]",
+	colors: "{}",
 	blocks: `${SURFACE_ROW_MIN_BLOCKS}-${SURFACE_ROW_MAX_BLOCKS} blocks`,
 };
+
+const FIELD_KINDS_NAMED_ONLY: readonly SurfaceBlockFieldKind[] = ["heading", "colors"];
 
 export function describeSurfaceBlocks(): string {
 	const lines = [
@@ -567,8 +633,9 @@ export function describeSurfaceBlocks(): string {
 	for (const block of SURFACE_BLOCKS) {
 		const fields = block.fields.map((field) => {
 			const name = `${field.name}${field.required ? "" : "?"}`;
-			const kind = field.kind === "heading" ? "" : ` ${FIELD_KIND_WORDS[field.kind]}`;
-			const note = field.kind === "heading" ? "" : ` (${field.note})`;
+			const namedOnly = FIELD_KINDS_NAMED_ONLY.includes(field.kind);
+			const kind = namedOnly ? "" : ` ${FIELD_KIND_WORDS[field.kind]}`;
+			const note = namedOnly ? "" : ` (${field.note})`;
 			return `${name}${kind}${note}`;
 		});
 		lines.push(`- ${block.type}: ${block.summary}. ${fields.join("; ")}`);
@@ -642,7 +709,21 @@ function walkPointer(document: unknown, pointer: string): SurfaceSourceValue {
 	return current === undefined ? NOT_FOUND : { found: true, value: current };
 }
 
+export function isSurfaceAskSource(source: unknown): source is SurfaceAskSource {
+	return isPlainObject(source) && typeof source.ask === "string";
+}
+
+export function splitSurfaceAsk(ask: string): { readonly database: string; readonly question: string } | null {
+	const slash = ask.indexOf("/");
+	if (slash < 0) return null;
+	const database = ask.slice(0, slash);
+	const question = ask.slice(slash + 1);
+	if (!SURFACE_ASK_DATABASE_PATTERN.test(database) || !SURFACE_ASK_QUESTION_PATTERN.test(question)) return null;
+	return { database, question };
+}
+
 function resolveSourceChoice(source: unknown, readJson: SurfaceJsonReader): SurfaceSourceValue {
+	if (isSurfaceAskSource(source)) return NOT_FOUND;
 	if (isPlainObject(source)) {
 		return Object.hasOwn(source, "value") && source.value !== undefined
 			? { found: true, value: source.value }
@@ -753,16 +834,166 @@ function parseId(value: unknown, label: string): string {
 	return value;
 }
 
-function parseSource(value: unknown, label: string): SurfaceSource {
+const ASK_ONLY_ON =
+	'asks a question, which only chart.from, facts.from, facts items and table.from take; here a source is a binding or {"value": ...}';
+
+function parseSource(value: unknown, label: string, asks = false): SurfaceSource {
 	if (!Array.isArray(value)) return parseSourceChoice(value, label);
 	return parseList(value, label, SURFACE_SOURCE_MIN_CHOICES, SURFACE_SOURCE_MAX_CHOICES, (item, at) => {
 		if (Array.isArray(item)) fail(at, "is a list inside a list; a list of sources holds sources only");
+		if (asks && isPlainObject(item) && Object.hasOwn(item, "ask")) {
+			fail(at, "is an ask inside a list of sources; an ask stands alone, never in a list");
+		}
 		return parseSourceChoice(item, at);
 	});
 }
 
+function parseLiveSource(value: unknown, label: string, use: SurfaceAskUse | undefined): SurfaceLiveSource {
+	if (use && isPlainObject(value) && Object.hasOwn(value, "ask")) return parseAsk(value, label, use);
+	return parseSource(value, label, use !== undefined);
+}
+
+function parseColumn(value: unknown, label: string): string {
+	return parseText(value, label, SURFACE_LAYOUT_KEY_CHARS, "a column");
+}
+
+function parseAskParams(value: unknown, label: string): Record<string, SurfaceAskParam> {
+	if (!isPlainObject(value)) fail(label, 'must be an object of named values, as {"from": "2026-11-01"}');
+	const entries = Object.entries(value);
+	if (entries.length > SURFACE_ASK_MAX_PARAMS) fail(label, `names more than ${SURFACE_ASK_MAX_PARAMS} values`);
+	const params: Record<string, SurfaceAskParam> = {};
+	for (const [name, item] of entries) {
+		const at = `${label}.${name}`;
+		if (!SURFACE_ASK_PARAM_PATTERN.test(name)) {
+			fail(at, "is not a value's name (a-z first, then a-z, 0-9 and _; <=40 chars)");
+		}
+		if (typeof item === "string") {
+			if (item.length > SURFACE_ASK_PARAM_CHARS) fail(at, `is longer than ${SURFACE_ASK_PARAM_CHARS} chars`);
+			if (item.includes("\0")) fail(at, "has a NUL");
+		} else if (typeof item === "number") {
+			if (!Number.isFinite(item)) fail(at, "must be a finite number");
+		} else if (typeof item !== "boolean" && item !== null) {
+			fail(at, "must be text, a number, true, false or null");
+		}
+		params[name] = item as SurfaceAskParam;
+	}
+	return params;
+}
+
+function checkAskUse(ask: Record<string, unknown>, label: string, use: SurfaceAskUse): void {
+	const takes: Readonly<Record<SurfaceAskUse, readonly string[]>> = {
+		chart: ["x", "y", "series"],
+		figure: ["pick"],
+		row: [],
+		rows: [],
+	};
+	const what: Readonly<Record<SurfaceAskUse, string>> = {
+		chart: "a chart's ask",
+		figure: "a figure's ask",
+		row: "facts.from's ask (the answer's last row)",
+		rows: "table.from's ask (the answer's rows)",
+	};
+	for (const key of ["pick", "x", "y", "series"]) {
+		if (ask[key] !== undefined && !takes[use].includes(key)) {
+			fail(
+				`${label}.${key}`,
+				takes[use].length === 0
+					? `is not taken by ${what[use]}; it shows the answer's columns as they are`
+					: `is not taken by ${what[use]}; it takes ${takes[use].join(", ")}`,
+			);
+		}
+	}
+	if (use === "chart") {
+		if (ask.x === undefined) fail(`${label}.x`, "is missing; a chart's ask needs x and y");
+		if (ask.y === undefined) fail(`${label}.y`, "is missing; a chart's ask needs x and y");
+		if (ask.series !== undefined && Array.isArray(ask.y)) {
+			fail(`${label}.series`, "splits one y column by its values; name one y with it");
+		}
+	}
+	if (use === "figure" && ask.pick === undefined) {
+		fail(`${label}.pick`, "is missing; a figure's ask names the column it shows");
+	}
+}
+
+function parseAsk(value: Record<string, unknown>, label: string, use: SurfaceAskUse): SurfaceAskSource {
+	const raw = parseClosed(value, label, "an ask", SURFACE_ASK_FIELDS, ["ask"]);
+	if (typeof raw.ask !== "string" || splitSurfaceAsk(raw.ask) === null) {
+		fail(`${label}.ask`, 'must be "<database>/<question>", as "qorpera/orders-days"');
+	}
+	const ask: Record<string, unknown> = { ask: raw.ask };
+	if (raw.params !== undefined) ask.params = parseAskParams(raw.params, `${label}.params`);
+	if (raw.pick !== undefined) ask.pick = parseColumn(raw.pick, `${label}.pick`);
+	if (raw.x !== undefined) ask.x = parseColumn(raw.x, `${label}.x`);
+	if (Array.isArray(raw.y)) {
+		const columns = parseList(raw.y, `${label}.y`, 1, SURFACE_ASK_MAX_Y, parseColumn);
+		if (new Set(columns).size !== columns.length) fail(`${label}.y`, "names a column twice");
+		ask.y = columns;
+	} else if (raw.y !== undefined) {
+		ask.y = parseColumn(raw.y, `${label}.y`);
+	}
+	if (raw.series !== undefined) ask.series = parseColumn(raw.series, `${label}.series`);
+	checkAskUse(ask, label, use);
+	return ask as unknown as SurfaceAskSource;
+}
+
+const COLOUR_TEXT = 'a colour "#rrggbb" or a binding to one with #, as "/identity/tokens.json#/colors/sand"';
+
+function parseSurfaceColor(value: unknown, label: string, what = COLOUR_TEXT): string {
+	if (typeof value !== "string") fail(label, `must be ${what}`);
+	if (value.startsWith("#")) {
+		if (!LAYOUT_HEX_PATTERN.test(value)) fail(label, `is not a colour; write "#rgb" or "#rrggbb"`);
+		return value;
+	}
+	if (!value.includes("#")) fail(label, `must be ${what}`);
+	const binding = parseSurfaceBinding(value, label);
+	if (binding.pointer === "") fail(label, `must be ${what}`);
+	return value;
+}
+
+export function parseSurfaceLayoutColors(value: unknown, label = "layout.colors"): SurfaceLayoutColors {
+	const raw = parseClosed(value, label, "the layout's colours", ["preset", ...SURFACE_COLOR_JOBS, "series"], []);
+	if (Object.keys(raw).length === 0) fail(label, "names no colours; give a preset, jobs or series");
+	const colors: Record<string, unknown> = {};
+	if (raw.preset !== undefined) {
+		if (typeof raw.preset !== "string" || !(SURFACE_COLOR_PRESETS as readonly string[]).includes(raw.preset)) {
+			fail(`${label}.preset`, `must be one of ${SURFACE_COLOR_PRESETS.join(", ")}`);
+		}
+		colors.preset = raw.preset;
+	}
+	for (const job of SURFACE_COLOR_JOBS) {
+		if (raw[job] !== undefined) colors[job] = parseSurfaceColor(raw[job], `${label}.${job}`);
+	}
+	if (raw.series !== undefined) {
+		colors.series = parseList(raw.series, `${label}.series`, 1, SURFACE_COLORS_MAX_SERIES, (item, at) =>
+			parseSurfaceColor(item, at),
+		);
+	}
+	return colors as SurfaceLayoutColors;
+}
+
+function parseChartColors(value: unknown, label: string): SurfaceChartColors {
+	if (!isPlainObject(value)) fail(label, 'must be an object of series name to colour, as {"Refunds": "down"}');
+	const entries = Object.entries(value);
+	if (entries.length < 1 || entries.length > SURFACE_CHART_COLORS_MAX) {
+		fail(label, `must hold 1 to ${SURFACE_CHART_COLORS_MAX} series, not ${entries.length}`);
+	}
+	const what = `a job (${SURFACE_COLOR_JOBS.join(", ")}, series-1 to series-${SURFACE_COLORS_MAX_SERIES}), ${COLOUR_TEXT}`;
+	return Object.fromEntries(
+		entries.map(([name, item]) => {
+			const at = `${label}.${name}`;
+			parseText(name, at, SURFACE_LAYOUT_KEY_CHARS, "a series name");
+			const colour =
+				typeof item === "string" && (SURFACE_CHART_COLOR_JOBS as readonly string[]).includes(item)
+					? item
+					: parseSurfaceColor(item, at, what);
+			return [name, colour];
+		}),
+	);
+}
+
 function parseSourceChoice(value: unknown, label: string): SurfaceSourceChoice {
 	if (isPlainObject(value)) {
+		if (Object.hasOwn(value, "ask")) fail(label, ASK_ONLY_ON);
 		const keys = Object.keys(value);
 		if (keys.length !== 1 || keys[0] !== "value" || value.value === undefined) {
 			fail(label, 'as an object must be exactly {"value": ...}');
@@ -814,7 +1045,7 @@ function parseClosed(
 function parseFieldValue(field: SurfaceBlockField, value: unknown, label: string): unknown {
 	switch (field.kind) {
 		case "source":
-			return parseSource(value, label);
+			return parseLiveSource(value, label, field.ask);
 		case "file":
 			return parseFile(value, label, field.accepts);
 		case "stage":
@@ -873,7 +1104,7 @@ function parseFieldValue(field: SurfaceBlockField, value: unknown, label: string
 				const raw = parseClosed(item, at, "a fact", ["label", "from"], ["label", "from"]);
 				return {
 					label: parseText(raw.label, `${at}.label`, SURFACE_LAYOUT_LABEL_CHARS, "a label"),
-					from: parseSource(raw.from, `${at}.from`),
+					from: parseLiveSource(raw.from, `${at}.from`, field.ask),
 				};
 			});
 		case "cards":
@@ -892,6 +1123,8 @@ function parseFieldValue(field: SurfaceBlockField, value: unknown, label: string
 					label: parseText(raw.label, `${at}.label`, SURFACE_LAYOUT_LABEL_CHARS, "a label"),
 				};
 			});
+		case "colors":
+			return parseChartColors(value, label);
 		case "blocks":
 			return fail(label, "belongs to a row only");
 	}
@@ -1101,7 +1334,7 @@ export function parseSurfaceLayout(value: unknown): SurfaceLayout {
 	if (utf8Bytes(encoded) > SURFACE_LAYOUT_MAX_BYTES) {
 		fail("layout", `is larger than ${SURFACE_LAYOUT_MAX_BYTES} bytes; split long values into their own files`);
 	}
-	const raw = parseClosed(value, "layout", "the layout", ["schema", "tabs"], ["schema", "tabs"]);
+	const raw = parseClosed(value, "layout", "the layout", ["schema", "colors", "tabs"], ["schema", "tabs"]);
 	if (raw.schema !== SURFACE_LAYOUT_SCHEMA) fail("layout.schema", `must be "${SURFACE_LAYOUT_SCHEMA}"`);
 	const tabs = parseList(raw.tabs, "layout.tabs", 1, SURFACE_LAYOUT_MAX_TABS, (item, at) => {
 		const shell = parseTabShell(item, at);
@@ -1131,7 +1364,8 @@ export function parseSurfaceLayout(value: unknown): SurfaceLayout {
 		);
 	}
 	checkAcrossBlocks(tabs, (_place, label, problem) => fail(label, problem));
-	return { schema: SURFACE_LAYOUT_SCHEMA, tabs };
+	const colors = raw.colors === undefined ? undefined : parseSurfaceLayoutColors(raw.colors);
+	return { schema: SURFACE_LAYOUT_SCHEMA, ...(colors && { colors }), tabs };
 }
 
 export function parseSurfaceLayoutText(text: string): SurfaceLayout {
@@ -1145,6 +1379,15 @@ export function parseSurfaceLayoutText(text: string): SurfaceLayout {
 		fail("layout", "is not valid JSON");
 	}
 	return parseSurfaceLayout(value);
+}
+
+function readLayoutColors(value: unknown): SurfaceLayoutColors | undefined {
+	if (value === undefined) return undefined;
+	try {
+		return parseSurfaceLayoutColors(value);
+	} catch {
+		return undefined;
+	}
 }
 
 export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
@@ -1185,6 +1428,7 @@ export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
 		tabs.push({ id: shell.id, title: shell.title, blocks });
 	});
 	if (tabs.length === 0) return { problem: "no usable tab" };
+	const colors = readLayoutColors(value.colors);
 	checkAcrossBlocks(tabs, (place, label, problem) => {
 		const block = place.block;
 		if (block.type === "swatch_row" && label.endsWith(".tints")) {
@@ -1194,10 +1438,10 @@ export function readSurfaceLayout(text: string): SurfaceLayoutReadResult {
 			place.replace({ type: "unknown", reason: `${label} ${problem}` });
 		}
 	});
-	return { layout: { schema: SURFACE_LAYOUT_SCHEMA, tabs } };
+	return { layout: { schema: SURFACE_LAYOUT_SCHEMA, ...(colors && { colors }), tabs } };
 }
 
-export const SURFACE_STARTER_KINDS = ["product", "identity", "strategy", "custom"] as const;
+export const SURFACE_STARTER_KINDS = ["product", "identity", "strategy", "analytics", "custom"] as const;
 export type SurfaceStarterKind = (typeof SURFACE_STARTER_KINDS)[number];
 
 const PRODUCT_STARTER_LAYOUT: SurfaceLayout = {
@@ -1532,6 +1776,127 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 	],
 };
 
+const ANALYTICS_STARTER_LAYOUT: SurfaceLayout = {
+	schema: SURFACE_LAYOUT_SCHEMA,
+	colors: { preset: "company" },
+	tabs: [
+		{
+			id: "now",
+			title: "Now",
+			blocks: [
+				{ type: "title", id: "reading", line: "reading.json#/line" },
+				{
+					type: "facts",
+					id: "figures",
+					items: [
+						{ label: "Orders today", from: { ask: "qorpera/orders-now", pick: "orders_today" } },
+						{ label: "Sales today", from: { ask: "qorpera/orders-now", pick: "sales_today" } },
+						{ label: "To pack", from: { ask: "qorpera/orders-now", pick: "to_pack" } },
+						{ label: "In the bank", from: { ask: "qorpera/money-balance", pick: "balance" } },
+					],
+				},
+				{
+					type: "chart",
+					id: "pulse",
+					from: { ask: "qorpera/orders-days", x: "day", y: "orders" },
+					heading: "Are more people buying?",
+				},
+			],
+		},
+		{
+			id: "sales",
+			title: "Sales",
+			blocks: [
+				{
+					type: "facts",
+					id: "sales-figures",
+					items: [
+						{ label: "Refunds, 30 days", from: { ask: "qorpera/orders-now", pick: "refunds_30d" } },
+						{ label: "On the way", from: { ask: "qorpera/orders-now", pick: "on_the_way" } },
+						{ label: "Open disputes", from: { ask: "qorpera/orders-now", pick: "disputes_open" } },
+					],
+				},
+				{
+					type: "chart",
+					id: "sales-days",
+					from: { ask: "qorpera/orders-days", x: "day", y: ["sales", "refunds"] },
+					heading: "Sales and refunds by day",
+					colors: { refunds: "down" },
+				},
+			],
+		},
+		{
+			id: "money",
+			title: "Money",
+			blocks: [
+				{
+					type: "chart",
+					id: "balance",
+					from: { ask: "qorpera/money-balance", x: "day", y: "balance" },
+					heading: "Money in the bank",
+				},
+				{
+					type: "chart",
+					id: "months",
+					from: { ask: "qorpera/money-months", x: "month", y: ["money_in", "money_out"] },
+					heading: "Money in and out",
+					colors: { money_in: "up", money_out: "down" },
+				},
+				{
+					type: "chart",
+					id: "kinds",
+					from: { ask: "qorpera/money-kinds", x: "kind", y: "amount", series: "direction" },
+					heading: "This month by kind",
+				},
+			],
+		},
+		{
+			id: "visitors",
+			title: "Visitors",
+			blocks: [
+				{
+					type: "chart",
+					id: "visits",
+					from: { ask: "qorpera/site-days", x: "day", y: "visits", series: "site" },
+					heading: "Visits by day",
+				},
+				{
+					type: "table",
+					id: "pages",
+					from: { ask: "qorpera/site-pages" },
+					columns: [
+						{ key: "path", label: "Page" },
+						{ key: "views", label: "Views" },
+						{ key: "visits", label: "Visits" },
+					],
+					heading: "Most read pages",
+				},
+			],
+		},
+		{
+			id: "questions",
+			title: "Questions",
+			blocks: [{ type: "report", id: "questions", match: "questions/*.report.json" }],
+		},
+		{
+			id: "numbers",
+			title: "Numbers",
+			blocks: [
+				{
+					type: "table",
+					id: "metrics",
+					from: "metrics.json#/metrics",
+					columns: [
+						{ key: "name", label: "Number" },
+						{ key: "counts", label: "What it counts" },
+						{ key: "leaves_out", label: "Leaves out" },
+					],
+				},
+			],
+		},
+	],
+};
+
 const CUSTOM_STARTER_LAYOUT: SurfaceLayout = {
 	schema: SURFACE_LAYOUT_SCHEMA,
 	tabs: [
@@ -1544,6 +1909,7 @@ export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, Surfac
 	product: PRODUCT_STARTER_LAYOUT,
 	identity: IDENTITY_STARTER_LAYOUT,
 	strategy: STRATEGY_STARTER_LAYOUT,
+	analytics: ANALYTICS_STARTER_LAYOUT,
 	custom: CUSTOM_STARTER_LAYOUT,
 };
 
@@ -1587,6 +1953,24 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	module: SURFACE_TOKENS_FORMAT,
 };
 
+export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"<database>/<question>","params":{"<name>": text, number, true, false or null},"pick","x","y","series"} (pick, x, y and series name the answer's columns). It is asked live when the page opens, as the member viewing it, so each member sees only what they may read; a question they may not read shows as not shared with them. The database qorpera holds the company's own numbers, e.g. qorpera/orders-days. An ask stands alone, never in a list of sources, and only in chart.from (needs x and y, y one column or 1-${SURFACE_ASK_MAX_Y}; series splits one y by that column's values; a series is named by its y column or its series value), facts items (needs pick: that column of the answer's last row), facts.from (the last row's columns as figures) and table.from (the rows; columns picks their columns).`;
+
+export const SURFACE_COLORS_FORMAT = `"colors" at the layout's top sets every chart's colours once: {"preset":"company"|"one-colour"|"calm"|"bright"} and jobs {"main","compare","up","down","series":[1-${SURFACE_COLORS_MAX_SERIES}]}, each a colour "#rrggbb" or a binding to one, e.g. "/identity/tokens.json#/colors/sand"; jobs left out come from the preset, company when none is named. company follows the Identity colours, one-colour is shades of main, calm is main and greys, bright is eight colours anyone can tell apart, colour-blind included. A chart block's "colors" gives a series by its name a job (main, compare, up, down, series-1 to series-${SURFACE_COLORS_MAX_SERIES}), a colour or a binding, at most ${SURFACE_CHART_COLORS_MAX}; a color in the chart file itself still wins. Say why in the change when you leave the company colours.`;
+
+function layoutAsks(layout: SurfaceLayoutRead): boolean {
+	return layout.tabs.some((tab) =>
+		tab.blocks
+			.flatMap((node) => (node.type === "row" ? node.blocks : [node]))
+			.some(
+				(block) =>
+					("from" in block && isSurfaceAskSource(block.from)) ||
+					(block.type === "facts" &&
+						"items" in block &&
+						block.items.some((item) => isSurfaceAskSource(item.from))),
+			),
+	);
+}
+
 export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
 	const used = new Set(
 		layout.tabs
@@ -1598,5 +1982,7 @@ export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
 		const note = SURFACE_BLOCK_FORMATS[type];
 		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
 	}
+	if (used.has("chart") || layoutAsks(layout)) notes.push(SURFACE_ASK_FORMAT);
+	if (used.has("chart") || layout.colors !== undefined) notes.push(SURFACE_COLORS_FORMAT);
 	return notes;
 }

@@ -43,7 +43,7 @@ describe("which page an interface gets", () => {
 		expect(surfacePageKind({ archetype: "live_build", lookKind: "report" })).toBeNull();
 	});
 
-	it("picks the Identity, Product or Custom starter as the page does", () => {
+	it("picks the Identity, Product, Analytics or Custom starter as the page does", () => {
 		const facts = { lookKind: "custom" as const, slug: "field-notes", isGlobal: false, paths: [], hasModel: false };
 		expect(surfaceStarterKind(facts)).toBe("custom");
 		expect(surfaceStarterKind({ ...facts, isGlobal: true })).toBe("identity");
@@ -53,6 +53,9 @@ describe("which page an interface gets", () => {
 		expect(surfaceStarterKind({ ...facts, lookKind: "product" })).toBe("product");
 		expect(surfaceStarterKind({ ...facts, hasModel: true })).toBe("product");
 		expect(surfaceStarterKind({ ...facts, lookKind: "product", isGlobal: true })).toBe("identity");
+		expect(surfaceStarterKind({ ...facts, lookKind: "dashboard" })).toBe("analytics");
+		expect(surfaceStarterKind({ ...facts, slug: "analytics" })).toBe("analytics");
+		expect(surfaceStarterKind({ ...facts, lookKind: "dashboard", hasModel: true })).toBe("analytics");
 		expect(surfaceStudioPage({ ...studio, icon: "box" })).toEqual({ page: "layout", starter: "product" });
 		expect(surfaceStudioPage({ ...studio, icon: "book" })).toEqual({ page: "report" });
 		expect(surfaceStudioPage({ ...studio, archetype: "ops" })).toEqual({ page: null });

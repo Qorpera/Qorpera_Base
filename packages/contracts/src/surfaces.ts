@@ -1371,6 +1371,7 @@ export function surfaceStarterKind(facts: SurfaceStarterFacts): SurfaceStarterKi
 		return "identity";
 	}
 	if (facts.lookKind === "strategy" || facts.slug === "strategy") return "strategy";
+	if (facts.lookKind === "dashboard" || facts.slug === "analytics") return "analytics";
 	return facts.lookKind === "product" || facts.hasModel ? "product" : "custom";
 }
 

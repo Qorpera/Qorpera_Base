@@ -17,9 +17,9 @@ import {
 	SURFACE_LAYOUT_PATH,
 	type SurfaceChartDocument,
 	type SurfaceLayoutRead,
+	type SurfaceLiveSource,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
-	type SurfaceSource,
 	type SurfaceStarterKind,
 	type SurfaceTab,
 	starterSurfaceLayout,
@@ -261,7 +261,7 @@ function createSnapshotReader(snapshot: StudioInspectSnapshot) {
 		return parsed.get(path);
 	};
 	return {
-		readSource(source: SurfaceSource | undefined): { readonly found: boolean; readonly value: unknown } {
+		readSource(source: SurfaceLiveSource | undefined): { readonly found: boolean; readonly value: unknown } {
 			if (source === undefined) return { found: false, value: undefined };
 			return resolveSurfaceSource(source, readJson);
 		},
