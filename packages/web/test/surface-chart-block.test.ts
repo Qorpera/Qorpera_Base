@@ -2,11 +2,16 @@
 import { SURFACE_LAYOUT_SCHEMA, type SurfaceSummary } from "@qorpera/contracts";
 import { getInstanceByDom } from "echarts/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StudioHtmlPages } from "../src/app/views/surface-blocks/artifacts.ts";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
 import { setLanguagePreference } from "../src/ui/preferences.ts";
-import { storeWith, summary } from "./surface-fixtures.ts";
+import { fakeClient, storeWith, summary } from "./surface-fixtures.ts";
 
 const ROOT = "surfaces/strategy";
+const HTML_PAGES: StudioHtmlPages = {
+	frame: () => document.createElement("iframe"),
+	linksChanged: () => false,
+};
 
 beforeEach(() => {
 	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
@@ -55,7 +60,7 @@ describe("Studio chart block", () => {
 		const controller = new AbortController();
 		const surface = strategySurface();
 		const view = new SurfaceLayoutView({
-			store: storeWith(),
+			store: storeWith(fakeClient()),
 			surface,
 			signal: controller.signal,
 			baseFiles: () => ({}),
@@ -83,7 +88,7 @@ describe("Studio chart block", () => {
 			starter: "strategy",
 			tab: "overview",
 			legacyModel: undefined,
-			htmlPages: new Map(),
+			htmlPages: HTML_PAGES,
 		});
 		const el = plan.tasks[0]!.build();
 		expect(el.dataset.block).toBe("chart");
@@ -95,7 +100,7 @@ describe("Studio chart block", () => {
 		const controller = new AbortController();
 		const surface = strategySurface();
 		const view = new SurfaceLayoutView({
-			store: storeWith(),
+			store: storeWith(fakeClient()),
 			surface,
 			signal: controller.signal,
 			baseFiles: () => ({}),
@@ -157,7 +162,7 @@ describe("Studio chart block", () => {
 			starter: "strategy",
 			tab: "overview",
 			legacyModel: undefined,
-			htmlPages: new Map(),
+			htmlPages: HTML_PAGES,
 		});
 		for (const task of plan.tasks) document.body.append(task.build());
 		await flushCharts();
