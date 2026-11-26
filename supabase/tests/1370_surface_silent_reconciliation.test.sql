@@ -197,6 +197,11 @@ declare
 	v_errcode text;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
+	-- WHY: Exercise the pre-v284 wake-based surface session path tested by this suite.
+	update public.qorpera_active_runtime_bundle a
+	set runtime_bundle_id = b.id, runtime_bundle_sha256 = b.sha256
+	from public.qorpera_runtime_bundles b
+	where a.singleton and b.bundle_key = 'qorpera.cloud-runtime' and b.version = 283;
 	select staff_agent_id into strict v_cofounder from public.qorpera_company_cofounders where profile_id = v_company_a;
 	perform pg_temp.ssr_materialize(v_company_a, 16);
 	select job_id into strict v_first_job

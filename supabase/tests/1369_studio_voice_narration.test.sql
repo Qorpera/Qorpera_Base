@@ -14,7 +14,9 @@ declare v_active public.qorpera_runtime_bundles; v_manifest jsonb; v_bundle publ
 begin
 	select b.* into strict v_active from public.qorpera_active_runtime_bundle a
 	join public.qorpera_runtime_bundles b on b.id = a.runtime_bundle_id where a.singleton;
-	v_manifest := jsonb_set(v_active.manifest, '{modelPolicy,geminiChoice}', '"thread"');
+	-- WHY: Keep studio narration on the wake path tested here while v284+ is active.
+	v_manifest := jsonb_set(v_active.manifest, '{modelPolicy,geminiChoice}', '"thread"')
+		#- '{implementation,packages/runtime/src/cloud-surface-coding-tools.ts}';
 	insert into public.qorpera_runtime_bundles(bundle_key, version, manifest, sha256)
 	select v_active.bundle_key, max(version) + 1, v_manifest,
 		encode(extensions.digest(convert_to(v_manifest::text, 'utf8'), 'sha256'), 'hex')
