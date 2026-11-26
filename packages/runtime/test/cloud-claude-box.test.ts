@@ -730,3 +730,35 @@ it.skipIf(process.platform !== "linux")(
 		}
 	},
 );
+
+it("sets CLAUDE_CODE_TMPDIR when tmpDir is provided and rejects unsafe tmpDir paths", () => {
+	expect(claudeBoxEnvironment({ login: "folder" }).CLAUDE_CODE_TMPDIR).toBeUndefined();
+	expect(claudeBoxEnvironment({ login: "folder", tmpDir: "/tmp/qc-0123456789ab" }).CLAUDE_CODE_TMPDIR).toBe(
+		"/tmp/qc-0123456789ab",
+	);
+	const inv = claudeBoxInvocation({
+		...base,
+		login: { folder: `${scratch}/login` },
+		tmpDir: "/tmp/qc-0123456789ab",
+	});
+	expect(pairs(inv.args, "--setenv")).toContainEqual(["CLAUDE_CODE_TMPDIR", "/tmp/qc-0123456789ab"]);
+	for (const bad of ["", "/tmp", "/tmp/", "/tmp/.", "/tmp/..", "/tmp/a/b", "/var/tmp/qc-1", `/tmp/${"a".repeat(65)}`]) {
+		expect(() => claudeBoxEnvironment({ login: "folder", tmpDir: bad })).toThrow("Invalid Claude tmpDir");
+		expect(() =>
+			claudeBoxInvocation({
+				...base,
+				login: { folder: `${scratch}/login` },
+				tmpDir: bad,
+			}),
+		).toThrow("Invalid Claude tmpDir");
+	}
+	expect(() =>
+		claudeBoxInvocation({
+			...base,
+			login: { folder: `${scratch}/login` },
+			homeFolders: ["/company"],
+			cwd: "/company",
+			tmpDir: "/tmp/qc-0123456789ab",
+		}),
+	).toThrow("Invalid Claude tmpDir");
+});

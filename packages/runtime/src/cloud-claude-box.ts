@@ -262,13 +262,21 @@ export function claudeBoxArguments(
 export type ClaudeBoxLogin = { readonly token: string } | { readonly folder: string };
 
 export const CLAUDE_BOX_SYSTEM_NOTE_MAX_BYTES = 65_536;
+const CLAUDE_TMP_DIR_PATH = /^\/tmp\/[A-Za-z0-9._-]{1,64}$/;
+
+function assertClaudeTmpDir(tmpDir: string): void {
+	if (!CLAUDE_TMP_DIR_PATH.test(tmpDir) || tmpDir === "/tmp/." || tmpDir === "/tmp/..")
+		throw new Error("Invalid Claude tmpDir");
+}
 
 /** The box's environment (bwrap sets it after clearing its own). */
 export function claudeBoxEnvironment(options: {
 	login: "token" | "folder";
 	extraCa?: boolean;
 	mcp?: boolean;
+	tmpDir?: string;
 }): Record<string, string> {
+	if (options.tmpDir !== undefined) assertClaudeTmpDir(options.tmpDir);
 	return {
 		HOME: CLAUDE_BOX_PATHS.home,
 		USER: "claude",
@@ -288,6 +296,7 @@ export function claudeBoxEnvironment(options: {
 		DISABLE_TELEMETRY: "1",
 		DISABLE_ERROR_REPORTING: "1",
 		...(options.mcp ? { ENABLE_TOOL_SEARCH: "false" } : {}),
+		...(options.tmpDir ? { CLAUDE_CODE_TMPDIR: options.tmpDir } : {}),
 		...(options.login === "token" ? { CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: "3" } : {}),
 		...(options.extraCa ? { NODE_EXTRA_CA_CERTS: CLAUDE_BOX_PATHS.extraCa } : {}),
 	};
@@ -441,12 +450,17 @@ export function claudeBoxInvocation(options: {
 	homeFolders?: readonly string[];
 	cwd?: string;
 	mcp?: { readonly socketPath: string; readonly serverName?: string };
+	tmpDir?: string;
 }): { command: string; args: string[] } {
 	const c = options.configuration;
 	const s = scratchPaths(options.scratchRoot);
 	const login = options.login === "token" ? "token" : "folder";
 	const config = options.login === "token" ? s.config : options.login.folder;
 	const { folders, cwd } = resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
+	if (options.tmpDir !== undefined) {
+		assertClaudeTmpDir(options.tmpDir);
+		if (!folders.includes("/tmp")) throw new Error("Invalid Claude tmpDir");
+	}
 	if (options.mcp) {
 		if (!isAbsolute(options.mcp.socketPath) || options.mcp.socketPath.includes("\0"))
 			throw new Error("Invalid Claude MCP socket");
@@ -504,7 +518,12 @@ export function claudeBoxInvocation(options: {
 		...folders.flatMap((folder) => ["--bind", `${s.mount}${folder}`, folder]),
 	];
 	for (const [name, value] of Object.entries(
-		claudeBoxEnvironment({ login, extraCa: Boolean(options.extraCa), mcp: options.mcp !== undefined }),
+		claudeBoxEnvironment({
+			login,
+			extraCa: Boolean(options.extraCa),
+			mcp: options.mcp !== undefined,
+			...(options.tmpDir !== undefined ? { tmpDir: options.tmpDir } : {}),
+		}),
 	))
 		box.push("--setenv", name, value);
 	box.push(
@@ -1282,6 +1301,7 @@ export interface ClaudeCodeBoxOptions {
 	cwd?: string;
 	shellBaseEnv?: Readonly<Record<string, string>>;
 	mcp?: { readonly socketPath: string; readonly serverName?: string };
+	tmpDir?: string;
 	signal: AbortSignal;
 	review?: {
 		readonly gate: CloudCodexHomeReview;
@@ -1372,12 +1392,16 @@ async function startBox(
 		tools: options.tools,
 		mcpConfig: options.mcp !== undefined,
 	});
-	resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
+	const { folders } = resolveBoxFoldersAndCwd(options.homeFolders, options.cwd);
 	if (options.mcp) {
 		if (!isAbsolute(options.mcp.socketPath) || options.mcp.socketPath.includes("\0"))
 			throw new Error("Invalid Claude MCP socket");
 		if (options.mcp.serverName !== undefined && !MCP_SERVER_NAME.test(options.mcp.serverName))
 			throw new Error("Invalid Claude MCP server name");
+	}
+	if (options.tmpDir !== undefined) {
+		assertClaudeTmpDir(options.tmpDir);
+		if (!folders.includes("/tmp")) throw new Error("Invalid Claude tmpDir");
 	}
 	if (
 		options.systemNote !== undefined &&
@@ -1581,6 +1605,7 @@ async function startBox(
 			...(options.homeFolders ? { homeFolders: options.homeFolders } : {}),
 			...(options.cwd ? { cwd: options.cwd } : {}),
 			...(options.mcp ? { mcp: options.mcp } : {}),
+			...(options.tmpDir !== undefined ? { tmpDir: options.tmpDir } : {}),
 		});
 		const child = spawnBox(invocation.command, invocation.args, {
 			cwd: options.scratchRoot,
@@ -1642,7 +1667,7 @@ async function startBox(
 				signal,
 				toHome,
 				toMount: (bytes) => void toMount.write(bytes),
-				ownFolder: `/tmp/claude-${uid}`,
+				ownFolder: options.tmpDir ? `${options.tmpDir}/claude-${uid}` : `/tmp/claude-${uid}`,
 			});
 			if (options.proof?.onLone) gate.onLone = options.proof.onLone;
 		}
