@@ -1805,7 +1805,7 @@ describe("Studio visual inspect & draw tools", () => {
 
 			const tightBinaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
 			const tightLocal: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
-			for (let i = 0; i < 6; i += 1) {
+			for (let i = 0; i < 4; i += 1) {
 				tightBinaries[`surfaces/thetabands/pictures/pic-${i}.png`] = {
 					bytes: makeIncompressiblePng(),
 					mediaType: "image/png",
@@ -1832,7 +1832,7 @@ describe("Studio visual inspect & draw tools", () => {
 				sourcePath: "detail.png",
 				sha256: createHash("sha256").update(smallRender).digest("hex"),
 			};
-			const moduleHtml = `<!doctype html><html><body>${"m".repeat(8_000)}</body></html>`;
+			const moduleHtml = `<!doctype html><html><body>${"m".repeat(60_000)}</body></html>`;
 			const tightCommands: string[] = [];
 			const tightTool = createInspectSurfaceTool({
 				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, tightCommands),
