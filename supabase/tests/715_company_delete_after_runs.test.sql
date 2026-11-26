@@ -72,7 +72,9 @@ begin
 			-- WHY: statement-level pg_notify trigger for web edge route sync (20260930832000); never refuses a delete.
 			'public.qorpera_web_notify_route_change()'::regprocedure,
 			-- WHY: AFTER DELETE trigger enqueues deleted profile_id for object GC (20260930846000); never refuses a delete.
-			'public.qorpera_enqueue_deleted_profile_object_gc_on_profile_delete()'::regprocedure);
+			'public.qorpera_enqueue_deleted_profile_object_gc_on_profile_delete()'::regprocedure,
+			-- WHY: BEFORE DELETE trigger enqueues unrooted staged surface change files for GC (20260930924000); skips during company purge and never refuses a delete.
+			'public.qorpera_surface_changes_release_files_trigger()'::regprocedure);
 	if v_unexpected is not null then
 		raise exception 'Delete triggers the company purge does not know: %', v_unexpected;
 	end if;

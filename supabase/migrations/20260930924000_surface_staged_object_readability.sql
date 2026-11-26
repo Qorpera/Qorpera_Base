@@ -263,6 +263,9 @@ declare
 	v_removed_profiles uuid[];
 	v_removed_manifests text[];
 begin
+	if public.qorpera_company_purge_active() then
+		return old;
+	end if;
 	with gone as (
 		delete from public.qorpera_surface_change_files
 		where change_id = old.id
