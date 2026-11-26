@@ -882,18 +882,65 @@ describe("recordStudioChatGptVoiceClips", () => {
 	});
 });
 
-describe("prepareSurfaceCodingWorkspace vision/reading and machine-gated voice", () => {
-	it("includes visionMarkdown and readingMarkdown in turnBrief and requires codingMachine for ChatGPT voice", async () => {
+describe("prepareSurfaceCodingWorkspace interfaces, search/data tools, and machine-gated voice", () => {
+	it("includes live Company Interfaces in turnBrief, wires search/read-only data tools, and requires codingMachine for ChatGPT voice", async () => {
+		const fakeFolder = {
+			read: vi.fn(),
+			readText: vi.fn(),
+			list: vi.fn(),
+			commit: vi.fn(),
+			release: vi.fn(),
+		} as unknown as Parameters<typeof prepareSurfaceCodingWorkspace>[0]["folder"];
+		const fakeSearch = {
+			search: vi.fn(),
+			close: vi.fn(),
+		} as unknown as Parameters<typeof prepareSurfaceCodingWorkspace>[0]["folderSearch"];
+		const fakeData = {
+			describe: vi.fn(),
+			query: vi.fn(),
+			change: vi.fn(),
+			apply: vi.fn(),
+		} as unknown as Parameters<typeof prepareSurfaceCodingWorkspace>[0]["companyData"];
+
 		const prepared = await prepareSurfaceCodingWorkspace({
 			workspaceKind: "surface_folder",
+			folder: fakeFolder,
+			folderSearch: fakeSearch,
+			companyData: fakeData,
 			surfaceSession: {
 				sessionId: "sess-1",
 				surfaceSlug: "strategy",
 				surfaceTitle: "Strategy",
 				surfaceKind: "strategy",
 				folderRoot: "surfaces/strategy",
-				visionMarkdown: "# Brooks\nPre-market used car intake.",
-				readingMarkdown: "Testing dealer fee play.",
+				companyInterfaces: {
+					interfaces: [
+						{
+							slug: "strategy",
+							title: "Strategy",
+							kind: "strategy",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "surfaces/strategy",
+							repositoryKey: null,
+							briefSummary: "Grand plan and unit math",
+							isGlobal: false,
+						},
+						{
+							slug: "website",
+							title: "Website",
+							kind: "website",
+							archetype: "live_build",
+							sourceKind: "code_repo",
+							folderRoot: null,
+							repositoryKey: "surfaces/website",
+							briefSummary: "Public site",
+							isGlobal: false,
+						},
+					],
+					strategySummary: "Testing dealer fee play.",
+					identitySummary: "# Brooks\nPre-market used car intake.",
+				},
 				briefMarkdown: "Strategy war room.",
 				fullPrompt: "Build the grand plan",
 				stageSurfacePatch: vi.fn(async () => ({ changeId: "chg-1", seq: 1, openChangeCount: 1 })),
@@ -920,10 +967,19 @@ describe("prepareSurfaceCodingWorkspace vision/reading and machine-gated voice",
 			signal: new AbortController().signal,
 		});
 
+		expect(prepared.turnBrief).toContain("## Company Interfaces");
+		expect(prepared.turnBrief).toContain("/company/surfaces/strategy");
+		expect(prepared.turnBrief).toContain("/company/code/surfaces/website");
 		expect(prepared.turnBrief).toContain("Pre-market used car intake.");
 		expect(prepared.turnBrief).toContain("Testing dealer fee play.");
 
 		const toolsWithoutMachine = prepared.buildTools(IDENTITY, makeOperations() as CloudNativeToolOperations);
+		const toolNames = toolsWithoutMachine.map((t) => t.name);
+		expect(toolNames).toContain("company_search");
+		expect(toolNames).toContain("data_describe");
+		expect(toolNames).toContain("data_query");
+		expect(toolNames).not.toContain("data_apply");
+		expect(toolNames).not.toContain("data_change");
 		const narrateNoMachine = toolsWithoutMachine.find((t) => t.name === "narrate_explainer")!;
 		const res = await narrateNoMachine.execute(
 			{ scenesPath: "tour.json" },

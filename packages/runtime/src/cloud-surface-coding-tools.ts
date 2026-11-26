@@ -1,7 +1,9 @@
 import { type SurfaceFolderContents, surfaceFolderRoots } from "@qorpera/cloud-client/surface-folder-files";
 import { SURFACE_LAYOUT_PATH } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
+import { type CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
@@ -50,6 +52,7 @@ const STUDIO_FOLDER_TOOLS: ReadonlySet<string> = new Set([
 	"company_mkdir",
 ]);
 const OPS_FOLDER_TOOLS: ReadonlySet<string> = new Set(["company_read", "company_list"]);
+const READ_ONLY_DATA_TOOLS: ReadonlySet<string> = new Set(["data_describe", "data_query"]);
 const NEW_DISK_SURFACE_NOTE =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, so home and cache folders and anything installed outside /company start fresh.";
 
@@ -109,12 +112,15 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	readonly workspaceKind: "surface_folder" | "surface_ops";
 	readonly surfaceSession: SurfaceCodingTurnBinding;
 	readonly folder?: CloudCompanyFolderClient;
+	readonly folderSearch?: CloudFolderSearch;
+	readonly companyData?: CloudCompanyDataDoor;
 	readonly pictures?: CloudPictureChannel;
 	readonly isClaudeTurn: boolean;
 	readonly newDisk: boolean;
 	readonly signal: AbortSignal;
 }): Promise<PreparedSurfaceCodingWorkspace> {
-	const { workspaceKind, surfaceSession, folder, pictures, isClaudeTurn, newDisk, signal } = options;
+	const { workspaceKind, surfaceSession, folder, folderSearch, companyData, pictures, isClaudeTurn, newDisk, signal } =
+		options;
 	const isInternalReconciliation = surfaceSession.isInternalReconciliation === true;
 	const sessionOpenChanges = surfaceSession.sessionOpenChanges ?? [];
 	const previewBaseChanges = surfaceSession.previewBaseChanges ?? [];
@@ -137,15 +143,15 @@ export async function prepareSurfaceCodingWorkspace(options: {
 		);
 		const codexInstructions = [
 			baseInstructions,
-			"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts and analysis.",
-			"Never try to mutate published Company Files under /company directly; inspect them read-only via company_read/company_list or shell commands and stage every proposed action via stage_surface_ops_action.",
+			"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts and analysis.",
+			"Never try to mutate published Company Files under /company directly; inspect them read-only via company_search, company_read, company_list, data_describe, data_query, or shell commands under /company, and stage every proposed action via stage_surface_ops_action.",
 			"Every turn MUST end with coding_finish (omitting headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join(" ");
 		const claudeSystemNote = [
 			baseInstructions,
-			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts and analysis.",
-			"Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action (and inspect company files via Read or mcp__qorpera__company_read/company_list).",
+			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts and analysis.",
+			"Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action, inspect company files via Read or mcp__qorpera__company_search/company_read/company_list, and query company databases read-only via mcp__qorpera__data_describe/data_query.",
 			"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey and summary) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join("\n");
@@ -162,6 +168,16 @@ export async function prepareSurfaceCodingWorkspace(options: {
 							OPS_FOLDER_TOOLS.has(tool.name),
 						)
 					: [];
+				const searchTools =
+					folder && folderSearch
+						? [cloudFolderSearchTool({ search: folderSearch, folder, runId: identity.runId })]
+						: [];
+				const dataTools =
+					folder && companyData
+						? cloudDataTools({ folder, door: companyData, apply: false }).filter((tool) =>
+								READ_ONLY_DATA_TOOLS.has(tool.name),
+							)
+						: [];
 				const viewAttachmentTool =
 					surfaceSession.viewAttachment && attachments.length > 0
 						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
@@ -174,6 +190,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 					),
 					...viewAttachmentTool,
 					...readOnlyFolderTools,
+					...searchTools,
+					...dataTools,
 				];
 			},
 		};
@@ -325,8 +343,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	);
 	const codexInstructions = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "coding_finish"),
-		"This session runs on a coding machine where /company is mounted read-only and /tmp is writable for scripts, Node/Python tooling, and Chromium/Playwright visual verification.",
-		`Never try to write directly into /company/${folderRoot}/ from shell commands (the mount refuses direct writes); use company_read and company_list to read files with active Preview overlays, stage every change under ${folderRoot}/ via stage_surface_patch, and write working notes under ${notesRoot}/ via company_write.`,
+		"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts, Node/Python tooling, and Chromium/Playwright visual verification.",
+		`Never try to write directly into /company/${folderRoot}/ from shell commands (the mount refuses direct writes); use company_search to find files across the whole company, data_describe and data_query to inspect company databases under /company/data/, company_read and company_list to read files with active Preview overlays, stage every change under ${folderRoot}/ via stage_surface_patch, and write working notes under ${notesRoot}/ via company_write.`,
 		isInternalReconciliation
 			? "When finished staging the combined resolution via stage_surface_patch, call coding_finish with a concise summary (omitting headSha). Never call coding_ask."
 			: "Every turn MUST end with coding_finish (with operationKey, summary, and optional notePaths; omit headSha) or coding_ask when a founder decision is required; never end with plain text alone.",
@@ -334,8 +352,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	].join("\n\n");
 	const claudeSystemNote = [
 		rewriteSurfaceReplyMentions(rawStudioInstructions, "mcp__qorpera__coding_finish"),
-		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with /company mounted read-only and /tmp writable for scripts, Node/Python, Blender, and Chromium/Playwright visual verification.",
-		`Never try to modify /company directly with Bash, Edit, or Write (the mount refuses direct writes). Use mcp__qorpera__company_read and mcp__qorpera__company_list when you need active Preview overlay contents, stage every file change under ${folderRoot}/ through mcp__qorpera__stage_surface_patch, and write working notes under ${notesRoot}/ through mcp__qorpera__company_write.`,
+		"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts, Node/Python, Blender, and Chromium/Playwright visual verification.",
+		`Never try to modify /company directly with Bash, Edit, or Write (the mount refuses direct writes). Use mcp__qorpera__company_search to search across the whole company, mcp__qorpera__data_describe and mcp__qorpera__data_query to inspect company databases read-only, mcp__qorpera__company_read and mcp__qorpera__company_list when you need active Preview overlay contents, stage every file change under ${folderRoot}/ through mcp__qorpera__stage_surface_patch, and write working notes under ${notesRoot}/ through mcp__qorpera__company_write.`,
 		isInternalReconciliation
 			? "When finished staging the combined resolution via mcp__qorpera__stage_surface_patch, call mcp__qorpera__coding_finish with operationKey and a concise summary. Never call coding_ask."
 			: "Every turn MUST end with mcp__qorpera__coding_finish (with operationKey, summary, and optional notePaths) or mcp__qorpera__coding_ask when a founder decision is required; ending with plain text alone fails the turn.",
@@ -429,8 +447,27 @@ export async function prepareSurfaceCodingWorkspace(options: {
 						...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
 					}).filter((tool) => STUDIO_FOLDER_TOOLS.has(tool.name))
 				: [];
+			const searchTools =
+				folder && folderSearch
+					? [cloudFolderSearchTool({ search: folderSearch, folder, runId: identity.runId })]
+					: [];
+			const dataTools =
+				folder && companyData
+					? cloudDataTools({ folder, door: companyData, apply: false }).filter((tool) =>
+							READ_ONLY_DATA_TOOLS.has(tool.name),
+						)
+					: [];
 			const skillTools = surfaceSession.readSkillTools ? surfaceSession.readSkillTools(operations, identity) : [];
-			return [stagePatchTool, ...narrateTool, ...pictureTool, ...viewAttachmentTool, ...folderTools, ...skillTools];
+			return [
+				stagePatchTool,
+				...narrateTool,
+				...pictureTool,
+				...viewAttachmentTool,
+				...folderTools,
+				...searchTools,
+				...dataTools,
+				...skillTools,
+			];
 		},
 	};
 }

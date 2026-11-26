@@ -123,6 +123,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_native_company_file_write", "standard"],
 	["qorpera_native_company_file_write_source", "standard"],
 	["qorpera_native_light_ask_answer", "standard"],
+	["qorpera_native_list_company_interfaces", "standard"],
 	["qorpera_native_machine_manage", "standard"],
 	["qorpera_native_machine_start", "standard"],
 	["qorpera_native_office_capture", "standard"],

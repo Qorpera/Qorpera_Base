@@ -254,6 +254,9 @@ import {
 	type SurfaceToolsRpcClient,
 } from "./cloud-surface-tools.ts";
 import {
+	type CompanyInterfacesContext,
+	extractStrategyInterfaceSummary,
+	parseCompanyInterfacesResponse,
 	parseSurfaceConflictDetails,
 	parseSurfaceTurnOpenChanges,
 	parseSurfaceTurnResolvedChanges,
@@ -654,20 +657,29 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 					});
 					return folder;
 				};
+				const folderClient = getFolder();
 				const usesPrimaryCodexCoding = !isGeminiRun && wake.payload.harness !== "claude-code";
 				const codingStudioVoice =
 					usesPrimaryCodexCoding && !(await hasChatGptPlanDirectory(identityRoot))
 						? new CloudVoiceChannel()
 						: undefined;
-				const surfaceSession = await this.#loadSurfaceCodingBinding(
-					binding,
-					context,
-					wake.payload,
-					getFolder,
-					signal,
-					codingStudioVoice,
-				);
-				if (this.#coding.supportsFolderWrites) getFolder();
+				const [companyInterfaces, rawSurfaceSession] = await Promise.all([
+					this.#loadCompanyInterfacesContext(binding, folderClient, signal),
+					this.#loadSurfaceCodingBinding(binding, context, wake.payload, getFolder, signal, codingStudioVoice),
+				]);
+				const surfaceSession = rawSurfaceSession
+					? {
+							...rawSurfaceSession,
+							...(companyInterfaces ? { companyInterfaces } : {}),
+						}
+					: undefined;
+				const codingFolderSearch = this.#folderSearch
+					? new CloudFolderSearch({
+							socketPath: this.#folderSearch.socketPath,
+							folder: folderClient,
+							environmentId: context.identity.environmentId,
+						})
+					: undefined;
 				const wantsCodingPictures =
 					(this.#coding.supportsFolderWrites || surfaceSession?.sourceKind === "folder") &&
 					!surfaceSession?.isInternalReconciliation &&
@@ -698,7 +710,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						identity: context.identity,
 						wake,
 						observability,
-						...(folder ? { folder } : {}),
+						folder: folderClient,
+						...(companyInterfaces ? { companyInterfaces } : {}),
+						...(codingFolderSearch ? { folderSearch: codingFolderSearch } : {}),
+						...(this.#companyData ? { companyData: this.#companyData } : {}),
 						...(surfaceSession ? { surfaceSession } : {}),
 						...(attachCodingVoice ? { voice: attachCodingVoice } : {}),
 						...(codingPictureLane?.channel
@@ -709,6 +724,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							: {}),
 					});
 				} finally {
+					codingFolderSearch?.close();
 					await codingPictureLane?.close();
 				}
 			}
@@ -2222,6 +2238,46 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 		};
 	}
 
+	async #loadCompanyInterfacesContext(
+		binding: CloudNativeToolBinding,
+		folderClient: CloudCompanyFolderClient,
+		signal: AbortSignal,
+	): Promise<CompanyInterfacesContext | null> {
+		let raw: unknown;
+		try {
+			raw = await this.#paths.call("qorpera_native_list_company_interfaces", { p_binding: binding }, signal);
+		} catch (error) {
+			if (signal.aborted) throw error;
+			return null;
+		}
+		const interfaces = parseCompanyInterfacesResponse(raw);
+		if (interfaces.length === 0) return null;
+		const readOptionalText = async (path: string, maxBytes: number): Promise<string | null> => {
+			try {
+				const found = await folderClient.readText(path, maxBytes, signal);
+				const text = found?.text.trim();
+				return text ? text : null;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				return null;
+			}
+		};
+		const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
+		const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
+		const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+		const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
+		const [strategyPlays, strategyBrief, identityBrief] = await Promise.all([
+			strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
+			strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
+			identityRoot ? readOptionalText(`${identityRoot}/brief.md`, 12_288) : Promise.resolve(null),
+		]);
+		return {
+			interfaces,
+			strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
+			identitySummary: identityBrief,
+		};
+	}
+
 	async #loadSurfaceCodingBinding(
 		binding: CloudNativeToolBinding,
 		context: CloudNativeCompanyContext,
@@ -2325,9 +2381,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			}
 		};
 		// WHY: loadSurfaceSharedAssets already reads brief.md, voice.md, and tokens.json; derive identityContext instead of reading them twice.
-		const [visionMarkdown, readingMarkdown, briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
-			readOptionalText("QorperaOS/vision/vision.md"),
-			readOptionalText("QorperaOS/vision/reading.md"),
+		const [briefMarkdown, sharedSnapshot, memberImages] = await Promise.all([
 			readOptionalText(`QorperaOS/surfaces/${surfaceSlug}/brief.md`),
 			loadSurfaceSharedAssets(folderClient, signal, productFolderRoots).catch((error) => {
 				if (signal.aborted) throw error;
@@ -2381,8 +2435,6 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				? { previewReconciliations: previewContext.previewReconciliations }
 				: {}),
 			isInternalReconciliation: sessionTurnRaw.isInternal === true && sessionTurnRaw.state === "reconciling",
-			visionMarkdown,
-			readingMarkdown,
 			briefMarkdown:
 				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
 			fullPrompt: sessionTurnRaw.prompt,
@@ -2602,6 +2654,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			bytes: this.#folderBytes(binding, identity),
 			...(this.#eventHooks ? { signedHooks: this.#eventHooks } : {}),
 		});
+		const companyInterfacesRequest = this.#loadCompanyInterfacesContext(binding, folderClient, signal);
+		companyInterfacesRequest.catch(() => undefined);
 		const stagedNotePaths = new Set<string>();
 		const surfaceTools = createControlPlaneSurfaceToolsPort(this.#paths, {
 			leaseToken,
@@ -3010,87 +3064,96 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				})
 			: undefined;
 		const narratePort = this.#studioNarratePort(binding, folderClient, signal, geminiSession?.apiKey, studioVoice);
+		const companyInterfaces = await companyInterfacesRequest;
 
 		let turnResult: Awaited<ReturnType<typeof runSurfaceSessionTurn>>;
 		try {
-			turnResult = await runSurfaceSessionTurn(turnInput, {
-				folder: folderClient,
-				readStudioFiles: cloudStudioFileReader(folderClient),
-				surfaceTools,
-				narrateExplainer: narratePort,
-				...(studioPictureLane?.channel
-					? {
-							makePicture: {
-								stageBytes: async (bytes, mediaType, reqSignal) => {
-									const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
-									return {
-										manifestSha256: ref.manifestSha256,
-										fileSha256: ref.fileSha256,
-										bytes: ref.bytes,
-										mediaType: ref.mediaType,
-									};
+			turnResult = await runSurfaceSessionTurn(
+				{
+					...turnInput,
+					...(companyInterfaces ? { companyInterfaces } : {}),
+				},
+				{
+					folder: folderClient,
+					readStudioFiles: cloudStudioFileReader(folderClient),
+					surfaceTools,
+					narrateExplainer: narratePort,
+					...(studioPictureLane?.channel
+						? {
+								makePicture: {
+									stageBytes: async (bytes, mediaType, reqSignal) => {
+										const ref = await folderClient.stageBytes(bytes, mediaType, reqSignal);
+										return {
+											manifestSha256: ref.manifestSha256,
+											fileSha256: ref.fileSha256,
+											bytes: ref.bytes,
+											mediaType: ref.mediaType,
+										};
+									},
+									pictures: studioPictureLane.channel,
 								},
-								pictures: studioPictureLane.channel,
-							},
-						}
-					: {}),
-				executeTurn: async (turnReq) =>
-					runModelTurn({
-						instructions: turnReq.instructions,
-						turnBrief: turnReq.turnBrief,
-						prompt: turnReq.input.prompt,
-						isInternal: turnReq.input.isInternal === true,
-						turnSignal: turnReq.signal,
-						buildTools: (runIdentity, operations) => {
-							const folderTools =
-								turnReq.mode === "folder"
-									? [
-											...cloudFolderFileTools({
+							}
+						: {}),
+					executeTurn: async (turnReq) =>
+						runModelTurn({
+							instructions: turnReq.instructions,
+							turnBrief: turnReq.turnBrief,
+							prompt: turnReq.input.prompt,
+							isInternal: turnReq.input.isInternal === true,
+							turnSignal: turnReq.signal,
+							buildTools: (runIdentity, operations) => {
+								const folderTools =
+									turnReq.mode === "folder"
+										? [
+												...cloudFolderFileTools({
+													folder: folderClient,
+													operations,
+													identity: runIdentity,
+													surfaceFilePolicy: {
+														mode: "surface_worker",
+														writableRoots: turnReq.writableRoots,
+														stagedRoots: turnReq.stagedRoots,
+													},
+												}),
+												...notebooks.tools(
+													(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
+													operations,
+												),
+											]
+										: cloudFolderFileTools({
 												folder: folderClient,
 												operations,
 												identity: runIdentity,
-												surfaceFilePolicy: {
-													mode: "surface_worker",
-													writableRoots: turnReq.writableRoots,
-													stagedRoots: turnReq.stagedRoots,
-												},
+											}).filter((tool) => readOnlyNames.has(tool.name));
+								const searchTools = surfaceFolderSearch
+									? [
+											cloudFolderSearchTool({
+												search: surfaceFolderSearch,
+												folder: folderClient,
+												runId: runIdentity.runId,
 											}),
-											...notebooks.tools(
-												(files) => cloudReadOnlySkillTools(files, runIdentity, agentFolders),
-												operations,
-											),
 										]
-									: cloudFolderFileTools({
+									: [];
+								const dataTools = this.#companyData
+									? cloudDataTools({
 											folder: folderClient,
-											operations,
-											identity: runIdentity,
-										}).filter((tool) => readOnlyNames.has(tool.name));
-							const searchTools = surfaceFolderSearch
-								? [
-										cloudFolderSearchTool({
-											search: surfaceFolderSearch,
-											folder: folderClient,
-											runId: runIdentity.runId,
-										}),
-									]
-								: [];
-							const dataTools = this.#companyData
-								? cloudDataTools({
-										folder: folderClient,
-										door: this.#companyData,
-										apply: false,
-									}).filter((tool) => readOnlyDataNames.has(tool.name))
-								: [];
-							return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
-						},
-					}),
-				executeCodeRepoTurn: async () => {
-					throw new Error("Code repository surface sessions run through the coding executor; retry this session.");
+											door: this.#companyData,
+											apply: false,
+										}).filter((tool) => readOnlyDataNames.has(tool.name))
+									: [];
+								return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
+							},
+						}),
+					executeCodeRepoTurn: async () => {
+						throw new Error(
+							"Code repository surface sessions run through the coding executor; retry this session.",
+						);
+					},
+					completeSessionTurn: completionPort.completeSessionTurn,
+					renewSessionLease: leaseRenewalPort.renewSessionLease,
+					signal,
 				},
-				completeSessionTurn: completionPort.completeSessionTurn,
-				renewSessionLease: leaseRenewalPort.renewSessionLease,
-				signal,
-			});
+			);
 		} finally {
 			surfaceFolderSearch?.close();
 			await studioPictureLane?.close();

@@ -468,6 +468,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Strategy surface, custom studios and narrated voice tours",
 		text: "Every company now has a Strategy Studio surface (surfaces/strategy) for the grand plan, competing plays, interactive unit economics and market maps, falsifiable hypotheses, animated breakdowns, and guided voice tours narrated with connected ChatGPT Voice or Gemini TTS. Put custom planning rooms or calculators in Custom Studio surfaces (archetype studio, folder-backed) instead of legacy apps/ widgets, and link any surface tab in chat with [Title](surface:<slug>#<tab>).",
 	},
+	{
+		id: "coding-interfaces-context-and-tools",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Live Company Interfaces and search on coding machines",
+		text: "Every coding and interface session now receives a live manifest of the company's active Interfaces (Identity, Strategy, product, and custom Surfaces with their /company paths and Strategy/Identity summaries) in place of legacy vision and reading files. Coding sessions now carry company_search across the full company folder, and Studio and Ops coding sessions also carry read-only data_describe and data_query so every dispatched agent can inspect the whole company directly on its machine.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

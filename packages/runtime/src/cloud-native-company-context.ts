@@ -98,8 +98,8 @@ function isSurfaceFirstTools(has: CloudOfferedTool): boolean {
 function surfaceFirstCompanyFiles(has: CloudOfferedTool): string {
 	return `
 # The company's files
-Each Surface is a direct live projection of real Company Files or a git codebase: live-build surfaces project code/<owner>/<name>, Identity projects identity/, Studio surfaces project their <folderRoot>/, and Files is the raw file drawer. Work counts when it lands as a staged Surface Change founders can toggle and preview live${has("start_surface_session") ? " (via start_surface_session)" : ""} — never as spontaneous markdown documents scattered under strategy/, research/, operations/, plans/, docs/, memos/, reports/, meetings/, marketing/, or sales/. When delegating multiple reports, analyses, or blog posts to a Surface session, ask for each report or post as its own structured report (or standalone HTML page) staged as its own separate change rather than bundled Markdown files.
-Keep Company Files clean: surface briefs live at QorperaOS/surfaces/<slug>/brief.md, concise supporting rationale lives as Notes under QorperaOS/surfaces/<slug>/notes/, global brand assets live under identity/, and git repositories live under code/. Platform folders (${osPath("vision")}/, ${osPath("connections")}/, ${osPath("skills")}/, data/, digital-post/, bank/, members/) stay for their platform purposes. Create standalone prose files only when a member explicitly asks for a document, file, spreadsheet, or PDF.
+Each Surface is a direct live projection of real Company Files or a git codebase: live-build surfaces project code/<owner>/<name>, Identity projects identity/, Strategy projects surfaces/strategy, Studio surfaces project their <folderRoot>/, and Files is the raw file drawer. Every coding machine mounts the company folder live at /company so dispatched agents can inspect all active Interfaces directly. Work counts when it lands as a staged Surface Change founders can toggle and preview live${has("start_surface_session") ? " (via start_surface_session)" : ""} — never as spontaneous markdown documents scattered under strategy/, research/, operations/, plans/, docs/, memos/, reports/, meetings/, marketing/, or sales/. When delegating multiple reports, analyses, or blog posts to a Surface session, ask for each report or post as its own structured report (or standalone HTML page) staged as its own separate change rather than bundled Markdown files.
+Keep Company Files clean: surface briefs live at QorperaOS/surfaces/<slug>/brief.md, concise supporting rationale lives as Notes under QorperaOS/surfaces/<slug>/notes/, global brand assets live under identity/, and git repositories live under code/. Platform folders (${osPath("connections")}/, ${osPath("skills")}/, data/, digital-post/, bank/, members/) stay for their platform purposes. Create standalone prose files only when a member explicitly asks for a document, file, spreadsheet, or PDF.
 File tools take relative company paths. Read the current version before editing a file, verify writes landed before claiming they did, and never overwrite or move someone else's work unless asked.${has("company_read") ? " Images a member attaches arrive as company paths: open them with company_read before commenting on them." : ""}`;
 }
 
@@ -226,6 +226,9 @@ const keepToolLines = (section: string, has: CloudOfferedTool, lines: readonly (
 function writingSection(surfaceFirst = false): string {
 	return surfaceFirst
 		? WRITING.replace(
+				"- Plain, everyday words — and the higher your role, the plainer: the Co-Founder uses everyday language only; area owners translate domain jargon into everyday terms; narrow specialists use technical terms only when the members themselves do.",
+				"- Plain, everyday words: explain things in everyday language unless the members themselves use technical terms.",
+			).replace(
 				`files as ${CLOUD_FOLDER_LINK_EXAMPLE}, apps as [Title](app:<name>).`,
 				`Surfaces as [Title](surface:<slug>) or [Title](surface:<slug>#<tab>) and files as ${CLOUD_FOLDER_LINK_EXAMPLE} (never app:<name>).`,
 			)
@@ -245,6 +248,9 @@ function protocolFront(has: CloudOfferedTool, worker: boolean, surfaceFirst = fa
 	const work = keepToolLines(
 		surfaceFirst
 			? HOW_WORK_GETS_DONE.replace(
+					`Work that belongs to another owner (each agent's agent.md under ${osPath("agents")}/ shows who owns what) goes to that owner with the context they need, and tell the member who has it.`,
+					`Dispatch focused work directly onto the relevant Interface${has("start_surface_session") ? " with start_surface_session" : ""} (or a coding/write worker) — every dispatched agent runs on the same full-capability machine with read access across the company.`,
+				).replace(
 					"Reversible work (files, apps, machines, routines, todos, workers)",
 					"Reversible work (Surfaces, files, machines, routines, todos, workers)",
 				)

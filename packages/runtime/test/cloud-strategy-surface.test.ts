@@ -25,13 +25,9 @@ function fakeToolContext() {
 }
 
 describe("strategy surface and custom studio runtime integration", () => {
-	it("loads company vision and reading into Studio turn briefs and attaches strategy-studio skill", async () => {
+	it("injects live Company Interfaces into Studio turn briefs (not vision/reading) and attaches strategy-studio skill", async () => {
 		let turnBrief = "";
 		let instructions = "";
-		const files: Record<string, string> = {
-			"QorperaOS/vision/vision.md": "# Brooks\nPre-market dealer stock matching for serious car buyers.",
-			"QorperaOS/vision/reading.md": "Testing dealer-funded access vs buyer subscriptions in Copenhagen.",
-		};
 		await runSurfaceSessionTurn(
 			{
 				sessionId: randomUUID(),
@@ -45,12 +41,40 @@ describe("strategy surface and custom studio runtime integration", () => {
 				surfaceIsGlobal: false,
 				surfaceArchetype: "studio",
 				folderRoot: "surfaces/strategy",
+				companyInterfaces: {
+					interfaces: [
+						{
+							slug: "strategy",
+							title: "Strategy",
+							kind: "strategy",
+							archetype: "studio",
+							sourceKind: "folder",
+							folderRoot: "surfaces/strategy",
+							repositoryKey: null,
+							briefSummary: "Grand plan and unit economics",
+							isGlobal: false,
+						},
+						{
+							slug: "website",
+							title: "Website",
+							kind: "website",
+							archetype: "live_build",
+							sourceKind: "code_repo",
+							folderRoot: null,
+							repositoryKey: "surfaces/website",
+							briefSummary: "Public landing site",
+							isGlobal: false,
+						},
+					],
+					strategySummary: "Verdict: Win Copenhagen dealer intake first.",
+					identitySummary: "# Brooks\nCalm automotive authority.",
+				},
 				prompt: "Build our competing plays and stress-test unit economics.",
 			},
 			{
 				folder: {
-					async readText(path: string) {
-						return files[path] ?? null;
+					async readText() {
+						return null;
 					},
 				},
 				readStudioFiles: async () => ({ files: {}, binaries: {} }),
@@ -64,10 +88,13 @@ describe("strategy surface and custom studio runtime integration", () => {
 			},
 		);
 
-		expect(turnBrief).toContain("## Company Vision (QorperaOS/vision/vision.md)");
-		expect(turnBrief).toContain("Pre-market dealer stock matching");
-		expect(turnBrief).toContain("## Company Reading (QorperaOS/vision/reading.md)");
-		expect(turnBrief).toContain("dealer-funded access");
+		expect(turnBrief).toContain("## Company Interfaces");
+		expect(turnBrief).toContain("/company/surfaces/strategy");
+		expect(turnBrief).toContain("/company/code/surfaces/website");
+		expect(turnBrief).toContain("Win Copenhagen dealer intake first.");
+		expect(turnBrief).toContain("Calm automotive authority.");
+		expect(turnBrief).not.toContain("## Company Vision");
+		expect(turnBrief).not.toContain("## Company Reading");
 		expect(instructions).toContain("## Skill: strategy-studio");
 		expect(instructions).toContain("economics.json");
 		expect(instructions).toContain("plays.json");
