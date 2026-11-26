@@ -16,10 +16,7 @@ async function environment(): Promise<NodeJS.ProcessEnv> {
 	const tokenFile = join(root, "object-token");
 	const secretRuntimeTokenFile = join(root, "secret-runtime-token");
 	const secretCaFile = join(root, "secret-ca.pem");
-	const secretCa = await readFile(
-		new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-		"utf-8",
-	);
+	const secretCa = await readFile(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf-8");
 	await writeFile(tokenFile, `${"q".repeat(43)}\n`, { mode: 0o600 });
 	await writeFile(secretRuntimeTokenFile, `${"s".repeat(43)}\n`, { mode: 0o600 });
 	await writeFile(secretCaFile, secretCa, { mode: 0o600 });

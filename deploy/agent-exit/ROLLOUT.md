@@ -64,7 +64,9 @@ first. `/etc/default/qorpera-agent-exit` is root's, mode 0644. Then the exit:
 apt-get install -y --no-install-recommends dnsmasq-base conntrack python3
 getent group qorpera-agent-plug || groupadd --system qorpera-agent-plug
 # The rules reader's package, from the checkout with its dependencies installed (npm ci --ignore-scripts); a new folder.
-node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules
+# Include the pinned self-hosted database CA (or pass --database-ca and --database-ca-sha256 to install-agent-exit.sh).
+node scripts/package-agent-exit-rules.mjs --out /tmp/agent-exit-rules \
+	--database-ca <ca-file> --database-ca-sha256 <ca-sha256>
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
 systemctl enable --now qorpera-agent-exit.service qorpera-agent-exit-dns.service qorpera-agent-exit-log.service \
 	qorpera-agent-plug.service qorpera-agent-exit-names.service qorpera-agent-exit-health.timer \
@@ -362,8 +364,12 @@ observer would post the node unhealthy, and after step 6 the node would take no 
 of what the nodes run:
 
 ```bash
-python3 deploy/agent-exit/rules-reader-login.py --check
-python3 deploy/agent-exit/rules-reader-login.py
+python3 deploy/agent-exit/rules-reader-login.py --check \
+	--direct-host <db-host> --direct-port <db-port> \
+	--direct-ca <ca-file> --direct-ca-sha256 <ca-sha256> --direct-admin <admin-role>
+python3 deploy/agent-exit/rules-reader-login.py \
+	--direct-host <db-host> --direct-port <db-port> \
+	--direct-ca <ca-file> --direct-ca-sha256 <ca-sha256> --direct-admin <admin-role>
 ```
 
 The script makes the login, places it on both nodes as a root-only file and starts both readers, in one go; it prints
@@ -386,7 +392,8 @@ Without the reader, `verify` fails again ("the rules reader is not running"), th
 A fresh node has it from step 1 (its names reconciler) and step 8 (its rules); this step is for a node that took
 step 1 as "Adding E8b to a node that runs the exit" (or an earlier one). Per node, node 1 then node 2, right after
 step 8 (each node's reader runs: `"ok":true` and a fresh `readAt`; without it every machine on the node loses its
-DNS). As root, from the checkout of steps 1 and 8 with the reader's package built, in one go (`README.md`, "Adding
+DNS). As root, from the checkout of steps 1 and 8 with the reader's package built with `--database-ca` and
+`--database-ca-sha256` (or pass both flags to `install-agent-exit.sh`), in one go (`README.md`, "Adding
 E8b-2 to a node that runs the exit", says why this order):
 
 ```bash
@@ -421,7 +428,8 @@ dnsmasq again, and every machine goes out as before.
 For a node that took step 9 from a release before E8c-1; one that takes step 9 from a release with E8c-1 has it
 already. Per node, node 1 then node 2. Only while the node's rules reader runs (`"ok":true` and a fresh `readAt`):
 without rules a machine reaches nothing outside. No kernel module is loaded. As root, from the checkout of the release
-head with the reader's package built, in one go (`README.md`, "Adding E8c-1 to a node that runs the exit"):
+head with the reader's package built with `--database-ca` and `--database-ca-sha256` (or pass both flags to
+`install-agent-exit.sh`), in one go (`README.md`, "Adding E8c-1 to a node that runs the exit"):
 
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules
@@ -465,7 +473,8 @@ For a node that took step 10 from a release before E8c-2; one that takes step 10
 already. Per node, node 1 then node 2. It loads no kernel module and changes nothing the companies see: without the
 queue modules (`nft_queue` and `nfnetlink_queue`) the server name checker does not start, the exit loads no `sni` chain,
 and "only listed" goes by address alone, as with E8c-1. As root, from the checkout of the release head with the
-reader's package built, in one go (`README.md`, "Adding E8c-2 to a node that runs the exit"):
+reader's package built with `--database-ca` and `--database-ca-sha256` (or pass both flags to `install-agent-exit.sh`),
+in one go (`README.md`, "Adding E8c-2 to a node that runs the exit"):
 
 ```bash
 bash deploy/agent-exit/install-agent-exit.sh /tmp/agent-exit-rules

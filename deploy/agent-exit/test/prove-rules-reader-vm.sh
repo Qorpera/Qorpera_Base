@@ -68,7 +68,12 @@ modules >"$work/modules-before"
 
 # --- The reader's package and this folder, from this checkout -------------------------------------------------------
 mkdir -p "$work/push/debs"
-(cd "$repo" && node scripts/package-agent-exit-rules.mjs --out "$work/push/package" >/dev/null) ||
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=qorpera-proof-ca \
+	-addext basicConstraints=critical,CA:TRUE -keyout "$work/ca.key" -out "$work/ca.crt" >/dev/null 2>&1 ||
+	fail "cannot make a throwaway CA for the rules reader's package"
+ca_sha256=$(sha256sum "$work/ca.crt" | cut -d' ' -f1)
+(cd "$repo" && node scripts/package-agent-exit-rules.mjs --out "$work/push/package" --database-ca "$work/ca.crt" \
+	--database-ca-sha256 "$ca_sha256" >/dev/null) ||
 	fail "cannot build the rules reader's package"
 cp -r "$here" "$work/push/agent-exit"
 pass "built the rules reader's package ($(ls "$work/push/package" | tr '\n' ' '))"

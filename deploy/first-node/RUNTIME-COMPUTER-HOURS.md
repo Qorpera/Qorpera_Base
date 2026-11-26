@@ -330,7 +330,7 @@ Jonas:
 5. Failed payments (Settings → Billing → Subscriptions and emails): after the last retry, cancel
    the subscription. Receipts and invoice emails on.
 6. A webhook endpoint (the address is fixed, so before or after the deploy) at
-   `https://<project>.supabase.co/functions/v1/computer-billing/webhook`, API version
+   `https://api.qorpera.com/functions/v1/computer-billing/webhook`, API version
    `2026-08-26.dahlia`, events `checkout.session.completed`,
    `checkout.session.async_payment_succeeded`, `invoice.created`, `invoice.paid`,
    `invoice.marked_uncollectible`, `customer.subscription.created`,
@@ -442,7 +442,7 @@ Jonas (secrets):
 2. In the database's Vault, the project URL and a Supabase secret key for the worker, as the
    invitation email needs (`supabase/INVITATION-EMAIL.md`, "Schedule"). The project URL may already
    be there for invitations; skip it if so:
-   `select vault.create_secret('https://<project>.supabase.co', 'qorpera_project_url');` and
+   `select vault.create_secret('https://api.qorpera.com', 'qorpera_project_url');` and
    `select vault.create_secret('<sb_secret_…>', 'qorpera_computer_hour_notice_key');`.
    The key is created in the Supabase dashboard and never passes through a session.
 

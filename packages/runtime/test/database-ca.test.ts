@@ -8,21 +8,10 @@ import { connect, createServer, type Server } from "node:tls";
 import { type DatabaseCaCredentials, databaseTls } from "@qorpera/runtime/database-ca";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-/* The database's CA (database-ca.ts), which the secret broker, the shared vault and the agent exit's rules reader take
- * from their systemd credentials: Supabase's pinned CA by default; our own CA only with its sha256 pin, the two given
- * together; never a CA without a pin, and verify-full either way. The certificates here are throwaway ones made for
- * this test (openssl CLI). */
-
-const SUPABASE_CA = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf8",
-).trim();
-
 let dir = "";
 function openssl(args: string[]) {
 	execFileSync("openssl", args, { stdio: "ignore" });
 }
-/** A throwaway P-256 key and a self-signed certificate, a CA or not. */
 function selfSigned(tag: string, ca: boolean) {
 	const key = join(dir, `${tag}.key`);
 	const cert = join(dir, `${tag}.crt`);
@@ -44,7 +33,6 @@ function selfSigned(tag: string, ca: boolean) {
 	]);
 	return { key, cert, bytes: readFileSync(cert) };
 }
-/** A throwaway server certificate for `name`, signed by `issuer`. */
 function serverCertificate(tag: string, issuer: { key: string; cert: string }, name: string) {
 	const key = join(dir, `${tag}.key`);
 	openssl(["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", key]);
@@ -85,35 +73,8 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const refused = (credentials: DatabaseCaCredentials) => () => databaseTls(credentials, "Test service");
 
 describe("databaseTls", () => {
-	it("by default trusts Supabase's CA, with its pinned fingerprint, as before", () => {
-		expect(databaseTls({ supabaseCa: SUPABASE_CA }, "Test service")).toEqual({
-			ca: SUPABASE_CA,
-			rejectUnauthorized: true,
-		});
-		// Any other CA in Supabase's place is refused, in either mode, as before.
-		expect(refused({ supabaseCa: ownCa.bytes.toString("utf8") })).toThrow("Test service database CA is invalid");
-		expect(refused({ supabaseCa: "not a certificate" })).toThrow("Test service database CA is invalid");
-		expect(
-			refused({
-				supabaseCa: ownCa.bytes.toString("utf8"),
-				ownCa: ownCa.bytes,
-				ownCaSha256: createHash("sha256").update(ownCa.bytes).digest("hex"),
-			}),
-		).toThrow("Test service database CA is invalid");
-	});
-
-	it("trusts our own CA alone, with or without Supabase's CA, and fails closed when neither is provided", () => {
+	it("trusts our pinned CA and fails closed when missing or half-supplied", () => {
 		const pin = createHash("sha256").update(ownCa.bytes).digest("hex");
-		expect(
-			databaseTls(
-				{
-					supabaseCa: SUPABASE_CA,
-					ownCa: ownCa.bytes,
-					ownCaSha256: pin,
-				},
-				"Test service",
-			),
-		).toEqual({ ca: ownCa.bytes.toString("utf8"), rejectUnauthorized: true });
 		expect(
 			databaseTls(
 				{
@@ -128,23 +89,15 @@ describe("databaseTls", () => {
 		expect(refused({ ownCaSha256: pin })).toThrow("Test service database CA is invalid");
 	});
 
-	it("refuses half an input and a pin the file does not match", () => {
-		// The CA file without its pin, the pin without its file.
-		expect(refused({ supabaseCa: SUPABASE_CA, ownCa: ownCa.bytes })).toThrow("Test service database CA is invalid");
-		expect(
-			refused({ supabaseCa: SUPABASE_CA, ownCaSha256: createHash("sha256").update(ownCa.bytes).digest("hex") }),
-		).toThrow("Test service database CA is invalid");
-		// A pin of another file, of the file with a byte changed, or not a sha256 at all.
+	it("refuses a pin the file does not match", () => {
 		expect(
 			refused({
-				supabaseCa: SUPABASE_CA,
 				ownCa: ownCa.bytes,
 				ownCaSha256: createHash("sha256").update(otherCa.bytes).digest("hex"),
 			}),
 		).toThrow("Test service database CA is invalid");
 		expect(
 			refused({
-				supabaseCa: SUPABASE_CA,
 				ownCa: Buffer.concat([ownCa.bytes, Buffer.from("\n")]),
 				ownCaSha256: createHash("sha256").update(ownCa.bytes).digest("hex"),
 			}),
@@ -155,9 +108,7 @@ describe("databaseTls", () => {
 			createHash("sha256").update(ownCa.bytes).digest("hex").slice(1),
 			"x".repeat(64),
 		]) {
-			expect(refused({ supabaseCa: SUPABASE_CA, ownCa: ownCa.bytes, ownCaSha256: pin })).toThrow(
-				"Test service database CA is invalid",
-			);
+			expect(refused({ ownCa: ownCa.bytes, ownCaSha256: pin })).toThrow("Test service database CA is invalid");
 		}
 	});
 
@@ -167,7 +118,6 @@ describe("databaseTls", () => {
 		for (const bytes of [two, notCa.bytes, notPem, Buffer.alloc(0)]) {
 			expect(
 				refused({
-					supabaseCa: SUPABASE_CA,
 					ownCa: bytes,
 					ownCaSha256: createHash("sha256").update(bytes).digest("hex"),
 				}),
@@ -196,7 +146,6 @@ describe("verify-full with our own CA", () => {
 		await new Promise((resolveClose) => server.close(resolveClose));
 		await new Promise((resolveClose) => wrongName.close(resolveClose));
 	});
-	/** A TLS handshake as pg makes it for a host name: the given options, the name checked against the certificate. */
 	const handshake = (options: { ca: string; rejectUnauthorized: true }, to: number) =>
 		new Promise<string>((resolveHandshake) => {
 			const socket = connect({ ...options, host: "127.0.0.1", port: to, servername: "database.qorpera.test" });
@@ -210,24 +159,18 @@ describe("verify-full with our own CA", () => {
 			});
 		});
 
-	it("verifies the server's certificate and name against our own CA, and only with its input", async () => {
+	it("verifies the server's certificate and name against our own CA, and refuses wrong names or issuers", async () => {
 		const own = databaseTls(
 			{
-				supabaseCa: SUPABASE_CA,
 				ownCa: ownCa.bytes,
 				ownCaSha256: createHash("sha256").update(ownCa.bytes).digest("hex"),
 			},
 			"Test service",
 		);
 		expect(await handshake(own, port)).toBe("verified");
-		// Without the input the service keeps Supabase's CA, which does not vouch for this server.
-		expect(await handshake(databaseTls({ supabaseCa: SUPABASE_CA }, "Test service"), port)).not.toBe("verified");
-		// A certificate from our CA for another name fails the name check (verify-full).
 		expect(await handshake(own, wrongNamePort)).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
-		// Another CA, even pinned, does not vouch for this server either.
 		const other = databaseTls(
 			{
-				supabaseCa: SUPABASE_CA,
 				ownCa: otherCa.bytes,
 				ownCaSha256: createHash("sha256").update(otherCa.bytes).digest("hex"),
 			},

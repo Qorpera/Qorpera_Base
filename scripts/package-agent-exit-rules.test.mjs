@@ -24,21 +24,19 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		assert.equal(manifest.schema, "qorpera.agent-exit-rules-package/v1");
 		assert.deepEqual(
 			manifest.artifacts.map((artifact) => artifact.file),
-			["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service", "supabase-prod-ca-2021.crt"],
+			["qorpera-agent-exit-rules.mjs", "qorpera-agent-exit-rules.service"],
 		);
 		for (const artifact of manifest.artifacts) {
 			const bytes = await readFile(join(destination, artifact.file));
 			assert.equal(bytes.byteLength, artifact.bytes);
 			assert.equal(createHash("sha256").update(bytes).digest("hex"), artifact.sha256);
 		}
-		for (const [file, source] of [
-			["qorpera-agent-exit-rules.service", "deploy/agent-exit/qorpera-agent-exit-rules.service"],
-			["supabase-prod-ca-2021.crt", "deploy/cloud-secret-broker/supabase-prod-ca-2021.crt"],
-		])
-			assert.deepEqual(await readFile(join(destination, file)), await readFile(join(repositoryRoot, source)));
+		assert.deepEqual(
+			await readFile(join(destination, "qorpera-agent-exit-rules.service")),
+			await readFile(join(repositoryRoot, "deploy/agent-exit/qorpera-agent-exit-rules.service")),
+		);
 		const executable = join(destination, "qorpera-agent-exit-rules.mjs");
 		const bundle = await readFile(executable, "utf8");
-		// The reader alone: no broker, vault or service-role key rides along.
 		assert.ok(!bundle.includes("CloudSecretBroker"));
 		assert.ok(!bundle.includes("SUPABASE_SERVICE_ROLE"));
 		const syntax = spawnSync(process.execPath, ["--check", executable], { encoding: "utf8" });
@@ -46,7 +44,6 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		const help = spawnSync(process.execPath, [executable, "--help"], { encoding: "utf8" });
 		assert.equal(help.status, 0, help.stderr);
 		assert.match(help.stdout, /Agent exit rules reader\. Requires private systemd credentials/);
-		// Started without its credentials it stops with one line that names nothing.
 		const bare = spawnSync(process.execPath, [executable], {
 			encoding: "utf8",
 			env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
@@ -61,7 +58,8 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 			"StateDirectoryMode=0700",
 			"RuntimeDirectory=qorpera-agent-exit-rules",
 			"LoadCredential=qorpera-agent-exit-rules-database-url:/etc/qorpera-agent-exit/database-url",
-			"LoadCredential=qorpera-agent-exit-rules-database-ca:/usr/local/libexec/qorpera-agent-exit/supabase-prod-ca-2021.crt",
+			"LoadCredential=qorpera-agent-exit-rules-database-own-ca:/usr/local/libexec/qorpera-agent-exit/database-own-ca.crt",
+			"LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/usr/local/libexec/qorpera-agent-exit/database-own-ca.sha256",
 			"ExecStart=/usr/bin/node /usr/local/libexec/qorpera-agent-exit/qorpera-agent-exit-rules.mjs",
 			"UMask=0077",
 			"NoNewPrivileges=yes",
@@ -71,6 +69,7 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		])
 			assert.ok(service.split("\n").includes(line), line);
 		assert.doesNotMatch(service, /^(?:Environment|NetworkNamespacePath|ReadWritePaths)=/m);
+		assert.doesNotMatch(service, /supabase-prod-ca/);
 		const repeated = spawnSync(process.execPath, ["scripts/package-agent-exit-rules.mjs", "--out", destination], {
 			cwd: repositoryRoot,
 			encoding: "utf8",
@@ -78,7 +77,7 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 		assert.notEqual(repeated.status, 0);
 		assert.equal(await readFile(join(destination, "manifest.json"), "utf8"), encoded);
 
-		const caSource = join(repositoryRoot, "deploy/cloud-secret-broker/supabase-prod-ca-2021.crt");
+		const caSource = join(repositoryRoot, "packages/runtime/test/fixtures/test-ca.crt");
 		const caBytes = await readFile(caSource);
 		const caSha = createHash("sha256").update(caBytes).digest("hex");
 		const ownOut = join(temporary, "own-ca-package");
@@ -94,15 +93,12 @@ test("packages the agent exit's rules reader with its unit and the database's CA
 			[
 				"qorpera-agent-exit-rules.mjs",
 				"qorpera-agent-exit-rules.service",
-				"supabase-prod-ca-2021.crt",
 				"database-own-ca.crt",
 				"database-own-ca.sha256",
-				"database-own-ca.conf",
 			],
 		);
-		const dropIn = await readFile(join(ownOut, "database-own-ca.conf"), "utf8");
-		assert.match(dropIn, /LoadCredential=qorpera-agent-exit-rules-database-own-ca:/);
-		assert.match(dropIn, /LoadCredential=qorpera-agent-exit-rules-database-own-ca-sha256:/);
+		assert.deepEqual(await readFile(join(ownOut, "database-own-ca.crt")), caBytes);
+		assert.equal(await readFile(join(ownOut, "database-own-ca.sha256"), "utf8"), `${caSha}\n`);
 		const badPin = spawnSync(
 			process.execPath,
 			["scripts/package-agent-exit-rules.mjs", "--out", join(temporary, "bad"), "--database-ca", caSource, "--database-ca-sha256", "0".repeat(64)],

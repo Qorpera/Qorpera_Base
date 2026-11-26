@@ -251,11 +251,8 @@ export async function runCloudSecretBrokerServiceMain(
 		throw new Error("Cloud secret broker configuration is invalid");
 	const memberOrigins = withOrigins ? (config.memberOrigins as unknown[]).map(parseMemberOrigin) : [];
 	const database = brokerDatabase(await readCredential(directory, "qorpera-cloud-secret-database-url"));
-	// Supabase's CA by default; our own CA and its sha256 pin only as the package's drop-in adds them
-	// (scripts/package-cloud-secret-broker.mjs --database-ca), and then that CA alone (database-ca.ts).
 	const ssl = databaseTls(
 		{
-			supabaseCa: await readOptionalCredential(directory, "qorpera-cloud-secret-database-ca"),
 			ownCa: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca", readCredentialBytes),
 			ownCaSha256: await readOptionalCredential(directory, "qorpera-cloud-secret-database-own-ca-sha256"),
 		},

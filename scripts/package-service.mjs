@@ -106,8 +106,11 @@ export async function readLinuxX64Elf(filePath, errorMessage) {
 	return bytes;
 }
 
-export async function loadDatabaseOwnCa(file, sha256) {
-	if (file === undefined && sha256 === undefined) return undefined;
+export async function loadDatabaseOwnCa(file, sha256, { required = false } = {}) {
+	if (file === undefined && sha256 === undefined) {
+		if (required) throw new Error("--database-ca and --database-ca-sha256 are required");
+		return undefined;
+	}
 	if (file === undefined || sha256 === undefined) {
 		throw new Error("--database-ca and --database-ca-sha256 go together");
 	}
@@ -130,10 +133,9 @@ export async function loadDatabaseOwnCa(file, sha256) {
 	return { bytes, sha256 };
 }
 
-export async function writeDatabaseOwnCaFiles(outputRoot, ownCa, dropInLines) {
+export async function writeDatabaseOwnCaFiles(outputRoot, ownCa) {
 	if (!ownCa) return [];
 	await writeFile(join(outputRoot, "database-own-ca.crt"), ownCa.bytes, { mode: 0o644, flag: "wx" });
 	await writeFile(join(outputRoot, "database-own-ca.sha256"), `${ownCa.sha256}\n`, { mode: 0o644, flag: "wx" });
-	await writeFile(join(outputRoot, "database-own-ca.conf"), `${dropInLines.join("\n")}\n`, { mode: 0o644, flag: "wx" });
-	return ["database-own-ca.crt", "database-own-ca.sha256", "database-own-ca.conf"];
+	return ["database-own-ca.crt", "database-own-ca.sha256"];
 }

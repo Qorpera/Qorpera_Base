@@ -42,10 +42,7 @@ const computeIdentityId = "30000000-0000-4000-8000-000000000004";
 const ownerUserId = "30000000-0000-4000-8000-000000000005";
 const capability = "f".repeat(43);
 const expiresAt = "2099-08-23T12:00:00.000Z";
-const identityRecoveryCa = readFileSync(
-	new URL("../../../deploy/cloud-secret-broker/supabase-prod-ca-2021.crt", import.meta.url),
-	"utf-8",
-);
+const identityRecoveryCa = readFileSync(new URL("../../runtime/test/fixtures/test-ca.crt", import.meta.url), "utf-8");
 const identityRecoveryCaSha256 = createHash("sha256").update(identityRecoveryCa).digest("hex");
 
 afterEach(async () => {

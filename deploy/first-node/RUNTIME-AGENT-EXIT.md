@@ -348,7 +348,7 @@ server name check.
   - Its login is made and placed by one script that the coordinator runs, `deploy/agent-exit/rules-reader-login.py`:
     a new password, written by each node's root helper from stdin into a root-only file (mode 0400) that the unit
     hands to the reader with `LoadCredential`, then the role's login as a SCRAM verifier made where the script runs,
-    so the password never reaches the database or the Supabase API. Nobody reads, copies or prints it; the script
+    so the password never reaches the database or its logs. Nobody reads, copies or prints it; the script
     prints file names, sizes, a hash comparison and `ok`. Running it again makes a new login.
 - **Per-company names (E8b-2).** One dnsmasq cannot hold a list per company. E8b-2 runs a small dnsmasq for each
   company that has rules, in the exit's namespace: its servers file answers a blocked name with "no such name" and

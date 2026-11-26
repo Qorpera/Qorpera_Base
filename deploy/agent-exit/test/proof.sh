@@ -510,8 +510,8 @@ pass "check: rules parse and the tools are present; without the queue modules, o
 # The exit's database login (E8b): from stdin into a root-only file, as the rollout script sends it; it prints the
 # file's sha256, never the login, and refuses anything else with the old file kept.
 export QORPERA_AGENT_EXIT_LOGIN_DIR=$work/login
-login='postgresql://qorpera_agent_exit.abcdefghij0123456789:Zq7_xW-ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx'
-login+='@aws-0-eu-central-1.pooler.supabase.com:5432/postgres?sslmode=verify-full'
+login='postgresql://qorpera_agent_exit:Zq7_xW-ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv3Wx'
+login+='@db-primary.example.invalid:5432/postgres?sslmode=verify-full'
 out=$(printf '%s' "$login" | bash "$tool" database-url)
 login_sha256=$(printf '%s' "$login" | sha256sum | cut -d' ' -f1)
 [[ $out == "$work/login/database-url mode=400 owner=root:root bytes=${#login} sha256=$login_sha256" ]] ||
@@ -968,6 +968,7 @@ if [[ $part == names-logs ]]; then
 	ip -n plugged addr add 10.210.1.2/16 dev eth0
 	ip -n plugged route add default via 10.210.0.1
 	wait_for "bash $tool verify >/dev/null 2>&1"
+	wait_for '[[ $(reach_map) == "10.210.1.1:open 10.210.1.2:open" ]]'
 	connects agent 1.1.1.1 443 || fail "the agent machine cannot reach a website"
 	connects agent 192.168.1.40 2049 && fail "the NAS is reachable"
 	ip netns exec plugged python3 -c 'import socket; s = socket.create_connection(("1.1.1.1", 8443), 3); s.close()' || fail "plugged tcp 8443"
