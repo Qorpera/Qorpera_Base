@@ -189,6 +189,35 @@ begin
 	end;
 
 	begin
+		perform pg_temp.t1402_make_session(v_w_f3, 'repo-a', 'queued', null);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set vm_allocation_id = v_m1, claim_after = clock_timestamp() - interval '1 second'
+		where worker_id = v_w_f3;
+		insert into public.qorpera_coding_session_events(worker_id, sequence, kind, actor, body)
+		values (v_w_f3, 1, 'step', 'executor', '{"text":"Waiting for a coding machine","reason":"NODE_CAPACITY_EXHAUSTED"}');
+		set local session_replication_role = origin;
+		perform pg_temp.t1402_ok(
+			public.qorpera_coding_executor_pick(v_w_f3) = 'exec-1402-1',
+			format('already-homed session stays on awake home VM on full node 1 even after prior NODE_CAPACITY_EXHAUSTED: got %s',
+				public.qorpera_coding_executor_pick(v_w_f3))
+		);
+		set local session_replication_role = replica;
+		update public.qorpera_coding_sessions set phase = 'preparing', lease_owner = 'exec-1402-2',
+			lease_token = extensions.gen_random_uuid(), lease_until = clock_timestamp() + interval '5 minutes', started_at = clock_timestamp()
+		where worker_id = v_w_f3;
+		set local session_replication_role = origin;
+		v_plan_f3 := public.qorpera_plan_coding_machine(
+			v_w_f3, (select lease_token from public.qorpera_coding_sessions where worker_id = v_w_f3), v_n2_sha, v_digest
+		);
+		perform pg_temp.t1402_ok(
+			v_plan_f3 ->> 'state' = 'refused' and v_plan_f3 ->> 'reason' = 'NODE_NOT_PREFERRED',
+			format('plan agrees with pick and refuses needless re-home off awake home VM: %s', v_plan_f3)
+		);
+		raise exception using errcode = 'QT140';
+	exception when sqlstate 'QT140' then null;
+	end;
+
+	begin
 		update public.qorpera_coding_executors set enabled = false where environment_id = v_env and owner = 'exec-1402-1';
 		perform pg_temp.t1402_make_session(v_w_f1, 'repo-a', 'queued', null);
 		perform pg_temp.t1402_ok(

@@ -167,7 +167,7 @@ begin
 				or (
 					machine.retire_requested_at is null
 					and machine.removing_at is null
-					and public.qorpera_coding_machine_node_has_room(machine, v_session.harness, v_require_headroom)
+					and public.qorpera_coding_machine_node_has_room(machine, v_session.harness, false)
 					and (
 						not (machine.binding ? 'cpus' and machine.binding ? 'memoryBytes')
 						or not public.qorpera_coding_machine_full(
@@ -269,9 +269,7 @@ $old$			-- WHY: Only retirement or structural fullness (never a transient full_u
 					coalesce(v_candidate_executor.max_attached_sessions, v_executor.max_attached_sessions), false) then$old$,
 $new$			-- WHY: Only retirement, structural fullness, or an unavailable/un-wakeable remote executor/node re-homes an already-homed detached session.
 			if v_machine.retire_requested_at is not null or v_machine.removing_at is not null
-				or not public.qorpera_coding_machine_node_has_room(
-					v_machine, v_session.harness, public.qorpera_coding_session_requires_node_headroom(v_session, v_worker)
-				)
+				or not public.qorpera_coding_machine_node_has_room(v_machine, v_session.harness, false)
 				or public.qorpera_coding_machine_full(v_machine, v_worker.id,
 					coalesce(v_candidate_executor.session_cpu_millis, v_executor.session_cpu_millis),
 					coalesce(v_candidate_executor.session_memory_bytes, v_executor.session_memory_bytes),
