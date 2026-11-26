@@ -286,6 +286,7 @@ export const SURFACES: Record<string, string> = {
 		"Ingen rapporter endnu. Beskriv en analyse, leverandørsammenligning eller et designessay nedenfor.",
 	"In this report": "I denne rapport",
 	"Phone model": "Telefonmodel",
+	"Phone: {name}": "Telefon: {name}",
 	"Website zoom": "Zoom for hjemmeside",
 	"Phone zoom": "Zoom for telefon",
 	"Zoom out": "Zoom ud",

@@ -1472,6 +1472,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 	it("lets mobile previews switch between exact phone models and updates logical viewport dimensions", async () => {
 		stubFigureMotion();
+		localStorage.clear();
 		const store = storeWith(undefined, {
 			companyName: "Thetaband",
 			localInteractive: true,
@@ -1488,16 +1489,35 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
 		expect(viewport.dataset.phoneCutout).toBe("island");
+		expect(viewport.style.getPropertyValue("--phone-status")).toBe("54px");
 
-		view.el.querySelector<HTMLButtonElement>('[data-phone-model="iphone-se"]')!.click();
+		const pickPhone = (label: string) => {
+			view.el.querySelector<HTMLButtonElement>('[data-act="phone-models"]')!.click();
+			const rows = [...document.querySelectorAll<HTMLButtonElement>('.context-menu [role="menuitemradio"]')];
+			expect(rows.map((row) => row.textContent)).toEqual([
+				"iPhone 16393 × 852",
+				"iPhone 16 Pro Max440 × 956",
+				"iPhone SE375 × 667",
+				"Pixel 9412 × 915",
+			]);
+			rows.find((row) => row.textContent?.startsWith(label))!.click();
+		};
+		expect(view.el.querySelector(".surface-bar .surface-phone-pick")?.textContent).toBe("iPhone 16");
+
+		pickPhone("iPhone SE");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("375px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("667px");
 		expect(viewport.dataset.phoneCutout).toBe("none");
+		expect(viewport.style.getPropertyValue("--phone-status")).toBe("20px");
+		expect(view.el.querySelector(".surface-phone-pick")?.textContent).toBe("iPhone SE");
+		expect(localStorage.getItem("qorpera.web.surface-phone-model.v1")).toBe("iphone-se");
 
-		view.el.querySelector<HTMLButtonElement>('[data-phone-model="pixel-9"]')!.click();
+		pickPhone("Pixel 9");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("412px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("915px");
 		expect(viewport.dataset.phoneCutout).toBe("punch");
+		expect(view.el.querySelector(".surface-phone-glass .surface-phone-clock")?.textContent).toBe("9:41");
+		localStorage.clear();
 
 		view.dispose();
 		store.dispose();
@@ -1596,7 +1616,7 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 		expect(viewport.style.getPropertyValue("--site-zoom")).toBe("");
 		expect(viewport.style.getPropertyValue("--phone-w")).toBe("393px");
 		expect(viewport.style.getPropertyValue("--phone-h")).toBe("852px");
-		expect(view.el.querySelector(".surface-phone-dims")?.textContent).toBe("393 × 852");
+		expect(view.el.querySelector(".surface-phone-pick")?.getAttribute("title")).toBe("iPhone 16 (393 × 852)");
 		expect(view.el.querySelector('[data-act="zoom-menu"][data-zoom-target="website"]')).toBeNull();
 
 		const baseScale = Number.parseFloat(viewport.style.getPropertyValue("--phone-scale"));

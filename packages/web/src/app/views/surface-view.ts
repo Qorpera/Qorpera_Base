@@ -88,6 +88,7 @@ interface PhoneModelSpec {
 	readonly height: number;
 	readonly radius: number;
 	readonly cutout: "island" | "punch" | "none";
+	readonly status: number;
 }
 
 const PHONE_MODELS: readonly PhoneModelSpec[] = [
@@ -99,6 +100,7 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 		height: 852,
 		radius: 50,
 		cutout: "island",
+		status: 54,
 	},
 	{
 		id: "iphone-16-pro-max",
@@ -108,6 +110,7 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 		height: 956,
 		radius: 54,
 		cutout: "island",
+		status: 54,
 	},
 	{
 		id: "iphone-se",
@@ -117,9 +120,34 @@ const PHONE_MODELS: readonly PhoneModelSpec[] = [
 		height: 667,
 		radius: 26,
 		cutout: "none",
+		status: 20,
 	},
-	{ id: "pixel-9", label: "Pixel 9", shortLabel: "Pixel 9", width: 412, height: 915, radius: 36, cutout: "punch" },
+	{
+		id: "pixel-9",
+		label: "Pixel 9",
+		shortLabel: "Pixel 9",
+		width: 412,
+		height: 915,
+		radius: 36,
+		cutout: "punch",
+		status: 40,
+	},
 ];
+
+const PHONE_BODY_EDGE = 16;
+
+function phoneStatusIcons(): SVGSVGElement {
+	const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	svg.setAttribute("class", "surface-phone-signal");
+	svg.setAttribute("viewBox", "0 0 70 13");
+	svg.innerHTML =
+		'<rect x="0" y="8" width="3.2" height="4.5" rx="1"/><rect x="5" y="5.5" width="3.2" height="7" rx="1"/>' +
+		'<rect x="10" y="3" width="3.2" height="9.5" rx="1"/><rect x="15" y=".5" width="3.2" height="12" rx="1"/>' +
+		'<path d="M30.5 3.1c2.3 0 4.4.9 6 2.4l1.2-1.2a10.1 10.1 0 0 0-14.4 0l1.2 1.2a8.4 8.4 0 0 1 6-2.4Zm0 3.4c1.4 0 2.6.5 3.6 1.4l1.2-1.2a6.8 6.8 0 0 0-9.6 0l1.2 1.2c1-.9 2.2-1.4 3.6-1.4Zm0 3.3c.5 0 1 .2 1.3.5l-1.3 1.2-1.3-1.2c.3-.3.8-.5 1.3-.5Z"/>' +
+		'<rect x="43.5" y=".5" width="23" height="12" rx="3.8" fill="none" stroke="currentColor" opacity=".35"/>' +
+		'<rect x="45" y="2" width="20" height="9" rx="2.5"/><path d="M68 4.5v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2Z" opacity=".4"/>';
+	return svg;
+}
 
 function phoneModelById(id: string | null | undefined): PhoneModelSpec {
 	return PHONE_MODELS.find((model) => model.id === id) ?? PHONE_MODELS[0]!;
@@ -205,12 +233,26 @@ export class SurfaceView {
 		"data-act": "toggle-panel",
 		hidden: true,
 	});
-	readonly #phoneBar = h("div", {
-		class: "surface-phone-bar",
-		role: "group",
-		"aria-label": t("Phone model"),
-		hidden: true,
-	});
+	readonly #phoneModelCorner = h("div", { class: "surface-phone-corner is-start", hidden: true });
+	readonly #phoneZoomCorner = h("div", { class: "surface-phone-corner is-end", hidden: true });
+	readonly #phoneBody = h(
+		"div",
+		{ class: "surface-phone-body", "aria-hidden": "true" },
+		...["action", "volume-up", "volume-down", "side"].map((part) =>
+			h("i", { class: `surface-phone-button is-${part}` }),
+		),
+	);
+	readonly #phoneGlass = h(
+		"div",
+		{ class: "surface-phone-glass", "aria-hidden": "true" },
+		h(
+			"div",
+			{ class: "surface-phone-status" },
+			h("span", { class: "surface-phone-clock" }, "9:41"),
+			phoneStatusIcons(),
+		),
+		h("div", { class: "surface-phone-home" }),
+	);
 	readonly #topSlot = h("div", { class: "surface-top-slot", hidden: true });
 	readonly #stage = h("div", { class: "surface-stage" });
 	readonly #canvas = h("div", { class: "surface-canvas" });
@@ -319,10 +361,17 @@ export class SurfaceView {
 			},
 		});
 		this.#topSlot.append(this.#banner);
-		this.#phoneSizer.append(this.#loadingSlot, this.#mountSlot, this.#reportSlot, this.#frames);
+		this.#phoneSizer.append(
+			this.#phoneBody,
+			this.#loadingSlot,
+			this.#mountSlot,
+			this.#reportSlot,
+			this.#frames,
+			this.#phoneGlass,
+		);
 		this.#viewportBody.append(this.#phoneSizer);
-		this.#viewport.append(this.#phoneBar, this.#viewportBody);
-		this.#bar.append(this.#barTitle, this.#notch);
+		this.#viewport.append(this.#viewportBody);
+		this.#bar.append(this.#barTitle, this.#phoneModelCorner, this.#notch, this.#phoneZoomCorner);
 		this.#canvas.append(this.#bar, this.#topSlot, this.#viewport, this.#composer, this.#toast);
 		this.#address = new SurfaceAddress({
 			container: this.#canvas,
@@ -596,6 +645,7 @@ export class SurfaceView {
 		}
 		for (const toggle of this.#notchBar.querySelectorAll<HTMLElement>(".surface-toggle")) this.#placeThumb(toggle);
 		this.#markNotchCut();
+		this.#fitPhoneCorners();
 	}
 
 	#markNotchCut(): void {
@@ -715,7 +765,8 @@ export class SurfaceView {
 			this.#notchBar.replaceChildren();
 			this.#bar.hidden = true;
 			this.#panelToggle.hidden = true;
-			this.#phoneBar.hidden = true;
+			this.#phoneModelCorner.hidden = true;
+			this.#phoneZoomCorner.hidden = true;
 			this.#phoneBarShown = "";
 			this.#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 			delete this.#viewport.dataset.siteZoomed;
@@ -957,28 +1008,36 @@ export class SurfaceView {
 
 	#syncPhoneViewport(): void {
 		const isMobile = this.#viewport.dataset.device === "mobile";
-		this.#phoneBar.hidden = !isMobile;
+		this.#phoneModelCorner.hidden = !isMobile;
+		this.#phoneZoomCorner.hidden = !isMobile;
 		if (!isMobile) {
 			this.#viewport.removeAttribute("data-phone-cutout");
+			this.#bar.classList.remove("has-phone-corners", "is-phone-stacked");
+			delete this.#viewport.dataset.phoneStacked;
 			delete this.#viewport.dataset.phoneZoomed;
 			this.#viewport.style.removeProperty("--phone-w");
 			this.#viewport.style.removeProperty("--phone-h");
 			this.#viewport.style.removeProperty("--phone-r");
+			this.#viewport.style.removeProperty("--phone-status");
 			this.#viewport.style.removeProperty("--phone-scale");
 			this.#viewportBody.scrollLeft = 0;
 			this.#viewportBody.scrollTop = 0;
 			this.#lastPhoneZoom = DEFAULT_SURFACE_ZOOM;
 			return;
 		}
+		this.#bar.classList.add("has-phone-corners");
 		const model = phoneModelById(this.#phoneModelId);
+		this.#drawPhoneCorners(model);
+		this.#fitPhoneCorners();
+		const stacked = this.#viewport.dataset.phoneStacked === "true";
 		const rect = this.#viewport.getBoundingClientRect();
 		const ui = uiScale();
 		const padX = Math.ceil(64 * ui);
-		const padY = Math.ceil(224 * ui);
-		const bezel = Math.ceil(20 * ui);
-		const availW = rect.width > 0 ? Math.max(220, rect.width - padX) : model.width + bezel;
-		const availH = rect.height > 0 ? Math.max(260, rect.height - padY) : model.height + bezel;
-		const fitScale = Math.min(1, availW / (model.width + bezel), availH / (model.height + bezel));
+		const padY = Math.ceil((stacked ? 244 : 208) * ui);
+		const body = PHONE_BODY_EDGE * 2;
+		const availW = rect.width > 0 ? Math.max(220, rect.width - padX) : model.width + body;
+		const availH = rect.height > 0 ? Math.max(260, rect.height - padY) : model.height + body;
+		const fitScale = Math.min(1, availW / (model.width + body), availH / (model.height + body));
 		const phoneZoom = clampSurfaceZoom(this.#host.store.state.phoneZoom);
 		const scale = fitScale * phoneZoom;
 		const wasOverflowX = this.#viewportBody.scrollWidth > this.#viewportBody.clientWidth + 1;
@@ -988,6 +1047,7 @@ export class SurfaceView {
 		this.#viewport.style.setProperty("--phone-w", `${model.width}px`);
 		this.#viewport.style.setProperty("--phone-h", `${model.height}px`);
 		this.#viewport.style.setProperty("--phone-r", `${model.radius}px`);
+		this.#viewport.style.setProperty("--phone-status", `${model.status}px`);
 		this.#viewport.style.setProperty("--phone-scale", scale.toFixed(4));
 		if (phoneZoom !== this.#lastPhoneZoom) {
 			this.#lastPhoneZoom = phoneZoom;
@@ -998,38 +1058,64 @@ export class SurfaceView {
 				this.#viewportBody.scrollLeft = 0;
 			}
 		}
+	}
 
-		const zoomPct = Math.round(phoneZoom * 100);
-		const barKey = `${model.id}:${zoomPct}`;
+	#drawPhoneCorners(model: PhoneModelSpec): void {
+		const phoneZoom = clampSurfaceZoom(this.#host.store.state.phoneZoom);
+		const barKey = `${model.id}:${Math.round(phoneZoom * 100)}`;
 		if (barKey === this.#phoneBarShown) return;
 		this.#phoneBarShown = barKey;
 		const focused = document.activeElement;
-		const focusKey =
-			focused instanceof HTMLElement && this.#phoneBar.contains(focused) ? barFocusKey(focused) : undefined;
-		this.#phoneBar.replaceChildren(
+		const corners = [this.#phoneModelCorner, this.#phoneZoomCorner];
+		const focusIn = corners.find((corner) => focused instanceof HTMLElement && corner.contains(focused));
+		const focusKey = focusIn && focused instanceof HTMLElement ? barFocusKey(focused) : undefined;
+		this.#phoneModelCorner.replaceChildren(
 			h(
-				"div",
-				{ class: "surface-phone-models" },
-				...PHONE_MODELS.map((item) =>
-					h(
-						"button",
-						{
-							type: "button",
-							class: `surface-phone-model${item.id === model.id ? " is-on" : ""}`,
-							"aria-pressed": String(item.id === model.id),
-							"data-act": "phone-model",
-							"data-phone-model": item.id,
-							title: `${item.label} (${item.width} × ${item.height})`,
-						},
-						item.shortLabel,
-					),
-				),
+				"button",
+				{
+					type: "button",
+					class: "surface-phone-pick",
+					"aria-haspopup": "menu",
+					"aria-label": t("Phone: {name}", { name: model.label }),
+					title: `${model.label} (${model.width} × ${model.height})`,
+					"data-act": "phone-models",
+				},
+				h("span", null, model.label),
+				icon("chevron-down"),
 			),
-			h("span", { class: "surface-phone-dims" }, `${model.width} × ${model.height}`),
-			h("span", { class: "surface-phone-divider", "aria-hidden": "true" }),
-			this.#buildZoomControl("phone", phoneZoom),
 		);
-		restoreBarFocus(this.#phoneBar, focusKey);
+		this.#phoneZoomCorner.replaceChildren(this.#buildZoomControl("phone", phoneZoom));
+		if (focusIn) restoreBarFocus(focusIn, focusKey);
+	}
+
+	#fitPhoneCorners(): void {
+		if (!this.#bar.classList.contains("has-phone-corners")) return;
+		const style = getComputedStyle(this.#bar);
+		const inner = this.#bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+		const start = this.#phoneModelCorner.offsetWidth;
+		const end = this.#phoneZoomCorner.offsetWidth;
+		const gap = Math.ceil(12 * uiScale());
+		const clears = (notch: number) => notch / 2 + Math.max(start, end) + gap <= inner / 2;
+		const notch = (parseFloat(this.#notch.style.width) || 0) + 2 || this.#notch.offsetWidth;
+		const restingNotch = this.#barPinned || this.#panelsHidden ? notch : this.#notchPill.offsetWidth + 2;
+		const stacked = inner > 0 && !clears(restingNotch);
+		this.#bar.classList.toggle("is-phone-stacked", stacked);
+		this.#bar.classList.toggle("is-phone-tight", stacked && start + end + gap > inner);
+		this.#bar.classList.toggle("is-phone-covered", !stacked && inner > 0 && !clears(notch));
+		if (stacked) this.#viewport.dataset.phoneStacked = "true";
+		else delete this.#viewport.dataset.phoneStacked;
+	}
+
+	#setPhoneModel(id: string): void {
+		const model = phoneModelById(id);
+		this.#phoneModelId = model.id;
+		try {
+			localStorage.setItem(PHONE_MODEL_KEY, model.id);
+		} catch {
+			/* WHY: Local browser storage is optional in private/sandboxed contexts. */
+		}
+		this.#phoneBarShown = "";
+		this.#syncPhoneViewport();
 	}
 
 	#drawBar(surface: SurfaceSummary): void {
@@ -2065,16 +2151,21 @@ export class SurfaceView {
 				});
 				return;
 			}
-			case "phone-model": {
-				const model = phoneModelById(target.dataset.phoneModel);
-				this.#phoneModelId = model.id;
-				try {
-					localStorage.setItem(PHONE_MODEL_KEY, model.id);
-				} catch {
-					/* WHY: Local browser storage is optional in private/sandboxed contexts. */
-				}
-				this.#phoneBarShown = "";
-				this.#syncPhoneViewport();
+			case "phone-models": {
+				const box = target.getBoundingClientRect();
+				openContextMenu({
+					label: t("Phone model"),
+					x: box.left,
+					y: box.bottom + 6,
+					opener: target,
+					findOpener: () => this.el.querySelector<HTMLElement>('[data-act="phone-models"]'),
+					items: PHONE_MODELS.map((model) => ({
+						label: model.label,
+						hint: `${model.width} × ${model.height}`,
+						checked: model.id === this.#phoneModelId,
+						select: () => this.#setPhoneModel(model.id),
+					})),
+				});
 				return;
 			}
 			case "address":
