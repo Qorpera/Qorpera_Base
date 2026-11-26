@@ -295,7 +295,7 @@ export interface CodingEnvironmentAuthorization {
 	readonly companyId: string;
 	readonly environmentId: string;
 	readonly workerId: string;
-	readonly repository: CloudCodingRepository;
+	readonly repository: CloudCodingRepository | null;
 	readonly secrets: readonly CodingEnvironmentSecret[];
 	/** The older versions for the output's mask only (5j-4); none from a database before 20260930514000. */
 	readonly maskSecrets: readonly CodingEnvironmentSecret[];
@@ -833,7 +833,7 @@ function parseCodingEnvironmentAuthorization(
 		maskSecrets.length > CODING_ENVIRONMENT_MASK_MAXIMUM
 	)
 		throw new Error("Coding environment authorization differs from its request");
-	const repository = parseCloudCodingRepository(input.repository);
+	const repository = input.repository === null ? null : parseCloudCodingRepository(input.repository);
 	const companyId = brokerUuid(input.companyId, "Cloud secret company");
 	const environmentId = brokerUuid(input.environmentId, "Cloud secret environment");
 	// The database settles a member's and the company's secret of the same name before it
