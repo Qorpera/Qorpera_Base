@@ -162,6 +162,15 @@ import { HomeOutputGate } from "./machine-home-folder.ts";
 import type { BlobUploadFetch } from "./site-blob-upload.ts";
 import { collectAndUploadPreviewBuildToEdge } from "./surface-preview-build-upload.ts";
 import { previewBuildOutcome, type SurfacePreviewBuildOutcome } from "./surface-preview-runner.ts";
+import {
+	type ParsedLeadingPackageInstall,
+	PREVIEW_WORKSPACE_CHECK,
+	PREVIEW_WORKSPACE_SYNC,
+	PREVIEW_WORKSPACES_ROOT_REL,
+	parseLeadingPackageInstall,
+	previewWorkspaceDir,
+	previewWorkspaceKey,
+} from "./surface-preview-workspace.ts";
 
 export const CODING_HOST_RPCS = [
 	"qorpera_plan_coding_machine",
@@ -2790,6 +2799,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		let discoveredSetup: ParsedCodingSetup | null = null;
 		if (
 			!isSurfaceWorkspace &&
+			!claim.previewBuilder &&
 			folder?.repositories?.readSetup &&
 			typeof claim.baseSha === "string" &&
 			/^[0-9a-f]{40}$/.test(claim.baseSha)
@@ -3007,7 +3017,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		let started: { bootId: string; uid: number; starts: number };
 		let baseSha: string | null;
 		let cwd: string;
-		if (isSurfaceWorkspace) {
+		if (isSurfaceWorkspace || claim.previewBuilder) {
 			started = await startPromise;
 			baseSha = null;
 			cwd = CODING_FOLDER_COMPANY_ROOT;
@@ -3394,6 +3404,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const nativeEdge = this.#options.nativeEdge;
 		const execPipeClient = this.#options.client.execInstancePipe;
 		const useNativeEdge = Boolean(nativeEdge && this.#options.folder && execPipeClient);
+		const warmKey = useNativeEdge ? previewWorkspaceKey(codeAreaPath(gitClaim.repository), build.recipe.cwd) : null;
+		const leadingInstall = useNativeEdge ? parseLeadingPackageInstall(build.recipe.run) : null;
 		const run = await this.#runChecks(
 			gitClaim,
 			{
@@ -3416,10 +3428,19 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 				// WHY: Restore blessed check caches read-only from the default branch so preview builds reuse node_modules without poisoning shared caches.
 				blessedCachesBranch: gitClaim.repository.baseBranch,
 				allowCacheSave: false,
+				...(warmKey !== null
+					? {
+							warmWorkspace: {
+								key: warmKey,
+								cleanOutputFolder: build.recipe.folder,
+								leadingInstall,
+							},
+						}
+					: {}),
 			},
 			signal,
 		);
-		if (!useNativeEdge || !nativeEdge || !execPipeClient) {
+		if (!useNativeEdge || !nativeEdge || !execPipeClient || warmKey === null) {
 			return previewBuildOutcome(run, build.recipe);
 		}
 		if (run.state !== "passed") {
@@ -3434,7 +3455,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		if (runName === null) {
 			return previewBuildOutcome(run, build.recipe);
 		}
-		const srcDir = `/home/qorpera-${uid}/.qorpera-checks/${runName}/src`;
+		const srcDir = `${previewWorkspaceDir(uid, warmKey)}/src`;
 		const outputDir = build.recipe.folder === "." ? srcDir : `${srcDir}/${build.recipe.folder}`;
 		const worker32 = claim.workerId.replaceAll("-", "").toLowerCase();
 		const companyMountDir = `${CODING_GUEST.folder}/mounts/${worker32}`;
@@ -3499,6 +3520,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			allowCacheSave?: boolean;
 			changedPaths?: readonly string[];
 			checksChanged?: boolean;
+			warmWorkspace?: {
+				readonly key: string;
+				readonly cleanOutputFolder: string;
+				readonly leadingInstall: ParsedLeadingPackageInstall | null;
+			};
 		},
 		signal: AbortSignal,
 	): Promise<CodeChecksRun> {
@@ -3553,6 +3579,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		const home = `/home/qorpera-${uid}`,
 			root = `${home}/.qorpera-checks`,
 			dir = `${root}/${name}`,
+			warm = input.warmWorkspace ?? null,
+			warmRoot = `${home}/${PREVIEW_WORKSPACES_ROOT_REL}`,
+			warmDir = warm ? `${warmRoot}/${warm.key}` : null,
+			srcDir = warmDir ? `${warmDir}/src` : `${dir}/src`,
 			commandId = (index: number | string) =>
 				codingHostId("checks", `${claim.workerId}:${claim.sequence}:${input.attempt}:${index}`);
 		const base = {
@@ -3608,6 +3638,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 			(caches.length > 0 || blessedCachesBranch !== undefined) && ready.folder.packageCaches;
 		const repoCacheRoot = `${CODING_CHECK_CACHES.root}/${digest(areaPath).slice(0, 24)}`;
 		let copyTransport: LxdCodingFolderCommandTransport;
+		const copyScript = warm ? PREVIEW_WORKSPACE_SYNC : CODE_CHECKS_COPY;
 		try {
 			copyTransport = this.#folderTransport(folder, ready, {
 				cwd: home,
@@ -3615,6 +3646,13 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					...base,
 					QORPERA_CHECKS_REPOSITORY: repository,
 					QORPERA_CHECKS_COMMIT: input.commit,
+					...(warm
+						? {
+								QORPERA_PREVIEW_WORKSPACES_ROOT: warmRoot,
+								QORPERA_PREVIEW_WORKSPACE_KEY: warm.key,
+								QORPERA_PREVIEW_OUTPUT_FOLDER: warm.cleanOutputFolder,
+							}
+						: {}),
 					...(cacheRestoreEnabled
 						? {
 								...(caches.length > 0
@@ -3637,10 +3675,10 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					schema: "qorpera.code-checks-command/v1",
 					commit: input.commit,
 					index: 0,
-					run: CODE_CHECKS_COPY,
+					run: copyScript,
 				}),
 			),
-			command: CODE_CHECKS_COPY,
+			command: copyScript,
 			timeoutMs: CODE_CHECKS_COPY_MS,
 		};
 		const copyStep = { ...said, folder: name, index: 0 };
@@ -3813,16 +3851,27 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 					let totalCheckMs = 0;
 					for (let retry = 0; retry <= maxRetries; retry++) {
 						const attemptCommandId = retry === 0 ? commandId(index) : commandId(`${index}:r${retry}`);
+						const useWarmCheck =
+							warm !== null && warmDir !== null && checkIndex === 0 && warm.leadingInstall !== null;
+						const checkScript = useWarmCheck ? PREVIEW_WORKSPACE_CHECK : CODE_CHECKS_CHECK;
 						let transport: LxdCodingFolderCommandTransport;
 						try {
 							transport = this.#folderTransport(folder, ready, {
-								cwd: `${dir}/src`,
+								cwd: srcDir,
 								environment: {
 									...(check.env ?? {}),
 									...base,
 									QORPERA_CHECK_CWD: check.cwd,
 									QORPERA_CHECK_RUN: check.run,
 									QORPERA_CHECK_LOG: `${home}/${log}`,
+									...(useWarmCheck && warm.leadingInstall
+										? {
+												QORPERA_PREVIEW_WORKSPACE_DIR: warmDir,
+												QORPERA_PREVIEW_INSTALL_MANAGER: warm.leadingInstall.manager,
+												QORPERA_PREVIEW_INSTALL_CMD: warm.leadingInstall.installCommand,
+												QORPERA_PREVIEW_BUILD_CMD: warm.leadingInstall.buildCommand,
+											}
+										: {}),
 								},
 								...(check.secrets !== undefined ? { allowedSecrets: check.secrets } : {}),
 								authorize: checked,
@@ -3840,10 +3889,11 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 									commit: input.commit,
 									index,
 									run: check.run,
+									...(useWarmCheck ? { warmInstall: true } : {}),
 									...(retry > 0 ? { retry } : {}),
 								}),
 							),
-							command: CODE_CHECKS_CHECK,
+							command: checkScript,
 							timeoutMs: check.timeoutSeconds * 1000,
 						};
 						this.#checksReport({
@@ -7617,7 +7667,7 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 		discovered: ParsedCodingSetup | null,
 		signal: AbortSignal,
 	): Promise<void> {
-		if (isSurfaceWorkspaceClaim(claim)) {
+		if (isSurfaceWorkspaceClaim(claim) || claim.previewBuilder) {
 			this.#sessionSetups.delete(claim.workerId);
 			return;
 		}

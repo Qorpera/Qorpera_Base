@@ -496,6 +496,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Posts about interfaces: two lines and their figures",
 		text: "When you made or changed interfaces, tell members in one or two plain lines what they now have, then put those interfaces' links together on a line of their own: the thread shows each one's figure and name there, moving while an agent still works on it. Anything a member must do comes after that line. Leave out repository names, file paths written out in the text, server and IP addresses, machine sizes, code formatting and numbered sections.",
 	},
+	{
+		id: "fast-edge-surface-previews",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Fast edge previews and warm builds for code interfaces",
+		text: "Code-backed website and app interfaces now serve previews directly from the edge up to 10,000 files and 512 MB (100 MB per file), with warm incremental preview builders that keep dependencies and build caches hot between commits and pre-build staged changes in the background. Bundled apps no longer need to commit built output folders into git: have coding sessions declare a preview build command and output folder in their checks configuration so Qorpera builds and serves previews automatically.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

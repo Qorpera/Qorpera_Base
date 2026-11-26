@@ -105,6 +105,12 @@ import {
 	type LxdInstanceRecord,
 	validExecPipe,
 } from "../src/lxd-client.ts";
+import {
+	PREVIEW_WORKSPACE_CHECK,
+	PREVIEW_WORKSPACE_SYNC,
+	previewWorkspaceDir,
+	previewWorkspaceKey,
+} from "../src/surface-preview-workspace.ts";
 import { watchAbortSignalAny } from "./helpers/abort-any.ts";
 import { testAgentMac, testAgentPlug } from "./helpers/coding-machine.ts";
 
@@ -5844,13 +5850,26 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			pollMs?: number | null;
 			/** What the machine's agent says of its package caches at the mount (true: a new agent that made them). */
 			packageCaches?: boolean;
+			previewBuilder?: boolean;
+			nativeEdge?: {
+				readonly routerInternalUrl: string;
+				readonly controlToken: string;
+				readonly fetchImpl: (
+					url: string,
+					init?: RequestInit,
+				) => Promise<{ ok: boolean; status: number; json?: () => Promise<unknown>; text?: () => Promise<string> }>;
+			};
+			execInstancePipe?: LxdCodingExecutorHostOptions["client"]["execInstancePipe"];
 		} = {},
 	) {
 		const f = await folderFixture();
 		f.agent.packageCaches = options.packageCaches ?? true;
 		f.claim.repository = { host: "qorpera", owner: "acme", name: "shop", baseBranch: "main" };
+		if (options.previewBuilder) f.claim.previewBuilder = true;
+		const readSetup = vi.fn(async () => ({ file: null, setupDigest: "", refused: false, problems: [] }));
 		Object.assign(f.repositories, {
 			start: vi.fn<NonNullable<CodingFolderRepositories["start"]>>(async () => ({ baseSha: f.baseSha })),
+			readSetup,
 		});
 		// The vault: each answer it gives, counted.
 		const vault = vi.fn<CodingEnvironmentSource["environment"]>(async () => ({
@@ -5865,6 +5884,10 @@ describe("a run of a repository's checks in the session's machine (own code stor
 		});
 		const host = new LxdCodingExecutorHost({
 			...f.options,
+			client: {
+				...f.options.client,
+				...(options.execInstancePipe ? { execInstancePipe: options.execInstancePipe } : {}),
+			},
 			folder: {
 				...f.folder,
 				report,
@@ -5874,6 +5897,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 				...(options.boundaryMs === undefined ? {} : { checksBoundaryMs: options.boundaryMs }),
 			},
 			...(commandSecrets ? { commandSecrets } : {}),
+			...(options.nativeEdge ? { nativeEdge: options.nativeEdge } : {}),
 		});
 		mocked.realTransports = true;
 		// The tail as the words' rule cuts it (part C1's own tests hold its bounds): here it says what it was handed.
@@ -5957,6 +5981,7 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			...f,
 			host,
 			session,
+			readSetup,
 			vault,
 			logged,
 			/** When the log line of `step` for `commandId` was written, in the order of every mock's calls. */
@@ -9516,6 +9541,97 @@ describe("a run of a repository's checks in the session's machine (own code stor
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHE_ROOT).toContain(CODING_CHECK_CACHES.root);
 			expect(copyRun?.environment.QORPERA_CHECKS_CACHES).toBeUndefined();
 			expect(f.folderExecStream).not.toHaveBeenCalled();
+		});
+
+		it("skips worktree preparation and setup discovery for previewBuilder and uses warm incremental workspace on nativeEdge", async () => {
+			const html = Buffer.from("<!doctype html><h1>Warm</h1>");
+			const htmlHash = createHash("sha256").update(html).digest("hex");
+			const scannedDirs: string[] = [];
+			const uploadedBlobs: string[] = [];
+			const execInstancePipe = vi.fn<NonNullable<LxdCodingExecutorHostOptions["client"]["execInstancePipe"]>>(
+				async (_project, _instance, request) => {
+					const rawStdin =
+						request.stdin instanceof Uint8Array ? Buffer.from(request.stdin).toString("utf8") : "{}";
+					const cfg = JSON.parse(rawStdin) as { outputDir?: string; files?: readonly unknown[] };
+					if (cfg.outputDir && !cfg.files) {
+						scannedDirs.push(cfg.outputDir);
+						return {
+							exitCode: 0,
+							stdout: Buffer.from(
+								JSON.stringify({
+									files: [{ path: "index.html", bytes: html.byteLength, sha256: htmlHash }],
+									redirects: null,
+									headers: null,
+									hasCredentialInputs: false,
+									shared: {},
+								}),
+							),
+							stderrTail: Buffer.alloc(0),
+						};
+					}
+					return {
+						exitCode: 0,
+						stdout: Buffer.concat([Buffer.from(`${htmlHash} ${html.byteLength}\n`), html]),
+						stderrTail: Buffer.alloc(0),
+					};
+				},
+			);
+			const fetchImpl = vi.fn(async (url: string) => {
+				if (url.endsWith("/_internal/blobs/exists")) {
+					return {
+						ok: true,
+						status: 200,
+						json: async () => ({ existing: [] }),
+					};
+				}
+				uploadedBlobs.push(url);
+				return { ok: true, status: 201 };
+			});
+			const f = await checksFixture({
+				previewBuilder: true,
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8088",
+					controlToken: "tok",
+					fetchImpl,
+				},
+				execInstancePipe,
+			});
+			expect(f.repositories.prepare).not.toHaveBeenCalled();
+			expect(f.readSetup).not.toHaveBeenCalled();
+			const result = await f.host.buildPreview(
+				f.claim,
+				{
+					buildId: randomUUID(),
+					commitSha: COMMIT,
+					treeSha: "d".repeat(40),
+					recipe: {
+						run: "npm ci --no-audit && npm run build",
+						cwd: "web",
+						folder: "web/dist",
+						timeoutSeconds: 120,
+					},
+					attempt: 1,
+				},
+				f.signal,
+			);
+			expect(result).toMatchObject({ outcome: "built" });
+			const expectedKey = previewWorkspaceKey("code/acme/shop", "web");
+			const expectedWsDir = previewWorkspaceDir(f.state.guestUid as number, expectedKey);
+			const syncRun = f.ran().find((run) => run.environment.QORPERA_CHECKS_COMMIT === COMMIT);
+			expect(syncRun?.command).toBe(PREVIEW_WORKSPACE_SYNC);
+			expect(syncRun?.environment.QORPERA_PREVIEW_WORKSPACE_KEY).toBe(expectedKey);
+			expect(syncRun?.environment.QORPERA_PREVIEW_OUTPUT_FOLDER).toBe("web/dist");
+			const buildRun = f
+				.ran()
+				.find((run) => run.environment.QORPERA_CHECK_RUN === "npm ci --no-audit && npm run build");
+			expect(buildRun?.command).toBe(PREVIEW_WORKSPACE_CHECK);
+			expect(buildRun?.cwd).toBe(`${expectedWsDir}/src`);
+			expect(buildRun?.environment.QORPERA_PREVIEW_WORKSPACE_DIR).toBe(expectedWsDir);
+			expect(buildRun?.environment.QORPERA_PREVIEW_INSTALL_MANAGER).toBe("npm");
+			expect(buildRun?.environment.QORPERA_PREVIEW_INSTALL_CMD).toBe("npm ci --no-audit");
+			expect(buildRun?.environment.QORPERA_PREVIEW_BUILD_CMD).toBe("npm run build");
+			expect(scannedDirs).toEqual([`${expectedWsDir}/src/web/dist`]);
+			expect(uploadedBlobs).toEqual([`http://127.0.0.1:8088/_internal/blobs/${htmlHash}`]);
 		});
 
 		it("applies incremental path filters, runs downstream checks whose needs were skipped, and bypasses when checks file changed", async () => {
