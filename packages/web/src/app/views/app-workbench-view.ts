@@ -49,10 +49,37 @@ const MOCKUP_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${M
 const parsedMarkdownCache = new Map<string, HTMLElement>();
 
 function sandboxedMockupSrcdoc(html: string): string {
-	if (/<head\b[^>]*>/i.test(html)) {
-		return html.replace(/<head\b[^>]*>/i, (match) => `${match}${MOCKUP_CSP_META}`);
+	const doctype = /^\uFEFF?\s*<!doctype\b[^>]*>/i.exec(html);
+	if (doctype) {
+		const end = doctype[0].length;
+		return `${html.slice(0, end)}${MOCKUP_CSP_META}${html.slice(end)}`;
 	}
 	return `${MOCKUP_CSP_META}${html}`;
+}
+
+function expectedTrackPreviewChangeIds(session: SurfaceSession): string[] {
+	const candidates = session.changes
+		.filter((change) => change.status === "staged" || change.status === "conflicted")
+		.sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id));
+	const seenGroups = new Set<string>();
+	const picked: string[] = [];
+	for (const change of candidates) {
+		const groupKey = change.optionGroupKey ?? change.id;
+		if (seenGroups.has(groupKey)) continue;
+		seenGroups.add(groupKey);
+		picked.push(change.id);
+	}
+	return picked.sort();
+}
+
+function sameIdSet(a: readonly string[], b: readonly string[]): boolean {
+	if (a.length !== b.length) return false;
+	const setA = new Set(a);
+	if (setA.size !== a.length) return false;
+	for (const id of b) {
+		if (!setA.has(id)) return false;
+	}
+	return true;
 }
 
 function cachedMarkdown(text: string): HTMLElement {
@@ -309,6 +336,7 @@ export class AppWorkbenchView {
 	#lastRenderedSessionId: string | null = null;
 	#lastRenderedMessageCount = 0;
 	#lastSyncedRoute = "/";
+	#lastTrackAutoSyncKey = "";
 
 	constructor(host: SurfaceViewHost, signal: AbortSignal, options: AppWorkbenchOptions = {}) {
 		this.#host = host;
@@ -328,7 +356,11 @@ export class AppWorkbenchView {
 
 		this.#door = new SurfaceDoorStage(life, {
 			onRetry: () => {
-				if (this.#surface) void this.#host.store.retryPreview(this.#surface.id);
+				if (this.#surface) {
+					void this.#host.store.retryPreview(this.#surface.id, {
+						keepExplicitCombine: this.#explicitCombineActive,
+					});
+				}
 			},
 			isPassUsable: (previewId, pass) => this.#host.store.isPreviewPassUsable(previewId, pass),
 			onPassSent: (previewId, pass) => this.#host.store.markPreviewPassConsumed(previewId, pass),
@@ -495,6 +527,7 @@ export class AppWorkbenchView {
 		if (switchingSurface) {
 			this.#combining = false;
 			this.#explicitCombineActive = false;
+			this.#lastTrackAutoSyncKey = "";
 			this.#combineSelected.clear();
 			this.#selectedMockupId = null;
 			this.#selectedPlanId = null;
@@ -527,6 +560,21 @@ export class AppWorkbenchView {
 		this.#drawTracks(surface, workspace, selected?.id ?? null);
 		this.#drawThread(surface, workspace, selected);
 		this.#drawPanel(surface, workspace, selected);
+		if (this.#panelOpen && this.#panelTab === "preview" && workspace && selected) {
+			const preview = workspace.previewState;
+			if (preview.previewScope === "track" && preview.selectedSessionId === selected.id) {
+				const expectedIds = expectedTrackPreviewChangeIds(selected);
+				if (sameIdSet(expectedIds, preview.primary.toggledChangeIds)) {
+					this.#lastTrackAutoSyncKey = "";
+				} else {
+					const syncKey = `${surface.id}:${selected.id}:${expectedIds.join(",")}`;
+					if (syncKey !== this.#lastTrackAutoSyncKey) {
+						this.#lastTrackAutoSyncKey = syncKey;
+						this.#syncPreviewToSelection(surface, selected.id);
+					}
+				}
+			}
+		}
 		this.#drawToast();
 		this.#syncComposerState(selected);
 	}
@@ -1915,11 +1963,20 @@ export class AppWorkbenchView {
 
 	#syncPreviewToSelection(surface: SurfaceSummary, sessionId: string | null): void {
 		const store = this.#host.store;
-		const preview = store.workspace(surface.id)?.previewState;
+		const workspace = store.workspace(surface.id);
+		const preview = workspace?.previewState;
 		if (!preview) return;
 		const route = this.#routeInput.value.trim() || preview.primary.activeRoute || "/";
+		const selected = sessionId ? this.#findSession(workspace, sessionId) : undefined;
+		const toggledMismatch =
+			sessionId !== null &&
+			preview.previewScope === "track" &&
+			preview.selectedSessionId === sessionId &&
+			selected !== undefined &&
+			!sameIdSet(expectedTrackPreviewChangeIds(selected), preview.primary.toggledChangeIds);
 		const needsSync =
 			preview.previewScope === "explicit" ||
+			toggledMismatch ||
 			(sessionId === null
 				? preview.selectedSessionId != null || preview.primary.status !== "live_baseline"
 				: preview.selectedSessionId !== sessionId || preview.previewScope !== "track");
@@ -2399,7 +2456,11 @@ export class AppWorkbenchView {
 		const store = this.#host.store;
 		const workspace = store.workspace(surface.id);
 		const preview = workspace?.previewState;
-		if (preview?.previewScope === "explicit" && preview.primary.toggledChangeIds.length > 0) {
+		if (
+			this.#explicitCombineActive &&
+			preview?.previewScope === "explicit" &&
+			preview.primary.toggledChangeIds.length > 0
+		) {
 			const toggled = new Set(preview.primary.toggledChangeIds);
 			const combineSessionIds = (workspace?.activeSessions ?? [])
 				.filter((session) => session.changes.some((change) => toggled.has(change.id)))
@@ -2409,6 +2470,7 @@ export class AppWorkbenchView {
 				return;
 			}
 		}
+		this.#explicitCombineActive = false;
 		const sessionId = store.selectedTrackOf(surface.id);
 		await store.selectTrackPreview(surface.id, { sessionId, activeRoute });
 	}
@@ -2454,6 +2516,7 @@ export class AppWorkbenchView {
 			case "new-track":
 				this.#combining = false;
 				this.#explicitCombineActive = false;
+				this.#lastTrackAutoSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, null);
@@ -2466,6 +2529,7 @@ export class AppWorkbenchView {
 				if (!sessionId) return;
 				this.#combining = false;
 				this.#explicitCombineActive = false;
+				this.#lastTrackAutoSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, sessionId);
@@ -2517,6 +2581,7 @@ export class AppWorkbenchView {
 				if (!sessionId) return;
 				this.#combining = false;
 				this.#explicitCombineActive = false;
+				this.#lastTrackAutoSyncKey = "";
 				this.#combineSelected.clear();
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
@@ -2536,7 +2601,8 @@ export class AppWorkbenchView {
 				return;
 			}
 			case "refresh-preview":
-				await store.retryPreview(surface.id);
+				this.#lastTrackAutoSyncKey = "";
+				await store.retryPreview(surface.id, { keepExplicitCombine: this.#explicitCombineActive });
 				return;
 			case "stop-turn": {
 				const sessionId = target.dataset.session;
@@ -2577,6 +2643,7 @@ export class AppWorkbenchView {
 				const ok = await store.discardSession(sessionId);
 				if (ok) {
 					this.#explicitCombineActive = false;
+					this.#lastTrackAutoSyncKey = "";
 					const nextActive = store.workspace(surface.id)?.activeSessions[0]?.id ?? null;
 					store.selectTrack(surface.id, nextActive);
 					this.#syncPreviewToSelection(surface, nextActive);

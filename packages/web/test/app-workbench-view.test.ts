@@ -363,7 +363,10 @@ describe("AppWorkbenchView", () => {
 
 		const getSurfaceSessionArtifact = vi.fn(async (id: string) =>
 			id === ARTIFACT_MOCKUP
-				? mockupArtifact({ contentText: "<div><h1>Mockup Hero</h1><script>alert(1)</script></div>" })
+				? mockupArtifact({
+						contentText:
+							"<!doctype html><!-- <head> --><html><head></head><body><h1>Mockup Hero</h1><script>alert(1)</script></body></html>",
+					})
 				: planArtifact({ contentText: "## Rollout\n\n- Step one\n- Step two" }),
 		);
 		const selectSurfaceTrackPreview = vi.fn(async (_surfaceId: string, opts?: { activeRoute?: string }) => ({
@@ -433,6 +436,10 @@ describe("AppWorkbenchView", () => {
 		expect(mockupFrame.getAttribute("referrerpolicy")).toBe("no-referrer");
 		expect(mockupFrame.srcdoc).toContain("Content-Security-Policy");
 		expect(mockupFrame.srcdoc).toContain("default-src 'none'");
+		expect(mockupFrame.srcdoc.indexOf("<!doctype html>")).toBe(0);
+		expect(mockupFrame.srcdoc.indexOf("Content-Security-Policy")).toBeLessThan(
+			mockupFrame.srcdoc.indexOf("<!-- <head> -->"),
+		);
 		expect(mockupFrame.srcdoc).toContain("Mockup Hero");
 
 		view.el.querySelector<HTMLButtonElement>(`[data-act="open-artifact"][data-artifact="${ARTIFACT_PLAN}"]`)!.click();
@@ -605,6 +612,129 @@ describe("AppWorkbenchView", () => {
 		retryBtn.click();
 		await flush();
 		expect(getSurfaceSessionArtifact).toHaveBeenCalledTimes(2);
+
+		unsub();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("auto-syncs isolated track preview when new changes are staged and falls back from stale explicit combine on reopen", async () => {
+		const webApp = appSummary();
+		const trackA = session(["staged"], { id: SESSION, surfaceId: webApp.id, title: "Track A" });
+		let trackB: SurfaceSession = session([], {
+			id: SESSION_2,
+			surfaceId: webApp.id,
+			title: "Track B",
+			changes: [],
+			openChangeCount: 0,
+		});
+		let currentPreview: SurfacePreviewCompositionState = {
+			surfaceId: webApp.id,
+			mode: "single",
+			selectedSessionId: null,
+			previewScope: "explicit",
+			primary: {
+				previewId: PREVIEW_IDS[1],
+				status: "ready",
+				doorActionUrl: "https://stifteren-web-app--p1.qorpera.site/__qorpera_preview_door",
+				memberPass: VALID_PASS,
+				activeRoute: "/",
+				toggledChangeIds: [CHANGES[0], CHANGES[1]],
+				conflictReport: null,
+				errorDetail: null,
+			},
+			compareFrames: [],
+		};
+		const selectSurfaceTrackPreview = vi.fn(
+			async (_surfaceId: string, opts?: { sessionId?: string | null; activeRoute?: string }) => {
+				const sid = opts?.sessionId ?? null;
+				const toggled = sid === SESSION ? [CHANGES[0]] : sid === SESSION_2 ? trackB.changes.map((c) => c.id) : [];
+				currentPreview = {
+					surfaceId: webApp.id,
+					mode: "single",
+					selectedSessionId: sid,
+					previewScope: "track",
+					primary: {
+						previewId: toggled.length > 0 ? PREVIEW_IDS[0] : null,
+						status: toggled.length > 0 ? "ready" : "live_baseline",
+						doorActionUrl:
+							toggled.length > 0 ? "https://stifteren-web-app--p0.qorpera.site/__qorpera_preview_door" : null,
+						memberPass: toggled.length > 0 ? VALID_PASS : null,
+						activeRoute: opts?.activeRoute ?? "/",
+						toggledChangeIds: toggled,
+						conflictReport: null,
+						errorDetail: null,
+					},
+					compareFrames: [],
+				};
+				return currentPreview;
+			},
+		);
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [webApp]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([trackA, trackB], { surface: webApp, previewState: currentPreview }),
+			),
+			selectSurfaceTrackPreview,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "web-app");
+		document.body.append(view.el);
+		const unsub = store.store.subscribe(() => view.update());
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Live baseline");
+		const routeInput = view.el.querySelector<HTMLInputElement>(".workbench-route-input")!;
+		routeInput.value = "/orders";
+		routeInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await flush();
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, {
+			sessionId: SESSION,
+			activeRoute: "/orders",
+		});
+
+		currentPreview = {
+			...currentPreview,
+			selectedSessionId: null,
+			previewScope: "explicit",
+			primary: { ...currentPreview.primary, toggledChangeIds: [CHANGES[0], CHANGES[1]] },
+		};
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		view.el.querySelector<HTMLButtonElement>('[data-act="refresh-preview"]')!.click();
+		await flush();
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, {
+			sessionId: SESSION,
+			activeRoute: "/orders",
+		});
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION_2}"]`)!.click();
+		await flush();
+		view.update();
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, {
+			sessionId: SESSION_2,
+			activeRoute: "/orders",
+		});
+		const callsBeforeStage = selectSurfaceTrackPreview.mock.calls.length;
+
+		trackB = {
+			...trackB,
+			changes: [change(CHANGES[1], 1, "staged", { sessionId: SESSION_2, surfaceId: webApp.id, title: "Stage B1" })],
+			openChangeCount: 1,
+		};
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledTimes(callsBeforeStage + 1);
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, {
+			sessionId: SESSION_2,
+			activeRoute: "/orders",
+		});
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Isolated track preview");
 
 		unsub();
 		view.dispose();

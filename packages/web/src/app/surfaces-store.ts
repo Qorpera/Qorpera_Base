@@ -5912,7 +5912,7 @@ export class SurfacesStore {
 		}
 	}
 
-	async retryPreview(surfaceId: string): Promise<void> {
+	async retryPreview(surfaceId: string, options: { keepExplicitCombine?: boolean } = {}): Promise<void> {
 		const workspace = this.workspace(surfaceId);
 		const primary = workspace?.previewState.primary;
 		if (
@@ -5929,7 +5929,11 @@ export class SurfacesStore {
 		if (workspace && this.isWorkbenchSurface(workspace.surface)) {
 			const preview = workspace.previewState;
 			const activeRoute = preview.primary.activeRoute || "/";
-			if (preview.previewScope === "explicit" && preview.primary.toggledChangeIds.length > 0) {
+			if (
+				options.keepExplicitCombine !== false &&
+				preview.previewScope === "explicit" &&
+				preview.primary.toggledChangeIds.length > 0
+			) {
 				const toggled = new Set(preview.primary.toggledChangeIds);
 				const combineSessionIds = workspace.activeSessions
 					.filter((session) => session.changes.some((change) => toggled.has(change.id)))
