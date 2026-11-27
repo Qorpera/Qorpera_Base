@@ -236,11 +236,18 @@ function buildCartesianOption(
 		axisLine,
 		axisLabel: { ...axisText, color: theme.muted, hideOverlap: true },
 	};
+	const whole = seriesList.every((series) =>
+		series.data.every((entry) => {
+			const value = pointNumber(entry);
+			return value === null || Number.isInteger(value);
+		}),
+	);
 	const valueMin = horizontal ? (doc.xAxisMin ?? doc.yAxisMin) : doc.yAxisMin;
 	const valueMax = horizontal ? (doc.xAxisMax ?? doc.yAxisMax) : doc.yAxisMax;
 	const valueAxis: Option = {
 		type: "value",
 		splitNumber: 4,
+		...(whole ? { minInterval: 1 } : {}),
 		...(valueMin !== undefined ? { min: valueMin } : {}),
 		...(valueMax !== undefined ? { max: valueMax } : {}),
 		name: horizontal ? doc.xAxisLabel : doc.yAxisLabel,
@@ -292,8 +299,9 @@ function buildCartesianOption(
 				...(doc.stacked ? { stack: "total" } : {}),
 				barMaxWidth: 44,
 				itemStyle: {
-					color,
+					color: series.estimate ? tint(color, 0.32) : color,
 					borderRadius: barRadius,
+					...(series.estimate ? { borderColor: color, borderWidth: 1.5, borderType: [4, 3] } : {}),
 				},
 				emphasis: { focus: "series" },
 				data: series.data.map((entry) => {
@@ -358,7 +366,7 @@ function buildCartesianOption(
 			showSymbol: series.data.length <= 24,
 			symbol: "circle",
 			symbolSize: 7,
-			lineStyle: { width: 2.5, color, cap: "round", join: "round" },
+			lineStyle: { width: 2.5, color, cap: "round", join: "round", ...(series.estimate ? { type: [6, 5] } : {}) },
 			itemStyle: { color, borderColor: theme.bg, borderWidth: 1.5 },
 			...(isArea
 				? {

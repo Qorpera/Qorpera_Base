@@ -231,6 +231,10 @@ export function homeLocked(): HTMLElement {
 	return h("p", { class: "studio-home-locked" }, icon("lock"), h("span", null, t("Not shared with you")));
 }
 
+export function homeUnconnected(): HTMLElement {
+	return h("p", { class: "studio-home-unconnected" }, t("Not connected yet"));
+}
+
 export function homeUnknown(): HTMLElement {
 	return h("p", { class: "studio-home-unknown" }, "?");
 }

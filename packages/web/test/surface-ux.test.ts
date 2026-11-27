@@ -2044,8 +2044,10 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 
 		const all = () => view.el.querySelector<HTMLButtonElement>('.surface-drawer-head [data-act="approve-shown"]');
 		expect(all()?.textContent).toContain("Approve all 2");
+		expect(all()?.getAttribute("aria-label")).toBe("Approve all 2");
 		all()!.click();
 		expect(approveSurfaceChange).not.toHaveBeenCalled();
+		expect(all()?.getAttribute("aria-label")).toBe("Confirm");
 		all()!.click();
 		await flush();
 		view.update();
@@ -3177,6 +3179,47 @@ describe("a website's rail row", () => {
 		expect(line({})).toBe(host);
 		store.dispose();
 	});
+
+	it("names an Analytics studio by what it shows, and keeps the Financial Dashboard's line", async () => {
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [
+					summary({
+						id: "22222222-2222-4222-8222-222222222261",
+						slug: "analytics",
+						title: "Analytics",
+						archetype: "studio",
+						kind: "dashboard",
+						icon: "chart",
+						activeSessionCount: 0,
+						liveUrl: null,
+					}),
+					summary({
+						id: "22222222-2222-4222-8222-222222222262",
+						slug: "dashboard",
+						title: "Financial Dashboard",
+						kind: "dashboard",
+						icon: "chart",
+						activeSessionCount: 0,
+						liveUrl: null,
+					}),
+				]),
+				getSurfaceWorkspace: vi.fn(async () => workspace([])),
+			}),
+		);
+		await store.load();
+		const rail = new SurfaceRail(store, COMPANY, new AbortController().signal);
+		document.body.append(rail.el);
+		rail.update(undefined);
+		const line = (slug: string) =>
+			rail.el.querySelector(`.rail-surface[data-surface-slug="${slug}"] .rail-surface-sub`)?.textContent;
+		expect(line("analytics")).toBe("Sales, money & visitors");
+		expect(line("dashboard")).toBe("KPIs & cashflow");
+		expect(setLanguagePreference("da")).toBe(true);
+		rail.update(undefined);
+		expect(line("analytics")).toBe("Salg, penge og besøgende");
+		store.dispose();
+	});
 });
 
 describe("single-session change option groups", () => {
@@ -3418,6 +3461,7 @@ describe("single-session change option groups", () => {
 		await flush();
 		view.update();
 		expect(drawer.querySelector('[data-act="approve-all"]')?.textContent).toBe("Approve all");
+		expect(drawer.querySelector('[data-act="approve-all"]')?.getAttribute("aria-label")).toBe("Approve all");
 		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([s1.id, a2.id, b1.id]);
 		view.dispose();
 		store.dispose();

@@ -15,6 +15,7 @@ import type * as ChartEngine from "./chart-engine.ts";
 import {
 	homeEmpty,
 	homeLocked,
+	homeUnconnected,
 	homeUnknown,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
@@ -103,6 +104,7 @@ export function chartPaints(
 	doc: SurfaceChartDocument,
 	keys?: readonly string[],
 	compared?: string,
+	categoryKeys?: readonly string[],
 ): ChartEngine.SurfaceChartPaints | undefined {
 	const colors = ctx.colors;
 	if (!colors) return undefined;
@@ -126,7 +128,7 @@ export function chartPaints(
 			const points = doc.series?.[0]?.data ?? [];
 			points.forEach((point, index) => {
 				const shown = (point && typeof point === "object" && point.name) || doc.categories?.[index];
-				if (shown) name(shown, undefined);
+				if (shown) name(shown, categoryKeys?.[index]);
 			});
 		}
 		for (const node of doc.nodes ?? []) name(node.name, undefined);
@@ -253,7 +255,14 @@ function liveChart(
 		const doc = compared ? withPrevious(current, earlier, compared) : current.doc;
 		const chart: ChartPaint = {
 			doc,
-			paints: chartPaints(block, ctx, doc, current.keys, doc === current.doc ? undefined : compared),
+			paints: chartPaints(
+				block,
+				ctx,
+				doc,
+				current.keys,
+				doc === current.doc ? undefined : compared,
+				current.categoryKeys,
+			),
 		};
 		section.dataset.chartKind = doc.kind;
 		shown = chart;
@@ -300,6 +309,10 @@ function liveChart(
 		if (!shaped) clear();
 		if (state.state === "refused") {
 			body.replaceChildren(homeLocked());
+			return;
+		}
+		if (state.state === "unconnected") {
+			body.replaceChildren(homeUnconnected());
 			return;
 		}
 		if (state.state === "unavailable") {

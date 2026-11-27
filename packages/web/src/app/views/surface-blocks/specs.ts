@@ -11,6 +11,7 @@ import { COLOR_VALUE } from "./colours.ts";
 import {
 	formatScalar,
 	homeLocked,
+	homeUnconnected,
 	homeUnknown,
 	isPlainRecord,
 	isShownScalar,
@@ -23,7 +24,7 @@ import {
 	sourceFile,
 } from "./context.ts";
 import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
-import { answerAge, answerRecords, figureText, type SurfaceAskState } from "./live.ts";
+import { answerAge, answerRecords, cellText, codeWords, type SurfaceAskState } from "./live.ts";
 
 export interface SpecTable {
 	readonly title: string;
@@ -322,12 +323,18 @@ function liveTable(
 			body.replaceChildren(homeLocked());
 			return;
 		}
+		if (state.state === "unconnected") {
+			body.replaceChildren(homeUnconnected());
+			return;
+		}
 		if (state.state === "unavailable") {
 			body.replaceChildren(homeUnknown());
 			return;
 		}
 		const rows = answerRecords(state.answer).map((row) =>
-			Object.fromEntries(Object.entries(row).map(([key, value]) => [key, figureText(value, false) ?? value])),
+			Object.fromEntries(
+				Object.entries(row).map(([key, value]) => [key, codeWords(source, key, value) ?? cellText(value) ?? value]),
+			),
 		);
 		if (rows.length === 0) {
 			body.replaceChildren(paleTable(columns));

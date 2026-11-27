@@ -33,13 +33,7 @@ import {
 } from "../../ui/surface-figure.ts";
 import type { SiteAnswer } from "../company.ts";
 import { surfaceHash } from "../router.ts";
-import {
-	type SurfaceLook,
-	surfaceFigureOf,
-	surfaceKindSubtitle,
-	surfaceLookOf,
-	surfaceTint,
-} from "../surface-kinds.ts";
+import { type SurfaceLook, surfaceFigureOf, surfaceLookOf, surfaceSubtitleOf, surfaceTint } from "../surface-kinds.ts";
 import {
 	askedToPublish,
 	isOpenVariant,
@@ -142,7 +136,7 @@ function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, site: SiteA
 		const host = hostOf(surface.liveUrl);
 		return site === "live" ? t("Live · {host}", { host }) : site === "private" ? t("Not live yet") : host;
 	}
-	return surfaceKindSubtitle(look.kind);
+	return surfaceSubtitleOf(surface, look);
 }
 
 function setRowActive(row: HTMLElement, active: boolean): void {
