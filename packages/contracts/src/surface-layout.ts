@@ -1921,19 +1921,6 @@ const ANALYTICS_STARTER_LAYOUT: SurfaceLayout = {
 					from: { ask: "qorpera/money-balance", x: "day", y: "balance", kind: "area", unit: "kr." },
 					heading: "How long does the money last?",
 				},
-				{
-					type: "chart",
-					id: "months",
-					from: {
-						ask: "qorpera/money-months",
-						x: "month",
-						y: ["money_in", "money_out"],
-						kind: "bar",
-						unit: "kr.",
-					},
-					heading: "Do we earn more than we spend?",
-					colors: { money_in: "up", money_out: "compare" },
-				},
 			],
 		},
 		{

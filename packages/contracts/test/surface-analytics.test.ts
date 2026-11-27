@@ -695,14 +695,18 @@ describe("the Analytics starter", () => {
 			pulse: "line",
 			"sales-days": "bar",
 			balance: "area",
-			months: "bar",
 			visits: "line",
 		});
+		const charts = (blocks: SurfaceLayout["tabs"][number]["blocks"]) =>
+			blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node])).filter((node) => node.type === "chart");
+		for (const tab of starter.tabs) expect(charts(tab.blocks).length, tab.id).toBeLessThanOrEqual(1);
 		const headings = starter.tabs.flatMap((tab) =>
 			tab.blocks.flatMap((node) => (node.type !== "row" && "heading" in node && node.heading ? [node.heading] : [])),
 		);
 		expect(headings.every((heading) => heading.endsWith("?"))).toBe(true);
-		expect(starter.tabs[2]?.blocks.map((node) => node.type)).toEqual(["chart", "chart"]);
+		expect(starter.tabs[2]?.blocks).toMatchObject([
+			{ type: "chart", id: "balance", heading: "How long does the money last?" },
+		]);
 		expect(starter.tabs[0]?.blocks[0]).toEqual({ type: "title", id: "reading", line: "reading.json#/line" });
 		expect(starter.tabs[4]?.blocks).toEqual([{ type: "report", id: "questions", match: "questions/*.report.json" }]);
 		expect(starter.tabs[5]?.blocks[0]).toMatchObject({
@@ -719,7 +723,7 @@ describe("the Analytics starter", () => {
 	it("asks only qorpera questions that exist, naming their real columns", () => {
 		const asks = asksOf(starter);
 		expect(new Set(asks.map(({ ask }) => splitSurfaceAsk(ask.ask)?.question))).toEqual(
-			new Set(["orders-now", "orders-days", "money-balance", "money-months", "site-days", "site-pages"]),
+			new Set(["orders-now", "orders-days", "money-balance", "site-days", "site-pages"]),
 		);
 		expect(FROM_MIGRATIONS.files).toHaveLength(4);
 		expect(Object.keys(QORPERA_COLUMNS).length).toBeGreaterThanOrEqual(16);
@@ -729,10 +733,7 @@ describe("the Analytics starter", () => {
 			);
 		}
 		expect(asks.find(({ holder }) => holder.id === "pulse")?.ask.against).toBe("previous");
-		expect(asks.find(({ holder }) => holder.id === "months")?.holder.colors).toEqual({
-			money_in: "up",
-			money_out: "compare",
-		});
+		expect(asks.find(({ holder }) => holder.id === "sales-days")?.holder.colors).toEqual({ refunds: "down" });
 		for (const { ask, holder } of asks) {
 			const parts = splitSurfaceAsk(ask.ask);
 			expect(parts?.database).toBe("qorpera");
