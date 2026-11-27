@@ -1518,8 +1518,14 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					async (turnSignal) => {
 						const operations = new CloudNativeToolOperations(run, codingControlPlane);
 						const guarded = makeGuardedGateway();
-						const { surfaceTools, recordChangeTool, workbenchTools, viewAttachmentTool, pictureTool, searchTool } =
-							buildPlatformTools(operations, guarded);
+						const {
+							surfaceTools,
+							recordChangeTool,
+							workbenchTools,
+							viewAttachmentTool,
+							pictureTool,
+							searchTool,
+						} = buildPlatformTools(operations, guarded);
 						const tools: CloudNativeTool[] = preparedSurface
 							? [...surfaceTools, finish, ...(surfaceSession?.isInternalReconciliation ? [] : [ask])]
 							: [

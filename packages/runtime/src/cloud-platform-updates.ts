@@ -613,7 +613,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-27",
 		title: "Isolated app update tracks, artifacts, and live progress",
-		text: "App interfaces now support isolated update tracks with rich inline discussion artifacts, live progress checklists, test status summaries, and non-destructive turn stopping. Coding turns on app tracks can call coding_publish_artifact to share or revise mockups, plans, reports, checklists, and diff summaries directly inside the session thread, and coding_report_progress to update their current activity, step checklist, and check results live. Founders can preview a single track in isolation, ship a single track cleanly, combine specific tracks when ready, or stop an active turn without losing the session branch or workspace.",
+		text: "App interfaces now support isolated update tracks with rich inline discussion artifacts, live progress checklists, test status summaries, and non-destructive turn stopping. Coding turns on app tracks can publish or revise mockups, plans, reports, checklists, and diff summaries directly inside the session thread, and report their live current activity, step checklist, and verification results as work progresses. Founders can preview a single track in isolation, ship one track cleanly, combine specific tracks when ready, or stop an active turn without losing the session branch or workspace.",
 	},
 ]);
 

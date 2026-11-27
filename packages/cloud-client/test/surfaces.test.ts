@@ -481,6 +481,25 @@ describe("cloud-client surface change option groups", () => {
 			updatedAt: now,
 			closedAt: null,
 		};
+		const artifactId = "13740000-0000-4000-8000-000000000011";
+		const artifactPayload = {
+			id: artifactId,
+			sessionId,
+			surfaceId,
+			kind: "mockup",
+			artifactKey: "billing-mockup",
+			title: "Billing mockup",
+			summary: "Layout preview",
+			contentFormat: "html",
+			contentText: "<main>Billing</main>",
+			imageRef: null,
+			changeId: null,
+			revision: 2,
+			createdByKind: "agent",
+			createdByUserId: null,
+			createdAt: now,
+			updatedAt: now,
+		};
 		const rpc = vi
 			.fn()
 			.mockResolvedValueOnce({ data: previewPayload, error: null })
@@ -489,7 +508,8 @@ describe("cloud-client surface change option groups", () => {
 				data: { mode: "land", sessionIds: [sessionId, sessionB], changeIds: [changeA], jobId },
 				error: null,
 			})
-			.mockResolvedValueOnce({ data: sessionPayload, error: null });
+			.mockResolvedValueOnce({ data: sessionPayload, error: null })
+			.mockResolvedValueOnce({ data: artifactPayload, error: null });
 		const client = new CloudSurfacesClient({ rpc } as unknown as SupabaseClient);
 
 		const preview = await client.selectSurfaceTrackPreview(surfaceId, {
@@ -526,5 +546,12 @@ describe("cloud-client surface change option groups", () => {
 		});
 		expect(stopped.state).toBe("ready");
 		expect(stopped.hasActiveChat).toBe(true);
+
+		const artifact = await client.getSurfaceSessionArtifact(artifactId);
+		expect(rpc).toHaveBeenNthCalledWith(5, "qorpera_get_surface_session_artifact", {
+			p_artifact_id: artifactId,
+		});
+		expect(artifact.contentText).toBe("<main>Billing</main>");
+		expect(artifact.revision).toBe(2);
 	});
 });

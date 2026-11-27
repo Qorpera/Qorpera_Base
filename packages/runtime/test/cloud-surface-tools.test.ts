@@ -4818,8 +4818,8 @@ describe("cloud surface runtime tools", () => {
 			}),
 		).toThrow();
 
-		expect(cloudActionEffect("coding_publish_artifact")).toBe("internal");
-		expect(cloudActionEffect("coding_report_progress")).toBe("internal");
+		expect(cloudActionEffect("coding_publish_artifact", {})).toBe("internal");
+		expect(cloudActionEffect("coding_report_progress", {})).toBe("internal");
 
 		const appBrief = buildSurfaceTurnBrief({
 			sessionId,

@@ -2757,9 +2757,7 @@ export function createCodingReportProgressTool(
 					}
 					checksSummary = parseSurfaceSessionChecksSummary(closed, "checksSummary");
 				} catch (error) {
-					throw new CloudToolArgumentRefusal(
-						error instanceof Error ? error.message : "checksSummary is invalid",
-					);
+					throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "checksSummary is invalid");
 				}
 				if (Buffer.byteLength(JSON.stringify(checksSummary), "utf8") > 8192) {
 					throw new CloudToolArgumentRefusal("checksSummary exceeds 8192 bytes");

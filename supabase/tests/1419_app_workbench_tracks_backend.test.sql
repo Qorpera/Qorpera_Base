@@ -19,6 +19,7 @@ declare
 	v_owner constant uuid := '85600000-0000-4000-8000-000000000001';
 	v_contrib constant uuid := '93700000-0000-4000-8000-000000000002';
 	v_viewer constant uuid := '93700000-0000-4000-8000-000000000003';
+	v_outsider constant uuid := '93700000-0000-4000-8000-000000000004';
 	v_profile uuid := (v_claim ->> 'profileId')::uuid;
 	v_env_id uuid;
 	v_staff_id uuid;
@@ -29,6 +30,8 @@ declare
 	v_track_b uuid;
 	v_track_c uuid;
 	v_track_d uuid;
+	v_track_guard uuid;
+	v_track_dep uuid;
 	v_track_stop uuid;
 	v_track_empty uuid;
 	v_track_internal uuid;
@@ -38,6 +41,8 @@ declare
 	v_lease_b uuid := extensions.gen_random_uuid();
 	v_lease_c uuid := extensions.gen_random_uuid();
 	v_lease_d uuid := extensions.gen_random_uuid();
+	v_lease_guard uuid := extensions.gen_random_uuid();
+	v_lease_dep uuid := extensions.gen_random_uuid();
 	v_lease_stop uuid := extensions.gen_random_uuid();
 	v_ch_a1 uuid;
 	v_ch_a2 uuid;
@@ -45,14 +50,20 @@ declare
 	v_ch_b1 uuid;
 	v_ch_c1 uuid;
 	v_ch_d1 uuid;
+	v_ch_guard uuid;
+	v_ch_dep uuid;
 	v_art jsonb;
 	v_art_v2 jsonb;
+	v_art_full jsonb;
 	v_prog jsonb;
 	v_sess_json jsonb;
 	v_preview jsonb;
 	v_ws jsonb;
 	v_ship jsonb;
 	v_comb jsonb;
+	v_comb_job_id uuid;
+	v_comb_lease uuid := extensions.gen_random_uuid();
+	v_synth_job_id uuid;
 	v_stopped jsonb;
 	v_summary jsonb;
 	v_surface_row public.qorpera_surfaces%rowtype;
@@ -81,9 +92,12 @@ declare
 	v_sha_4 constant text := repeat('4', 40);
 	v_sha_5 constant text := repeat('5', 40);
 	v_sha_6 constant text := repeat('6', 40);
+	v_sha_7 constant text := repeat('7', 40);
+	v_sha_8 constant text := repeat('8', 40);
 	v_host_call_count integer;
 	v_obs_check boolean;
 	v_begin_check boolean;
+	v_cancel_guard_check boolean;
 	v_land_payload jsonb;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
@@ -112,7 +126,8 @@ begin
 
 	insert into auth.users(id, email) values
 		(v_contrib, 'contrib-937@example.test'),
-		(v_viewer, 'viewer-937@example.test')
+		(v_viewer, 'viewer-937@example.test'),
+		(v_outsider, 'outsider-937@example.test')
 	on conflict (id) do nothing;
 
 	insert into public.qorpera_profile_members(profile_id, user_id, email, role, display_name) values
@@ -143,6 +158,8 @@ begin
 	v_track_b := (public.qorpera_start_surface_session(v_app_id, 'Add keyboard shortcuts', 'Keyboard shortcuts') ->> 'id')::uuid;
 	v_track_c := (public.qorpera_start_surface_session(v_app_id, 'Improve onboarding flow', 'Onboarding flow') ->> 'id')::uuid;
 	v_track_d := (public.qorpera_start_surface_session(v_app_id, 'Export CSV reports', 'CSV export') ->> 'id')::uuid;
+	v_track_guard := (public.qorpera_start_surface_session(v_app_id, 'Guard active merge job', 'Active job guard') ->> 'id')::uuid;
+	v_track_dep := (public.qorpera_start_surface_session(v_app_id, 'Add CSV charts on top of CSV export', 'CSV charts') ->> 'id')::uuid;
 	v_track_stop := (public.qorpera_start_surface_session(v_app_id, 'Refactor auth middleware', 'Auth refactor') ->> 'id')::uuid;
 	v_track_empty := (public.qorpera_start_surface_session(v_app_id, 'Discuss roadmap only', 'Roadmap chat') ->> 'id')::uuid;
 	v_web_session := (public.qorpera_start_surface_session(v_website_id, 'Update hero copy', 'Hero copy') ->> 'id')::uuid;
@@ -165,6 +182,14 @@ begin
 	set state = 'running', lease_token = v_lease_d, lease_expires_at = clock_timestamp() + interval '10 minutes',
 		track_branch = 'qorpera/coding/track-d'
 	where id = v_track_d;
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_guard, lease_expires_at = clock_timestamp() + interval '10 minutes',
+		track_branch = 'qorpera/coding/track-guard'
+	where id = v_track_guard;
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_dep, lease_expires_at = clock_timestamp() + interval '10 minutes',
+		track_branch = 'qorpera/coding/track-dep'
+	where id = v_track_dep;
 	update public.qorpera_surface_sessions
 	set state = 'ready', has_active_chat = true, lease_token = null
 	where id = v_track_empty;
@@ -304,11 +329,24 @@ begin
 		v_profile, v_track_d, 'CSV exporter', 'Adds export', 'git_range',
 		v_sha_base, v_sha_6, '{}'::uuid[], array['src/csv.ts'], null, null, false, v_lease_d
 	) ->> 'changeId')::uuid;
+	v_ch_guard := (public.qorpera_native_surface_record_change(
+		v_profile, v_track_guard, 'Guard check', 'Checks active job guard', 'git_range',
+		v_sha_base, v_sha_7, '{}'::uuid[], array['src/guard.ts'], null, null, false, v_lease_guard
+	) ->> 'changeId')::uuid;
+	v_ch_dep := (public.qorpera_native_surface_record_change(
+		v_profile, v_track_dep, 'CSV charts', 'Depends on CSV export preview', 'git_range',
+		v_sha_6, v_sha_8, '{}'::uuid[], array['src/csv-charts.ts'], null, null, false, v_lease_dep
+	) ->> 'changeId')::uuid;
+	update public.qorpera_surface_changes
+	set preview_base_change_ids = array[v_ch_d1]
+	where id = v_ch_dep;
 
 	perform public.qorpera_surface_complete_session_turn(v_track_a, 'ready', 'Billing mockup and changes ready.', null, null, null, v_lease_a);
 	perform public.qorpera_surface_complete_session_turn(v_track_b, 'ready', 'Shortcuts ready.', null, null, null, v_lease_b);
 	perform public.qorpera_surface_complete_session_turn(v_track_c, 'ready', 'Onboarding ready.', null, null, null, v_lease_c);
 	perform public.qorpera_surface_complete_session_turn(v_track_d, 'ready', 'CSV ready.', null, null, null, v_lease_d);
+	perform public.qorpera_surface_complete_session_turn(v_track_guard, 'ready', 'Guard ready.', null, null, null, v_lease_guard);
+	perform public.qorpera_surface_complete_session_turn(v_track_dep, 'ready', 'Charts ready.', null, null, null, v_lease_dep);
 
 	select public.qorpera_surface_session_json(s) into v_sess_json
 	from public.qorpera_surface_sessions s where s.id = v_track_a;
@@ -317,6 +355,30 @@ begin
 	perform pg_temp.awtb_assert(jsonb_array_length(v_sess_json -> 'progressSteps') = 2, 'complete_session_turn must retain progressSteps');
 	perform pg_temp.awtb_assert(v_sess_json #>> '{checksSummary,status}' = 'passed', 'complete_session_turn must retain checksSummary');
 	perform pg_temp.awtb_assert(jsonb_array_length(v_sess_json -> 'artifacts') = 32, 'session JSON must expose all session artifacts');
+	perform pg_temp.awtb_assert(
+		(v_sess_json -> 'artifacts' -> 0 ->> 'contentText') is null,
+		'session JSON must omit inline artifact contentText to prevent payload bloat'
+	);
+	reset role;
+
+	perform pg_temp.awtb_as(v_viewer);
+	set local role authenticated;
+	v_art_full := public.qorpera_get_surface_session_artifact((v_art_v2 ->> 'id')::uuid);
+	perform pg_temp.awtb_assert(
+		v_art_full ->> 'contentText' = '<main><h1>Billing v2</h1></main>' and (v_art_full ->> 'revision')::integer = 2,
+		'qorpera_get_surface_session_artifact must return full contentText to company members'
+	);
+	reset role;
+
+	perform pg_temp.awtb_as(v_outsider);
+	set local role authenticated;
+	begin
+		perform public.qorpera_get_surface_session_artifact((v_art_v2 ->> 'id')::uuid);
+		perform pg_temp.awtb_assert(false, 'Non-member must not read surface session artifact');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.awtb_assert(v_errcode = '42501', 'Expected 42501 for non-member artifact read, got ' || v_errcode);
+	end;
 	reset role;
 
 	perform pg_temp.awtb_as(v_owner);
@@ -441,7 +503,8 @@ begin
 	set local role authenticated;
 	v_comb := public.qorpera_combine_surface_tracks(v_app_id, array[v_track_b, v_track_c], true);
 	perform pg_temp.awtb_assert(v_comb ->> 'mode' = 'land', 'Combine with land=true must return mode=land');
-	perform pg_temp.awtb_assert((v_comb ->> 'jobId') is not null, 'Combine land must enqueue a surface job');
+	v_comb_job_id := (v_comb ->> 'jobId')::uuid;
+	perform pg_temp.awtb_assert(v_comb_job_id is not null, 'Combine land must enqueue a surface job');
 	perform pg_temp.awtb_assert(jsonb_array_length(v_comb -> 'changeIds') = 2, 'Combine land must include changes from B and C');
 	reset role;
 
@@ -450,6 +513,80 @@ begin
 		and (select status from public.qorpera_surface_changes where id = v_ch_c1) = 'merging'
 		and (select status from public.qorpera_surface_changes where id = v_ch_d1) = 'staged',
 		'Combining B+C must leave unselected track D staged'
+	);
+
+	update public.qorpera_surface_jobs
+	set status = 'running', lease_token = v_comb_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_comb_job_id;
+	perform pg_temp.as_service();
+	perform public.qorpera_surface_complete_merge(
+		v_comb_job_id, 'landed', v_sha_base, v_sha_5, null, null, null, null, v_comb_lease
+	);
+	reset role;
+	perform pg_temp.awtb_assert(
+		(select state from public.qorpera_surface_sessions where id = v_track_b) = 'completed'
+		and (select state from public.qorpera_surface_sessions where id = v_track_c) = 'completed',
+		'Completing a combined land_change job must evaluate and close every combined track'
+	);
+
+	insert into public.qorpera_surface_jobs(
+		profile_id, surface_id, session_id, kind, status, payload, requested_by_user_id
+	)
+	values (
+		v_profile, v_app_id, v_track_guard, 'land_change', 'queued',
+		jsonb_build_object('changeIds', jsonb_build_array(v_ch_guard)),
+		v_owner
+	)
+	returning id into v_synth_job_id;
+
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	begin
+		perform public.qorpera_ship_surface_track(v_track_guard, false);
+		perform pg_temp.awtb_assert(false, 'Shipping track with active land_change job must raise 55000');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.awtb_assert(v_errcode = '55000', 'Expected 55000 for active job guard on ship, got ' || v_errcode);
+	end;
+	begin
+		perform public.qorpera_combine_surface_tracks(v_app_id, array[v_track_guard, v_track_d], true);
+		perform pg_temp.awtb_assert(false, 'Combining track with active land_change job must raise 55000');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.awtb_assert(v_errcode = '55000', 'Expected 55000 for active job guard on combine, got ' || v_errcode);
+	end;
+	reset role;
+	delete from public.qorpera_surface_jobs where id = v_synth_job_id;
+
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_ship_surface_track(v_track_dep, false);
+	reset role;
+	perform pg_temp.awtb_assert(
+		(select status from public.qorpera_surface_changes where id = v_ch_dep) = 'staged',
+		'Shipping track with omitted preview base change must defer merge to silent reconciliation'
+	);
+	perform pg_temp.awtb_assert(
+		exists (
+			select 1 from public.qorpera_surface_reconciliations r
+			where r.surface_id = v_app_id
+				and r.status in ('queued', 'running')
+				and v_ch_dep = any(r.selected_change_ids)
+		),
+		'Deferred track ship must enqueue silent standalone reconciliation'
+	);
+
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_ship_surface_track(v_track_empty, true);
+	reset role;
+	perform pg_temp.awtb_assert(
+		(select publish_status = 'publishing' and site_id is not null from public.qorpera_surfaces where id = v_app_id)
+		and exists (
+			select 1 from public.qorpera_surface_jobs j
+			where j.surface_id = v_app_id and j.kind = 'publish_surface' and j.status = 'queued'
+		),
+		'Shipping an empty track with publish=true must delegate to qorpera_publish_surface and ensure site provisioning'
 	);
 
 	insert into public.qorpera_wake_occurrences(
@@ -585,9 +722,13 @@ begin
 	);
 
 	update public.qorpera_surface_sessions set state = 'needs_input' where id in (v_track_stop, v_web_session, v_id_session);
+	update public.qorpera_surface_changes set status = 'conflicted' where id = v_ch_dep;
 	select * into strict v_surface_row from public.qorpera_surfaces where id = v_app_id;
 	v_summary := public.qorpera_surface_summary_json(v_surface_row);
-	perform pg_temp.awtb_assert((v_summary ->> 'needsAttentionCount')::integer >= 1, 'web_app summary must report real needsAttentionCount');
+	perform pg_temp.awtb_assert(
+		(v_summary ->> 'needsAttentionCount')::integer = 1,
+		'web_app summary must count attention sessions without double-counting conflicted changes'
+	);
 
 	select * into strict v_surface_row from public.qorpera_surfaces where id = v_website_id;
 	v_summary := public.qorpera_surface_summary_json(v_surface_row);
@@ -605,4 +746,8 @@ begin
 		and strpos(pg_get_functiondef('public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure), 'case when v_is_surface then 11 else 7 end') > 0
 	into v_begin_check;
 	perform pg_temp.awtb_assert(v_begin_check, 'qorpera_begin_native_coding_execution must allow up to 11 tools with both workbench tools on surface runs');
+
+	select strpos(pg_get_functiondef('public.qorpera_cancel_surface_session_turn(uuid)'::regprocedure), 'v_session.worker_id is distinct from v_peek.worker_id') > 0
+	into v_cancel_guard_check;
+	perform pg_temp.awtb_assert(v_cancel_guard_check, 'qorpera_cancel_surface_session_turn must guard against concurrent worker_id changes');
 end $$;

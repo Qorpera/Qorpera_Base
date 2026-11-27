@@ -11,6 +11,7 @@ import {
 	parseSurfacePreviewCompositionState,
 	parseSurfaceReconciliation,
 	parseSurfaceSession,
+	parseSurfaceSessionArtifact,
 	parseSurfaceSessionImages,
 	parseSurfaceSummary,
 	parseSurfaceUnseenNotes,
@@ -556,6 +557,11 @@ export class CloudSurfacesClient {
 			p_session_id: sessionId,
 		});
 		return parseSurfaceSession(data, "session");
+	}
+
+	async getSurfaceSessionArtifact(artifactId: string, signal?: AbortSignal): Promise<SurfaceSessionArtifact> {
+		const data = await this.#rpc("qorpera_get_surface_session_artifact", { p_artifact_id: artifactId }, signal);
+		return parseSurfaceSessionArtifact(data, "artifact");
 	}
 
 	async publishSurface(surfaceId: string): Promise<SurfaceSummary> {

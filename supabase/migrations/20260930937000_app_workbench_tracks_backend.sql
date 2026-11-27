@@ -17,7 +17,11 @@ do $$ begin
 		or to_regprocedure('public.qorpera_surface_mint_preview_pass(uuid,uuid,text,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_preview_slot_host(text,integer)') is null
 		or to_regprocedure('public.qorpera_lock_coding_workers(uuid[])') is null
-		or to_regprocedure('public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)') is null then
+		or to_regprocedure('public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)') is null
+		or to_regprocedure('public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces,uuid[])') is null
+		or to_regprocedure('public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)') is null
+		or to_regprocedure('public.qorpera_publish_surface(uuid)') is null
+		or to_regprocedure('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)') is null then
 		raise exception 'App workbench tracks backend (20260930937000) requires prior surface and coding migrations';
 	end if;
 end $$;
@@ -32,6 +36,7 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_set_preview_selection(uuid,uuid[],uuid,uuid[],text)'::regprocedure,
 		'public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure,
 		'public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)'::regprocedure,
+		'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
 		'public.qorpera_discard_surface_session(uuid)'::regprocedure,
 		'public.qorpera_surface_enqueue_session_run(uuid,uuid)'::regprocedure,
 		'public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure,
@@ -138,7 +143,7 @@ $new$		from public.qorpera_surface_session_messages m
 				'title', a.title,
 				'summary', a.summary,
 				'contentFormat', a.content_format,
-				'contentText', a.content_text,
+				'contentText', null,
 				'imageRef', a.image_ref,
 				'changeId', a.change_id,
 				'revision', a.revision,
@@ -155,15 +160,52 @@ $new$		from public.qorpera_surface_session_messages m
 	]
 );
 
+create function public.qorpera_get_surface_session_artifact(p_artifact_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+	v_artifact public.qorpera_surface_session_artifacts%rowtype;
+begin
+	select * into v_artifact from public.qorpera_surface_session_artifacts where id = p_artifact_id;
+	if v_artifact.id is null then
+		raise exception 'Surface session artifact not found' using errcode = 'P0002';
+	end if;
+	perform public.qorpera_assert_surface_member(v_artifact.profile_id, false);
+	perform public.qorpera_assert_surfaces_enabled();
+
+	return jsonb_build_object(
+		'id', v_artifact.id,
+		'sessionId', v_artifact.session_id,
+		'surfaceId', v_artifact.surface_id,
+		'kind', v_artifact.kind,
+		'artifactKey', v_artifact.artifact_key,
+		'title', v_artifact.title,
+		'summary', v_artifact.summary,
+		'contentFormat', v_artifact.content_format,
+		'contentText', v_artifact.content_text,
+		'imageRef', v_artifact.image_ref,
+		'changeId', v_artifact.change_id,
+		'revision', v_artifact.revision,
+		'createdByKind', v_artifact.created_by_kind,
+		'createdByUserId', v_artifact.created_by_user_id,
+		'createdAt', v_artifact.created_at,
+		'updatedAt', v_artifact.updated_at
+	);
+end $$;
+revoke all on function public.qorpera_get_surface_session_artifact(uuid)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+grant execute on function public.qorpera_get_surface_session_artifact(uuid)
+	to authenticated;
+
 select pg_temp.awtb_patch(
 	'public.qorpera_get_surface_workspace(uuid)'::regprocedure,
 	array[
 $old$		'previewState', jsonb_build_object(
 			'surfaceId', p_surface_id,
-			'mode', 'single',$old$,
+			'mode', case when cardinality(v_compare) >= 2 then 'compare' else 'single' end,$old$,
 $new$		'previewState', jsonb_build_object(
 			'surfaceId', p_surface_id,
-			'mode', 'single',
+			'mode', case when cardinality(v_compare) >= 2 then 'compare' else 'single' end,
 			'selectedSessionId', v_member_state.selected_session_id,
 			'previewScope', coalesce(v_member_state.preview_scope, 'combined'),$new$
 	]
@@ -210,7 +252,73 @@ select pg_temp.awtb_patch(
 	'public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure,
 	array[
 $old$		'needsAttentionCount', 0 /* WHY: 20260930922000 keeps agent blockers off the rail; teammate publish asks are layered by the client */,$old$,
-$new$		'needsAttentionCount', case when p_surface.surface_kind in ('web_app', 'mobile_app', 'desktop_app') then coalesce(stats.attention_sessions, 0) + coalesce(change_stats.conflicted_changes, 0) else 0 end /* WHY: 20260930937000 restores real attention counts for app workbench surfaces while keeping other surfaces pull-only */,$new$
+$new$		'needsAttentionCount', case when p_surface.surface_kind in ('web_app', 'mobile_app', 'desktop_app') then coalesce(stats.attention_sessions, 0) else 0 end /* WHY: 20260930937000 restores real attention counts for app workbench surfaces while keeping other surfaces pull-only */,$new$
+	]
+);
+
+select pg_temp.awtb_patch(
+	'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
+	array[
+$old$	v_repo public.qorpera_code_repositories%rowtype;
+	v_queued_publish_id uuid;
+begin$old$,
+$new$	v_repo public.qorpera_code_repositories%rowtype;
+	v_queued_publish_id uuid;
+	v_eval_sid uuid;
+begin$new$,
+$old$	if v_job.session_id is not null then
+		perform 1 from public.qorpera_surface_sessions where id = v_job.session_id for update;
+	end if;
+	select * into v_surface from public.qorpera_surfaces where id = v_job.surface_id for update;$old$,
+$new$	perform 1
+	from public.qorpera_surface_sessions s
+	where s.id in (
+		select v_job.session_id where v_job.session_id is not null
+		union
+		select x::uuid
+		from jsonb_array_elements_text(
+			case when jsonb_typeof(v_job.payload -> 'combinedSessionIds') = 'array' then v_job.payload -> 'combinedSessionIds' else '[]'::jsonb end
+		) as x
+		union
+		select ch.session_id
+		from public.qorpera_surface_changes ch
+		where ch.id in (
+			select y::uuid
+			from jsonb_array_elements_text(
+				case when jsonb_typeof(v_job.payload -> 'changeIds') = 'array' then v_job.payload -> 'changeIds' else '[]'::jsonb end
+			) as y
+		)
+	)
+	order by s.id asc
+	for update;
+	select * into v_surface from public.qorpera_surfaces where id = v_job.surface_id for update;$new$,
+$old$		end if;
+
+		if v_job.session_id is not null then
+			perform public.qorpera_evaluate_surface_session_lifecycle(v_job.session_id);
+		end if;
+	elsif v_job.kind = 'undo_change' then$old$,
+$new$		end if;
+
+		for v_eval_sid in
+			select distinct affected.sid
+			from (
+				select v_job.session_id as sid where v_job.session_id is not null
+				union
+				select x::uuid as sid
+				from jsonb_array_elements_text(
+					case when jsonb_typeof(v_job.payload -> 'combinedSessionIds') = 'array' then v_job.payload -> 'combinedSessionIds' else '[]'::jsonb end
+				) as x
+				union
+				select ch.session_id as sid
+				from public.qorpera_surface_changes ch
+				where ch.id = any(v_change_ids)
+			) affected
+			order by affected.sid asc
+		loop
+			perform public.qorpera_evaluate_surface_session_lifecycle(v_eval_sid);
+		end loop;
+	elsif v_job.kind = 'undo_change' then$new$
 	]
 );
 
@@ -455,7 +563,8 @@ declare
 	v_auto_publish boolean := false;
 	v_merged_count integer;
 	v_last_sha text;
-	v_queued_job_id uuid;
+	v_deferred_for_reconcile boolean := false;
+	v_rec public.qorpera_surface_reconciliations%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
 	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
@@ -472,6 +581,9 @@ begin
 	end if;
 
 	select * into v_surface from public.qorpera_surfaces where id = v_session.surface_id for update;
+	if v_surface.status = 'archived' then
+		raise exception 'This interface was deleted' using errcode = '55000';
+	end if;
 	perform 1 from public.qorpera_surface_changes where session_id = p_session_id order by seq asc, id asc for update;
 
 	if exists (
@@ -502,23 +614,55 @@ begin
 		raise exception 'Track has no open changes to ship' using errcode = '55000';
 	end if;
 
-	if cardinality(v_change_ids) > 0 and coalesce(v_needs_worker, false) then
-		update public.qorpera_surface_changes
-		set status = 'merging', conflict_paths = null, approved_by_user_id = v_user_id
-		where id = any(v_change_ids);
+	if cardinality(v_change_ids) > 0 and exists (
+		select 1 from public.qorpera_surface_jobs j
+		where j.surface_id = v_session.surface_id
+			and j.kind in ('land_change', 'undo_change')
+			and j.status in ('queued', 'running')
+			and (
+				(j.payload ? 'changeId' and (j.payload ->> 'changeId')::uuid = any(v_change_ids))
+				or exists (
+					select 1
+					from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+					where x::uuid = any(v_change_ids)
+				)
+			)
+	) then
+		raise exception 'A merge or rollback job is already active for this track' using errcode = '55000';
+	end if;
 
-		insert into public.qorpera_surface_jobs(
-			profile_id, surface_id, session_id, kind, payload, requested_by_user_id
-		)
-		values (
-			v_session.profile_id, v_session.surface_id, p_session_id, 'land_change',
-			jsonb_build_object(
-				'changeIds', to_jsonb(v_change_ids),
-				'autoPublish', v_auto_publish,
-				'trackSessionId', p_session_id
-			),
-			v_user_id
-		);
+	if cardinality(v_change_ids) > 0 and coalesce(v_needs_worker, false) then
+		if public.qorpera_surface_needs_standalone_reconciliation(v_surface, v_change_ids) then
+			v_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+				v_session.surface_id, v_change_ids, '{}'::text[], v_user_id, true, false
+			);
+			if v_rec.id is not null and v_rec.status = 'failed' then
+				v_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+					v_session.surface_id, v_change_ids, '{}'::text[], v_user_id, true, true
+				);
+			end if;
+			if v_rec.id is not null and v_rec.status in ('queued', 'running') then
+				v_deferred_for_reconcile := true;
+			end if;
+		end if;
+		if not v_deferred_for_reconcile then
+			update public.qorpera_surface_changes
+			set status = 'merging', conflict_paths = null, approved_by_user_id = v_user_id
+			where id = any(v_change_ids);
+
+			insert into public.qorpera_surface_jobs(
+				profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+			)
+			values (
+				v_session.profile_id, v_session.surface_id, p_session_id, 'land_change',
+				jsonb_build_object(
+					'changeIds', to_jsonb(v_change_ids),
+					'autoPublish', v_auto_publish,
+					'trackSessionId', p_session_id
+				),
+				v_user_id
+			);
+		end if;
 	elsif cardinality(v_change_ids) > 0 then
 		select head_sha into v_last_sha
 		from public.qorpera_surface_changes
@@ -545,54 +689,10 @@ begin
 			updated_at = v_now
 		where id = v_session.surface_id;
 	elsif coalesce(p_publish, false) then
-		if v_surface.source_kind = 'code_repo' and v_surface.repository_key is not null then
-			update public.qorpera_surfaces
-			set publish_status = 'publishing', last_publish_error = null, updated_at = v_now
-			where id = v_surface.id;
-
-			select j.id into v_queued_job_id
-			from public.qorpera_surface_jobs j
-			where j.surface_id = v_surface.id
-				and j.kind = 'publish_surface'
-				and j.status = 'queued'
-			order by j.created_at asc, j.id asc
-			limit 1
-			for update skip locked;
-
-			if v_queued_job_id is not null then
-				update public.qorpera_surface_jobs
-				set
-					payload = jsonb_build_object('repositoryKey', v_surface.repository_key),
-					requested_by_user_id = v_user_id,
-					updated_at = v_now
-				where id = v_queued_job_id;
-			else
-				insert into public.qorpera_surface_jobs(
-					profile_id, surface_id, kind, payload, requested_by_user_id
-				)
-				values (
-					v_surface.profile_id, v_surface.id, 'publish_surface',
-					jsonb_build_object('repositoryKey', v_surface.repository_key),
-					v_user_id
-				);
-			end if;
-		else
-			update public.qorpera_surface_changes
-			set published_at = v_now, published_by_user_id = v_user_id
-			where surface_id = v_surface.id and status = 'merged' and published_at is null;
-
-			update public.qorpera_surfaces
-			set
-				published_head_sha = coalesce(live_head_sha, published_head_sha),
-				unpublished_change_count = 0,
-				publish_status = 'idle',
-				last_publish_error = null,
-				updated_at = v_now
-			where id = v_surface.id;
-		end if;
+		perform public.qorpera_publish_surface(v_surface.id);
 	end if;
 
-	if cardinality(v_change_ids) > 0 then
+	if cardinality(v_change_ids) > 0 and not v_deferred_for_reconcile then
 		update public.qorpera_member_surface_state
 		set
 			toggled_change_ids = coalesce(
@@ -636,6 +736,8 @@ declare
 	v_merged_count integer := 0;
 	v_last_sha text;
 	v_sid uuid;
+	v_deferred_for_reconcile boolean := false;
+	v_rec public.qorpera_surface_reconciliations%rowtype;
 	v_now timestamptz := clock_timestamp();
 begin
 	select * into v_surface from public.qorpera_surfaces where id = p_surface_id;
@@ -666,12 +768,15 @@ begin
 		);
 	end if;
 
-	select * into v_surface from public.qorpera_surfaces where id = p_surface_id for update;
 	perform 1
 	from public.qorpera_surface_sessions s
 	where s.id = any(v_session_ids) and s.surface_id = p_surface_id and s.profile_id = v_surface.profile_id
 	order by s.id asc
 	for update;
+	select * into v_surface from public.qorpera_surfaces where id = p_surface_id for update;
+	if v_surface.status = 'archived' then
+		raise exception 'This interface was deleted' using errcode = '55000';
+	end if;
 
 	if (
 		select count(*)
@@ -724,24 +829,56 @@ begin
 		raise exception 'Selected tracks have no open changes to combine' using errcode = '55000';
 	end if;
 
-	if coalesce(v_needs_worker, false) then
-		update public.qorpera_surface_changes
-		set status = 'merging', conflict_paths = null, approved_by_user_id = v_user_id
-		where id = any(v_change_ids);
+	if exists (
+		select 1 from public.qorpera_surface_jobs j
+		where j.surface_id = p_surface_id
+			and j.kind in ('land_change', 'undo_change')
+			and j.status in ('queued', 'running')
+			and (
+				(j.payload ? 'changeId' and (j.payload ->> 'changeId')::uuid = any(v_change_ids))
+				or exists (
+					select 1
+					from jsonb_array_elements_text(coalesce(j.payload -> 'changeIds', '[]'::jsonb)) as x
+					where x::uuid = any(v_change_ids)
+				)
+			)
+	) then
+		raise exception 'A merge or rollback job is already active for one of the selected tracks' using errcode = '55000';
+	end if;
 
-		insert into public.qorpera_surface_jobs(
-			profile_id, surface_id, session_id, kind, payload, requested_by_user_id
-		)
-		values (
-			v_surface.profile_id, p_surface_id, v_session_ids[1], 'land_change',
-			jsonb_build_object(
-				'changeIds', to_jsonb(v_change_ids),
-				'autoPublish', v_surface.auto_publish,
-				'combinedSessionIds', to_jsonb(v_session_ids)
-			),
-			v_user_id
-		)
-		returning id into v_job_id;
+	if coalesce(v_needs_worker, false) then
+		if public.qorpera_surface_needs_standalone_reconciliation(v_surface, v_change_ids) then
+			v_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+				p_surface_id, v_change_ids, '{}'::text[], v_user_id, true, false
+			);
+			if v_rec.id is not null and v_rec.status = 'failed' then
+				v_rec := public.qorpera_surface_enqueue_silent_reconciliation(
+					p_surface_id, v_change_ids, '{}'::text[], v_user_id, true, true
+				);
+			end if;
+			if v_rec.id is not null and v_rec.status in ('queued', 'running') then
+				v_deferred_for_reconcile := true;
+			end if;
+		end if;
+		if not v_deferred_for_reconcile then
+			update public.qorpera_surface_changes
+			set status = 'merging', conflict_paths = null, approved_by_user_id = v_user_id
+			where id = any(v_change_ids);
+
+			insert into public.qorpera_surface_jobs(
+				profile_id, surface_id, session_id, kind, payload, requested_by_user_id
+			)
+			values (
+				v_surface.profile_id, p_surface_id, v_session_ids[1], 'land_change',
+				jsonb_build_object(
+					'changeIds', to_jsonb(v_change_ids),
+					'autoPublish', v_surface.auto_publish,
+					'combinedSessionIds', to_jsonb(v_session_ids)
+				),
+				v_user_id
+			)
+			returning id into v_job_id;
+		end if;
 	else
 		select head_sha into v_last_sha
 		from public.qorpera_surface_changes
@@ -769,17 +906,19 @@ begin
 		where id = p_surface_id;
 	end if;
 
-	update public.qorpera_member_surface_state
-	set
-		toggled_change_ids = coalesce(
-			(select array_agg(t.id order by t.ord)
-			 from unnest(toggled_change_ids) with ordinality as t(id, ord)
-			 where t.id <> all(v_change_ids)),
-			'{}'::uuid[]
-		),
-		selected_session_id = case when selected_session_id = any(v_session_ids) then null else selected_session_id end,
-		preview_scope = case when selected_session_id = any(v_session_ids) then 'combined' else preview_scope end
-	where surface_id = p_surface_id;
+	if not v_deferred_for_reconcile then
+		update public.qorpera_member_surface_state
+		set
+			toggled_change_ids = coalesce(
+				(select array_agg(t.id order by t.ord)
+				 from unnest(toggled_change_ids) with ordinality as t(id, ord)
+				 where t.id <> all(v_change_ids)),
+				'{}'::uuid[]
+			),
+			selected_session_id = case when selected_session_id = any(v_session_ids) then null else selected_session_id end,
+			preview_scope = case when selected_session_id = any(v_session_ids) then 'combined' else preview_scope end
+		where surface_id = p_surface_id;
+	end if;
 
 	update public.qorpera_surface_sessions
 	set has_active_chat = false, updated_at = v_now
@@ -835,6 +974,9 @@ begin
 	select * into v_session from public.qorpera_surface_sessions where id = p_session_id for update;
 	if v_session.id is null then
 		raise exception 'Surface session not found' using errcode = 'P0002';
+	end if;
+	if v_session.worker_id is distinct from v_peek.worker_id then
+		raise exception 'Track worker changed concurrently; retry stopping the turn' using errcode = '40001';
 	end if;
 	if v_session.is_internal then
 		raise exception 'Cannot cancel an internal reconciliation session' using errcode = '55000';

@@ -1176,7 +1176,8 @@ export function parseSurfaceSessionProgressStep(value: unknown, label = "progres
 export function parseSurfaceSessionChecksSummary(value: unknown, label = "checksSummary"): SurfaceSessionChecksSummary {
 	const raw = parseRecord(value, label);
 	const summary = raw.summary === undefined ? undefined : parseOptionalText(raw.summary, `${label}.summary`, 500);
-	const updatedAt = raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
+	const updatedAt =
+		raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
 	let commands: SurfaceSessionCheckCommand[] | undefined;
 	if (raw.commands !== undefined && raw.commands !== null) {
 		if (!Array.isArray(raw.commands) || raw.commands.length > 16) throw new WireValueError(`${label}.commands`);
@@ -1217,7 +1218,8 @@ export function parseSurfaceSessionExternalPr(value: unknown, label = "externalP
 	const baseBranch =
 		raw.baseBranch === undefined ? undefined : parseOptionalText(raw.baseBranch, `${label}.baseBranch`, 200);
 	const title = raw.title === undefined ? undefined : parseOptionalText(raw.title, `${label}.title`, 240);
-	const updatedAt = raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
+	const updatedAt =
+		raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
 	return {
 		...(provider !== undefined ? { provider } : {}),
 		...(repository !== undefined ? { repository } : {}),
@@ -1322,9 +1324,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		if (!Array.isArray(raw.artifacts) || raw.artifacts.length > 64) {
 			throw new WireValueError(`${label}.artifacts`);
 		}
-		artifacts = raw.artifacts.map((item, index) =>
-			parseSurfaceSessionArtifact(item, `${label}.artifacts[${index}]`),
-		);
+		artifacts = raw.artifacts.map((item, index) => parseSurfaceSessionArtifact(item, `${label}.artifacts[${index}]`));
 	}
 	return {
 		id: parseUuid(raw.id, `${label}.id`),

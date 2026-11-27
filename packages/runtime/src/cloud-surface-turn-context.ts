@@ -665,7 +665,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const isAppWorkbenchTrack =
 		!isFolderOnly &&
 		!binding.isInternalReconciliation &&
-		(binding.surfaceKind === "web_app" || binding.surfaceKind === "mobile_app" || binding.surfaceKind === "desktop_app");
+		(binding.surfaceKind === "web_app" ||
+			binding.surfaceKind === "mobile_app" ||
+			binding.surfaceKind === "desktop_app");
 	if (isAppWorkbenchTrack) {
 		sections.push(
 			"## App Workbench Collaboration\n" +
