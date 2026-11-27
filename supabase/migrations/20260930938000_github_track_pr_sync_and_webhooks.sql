@@ -315,8 +315,9 @@ declare
 	v_conclusion text;
 	v_check_status text;
 	v_effective_status text;
-	v_prev_status text;
-	v_same_sha boolean;
+	v_effective_sha text;
+	v_gh_state jsonb;
+	v_gh_runs jsonb;
 	v_check_time text;
 	v_pr_numbers text[];
 	v_push_ref text;
@@ -574,17 +575,25 @@ begin
 			order by s.id asc
 			for update of s
 		loop
-			v_same_sha := v_head_sha is not null and (
-				(v_session.external_pr is not null and v_session.external_pr ->> 'headSha' = v_head_sha)
-				or (v_session.external_pr is null and v_session.branch_head_sha = v_head_sha)
-			);
-			v_prev_status := coalesce(
-				v_session.external_pr ->> 'checksStatus',
-				v_session.checks_summary ->> 'status'
-			);
+			v_effective_sha := coalesce(v_head_sha, v_session.external_pr ->> 'headSha', v_session.branch_head_sha);
+			v_gh_state := v_session.checks_summary -> 'github';
+			if jsonb_typeof(v_gh_state) = 'object'
+				and v_effective_sha is not null
+				and v_gh_state ->> 'sha' = v_effective_sha
+				and jsonb_typeof(v_gh_state -> 'runs') = 'object' then
+				v_gh_runs := v_gh_state -> 'runs';
+			else
+				v_gh_runs := '{}'::jsonb;
+			end if;
+			if (v_gh_runs ? v_check_name) or (select count(*) from jsonb_object_keys(v_gh_runs)) < 40 then
+				v_gh_runs := v_gh_runs || jsonb_build_object(v_check_name, v_check_status);
+			end if;
 			v_effective_status := case
-				when v_same_sha and v_prev_status = 'failed' and v_check_status <> 'failed' then 'failed'
-				else v_check_status
+				when v_check_status = 'failed'
+					or exists (select 1 from jsonb_each_text(v_gh_runs) as r(k, v) where r.v = 'failed') then 'failed'
+				when v_check_status = 'running'
+					or exists (select 1 from jsonb_each_text(v_gh_runs) as r(k, v) where r.v = 'running') then 'running'
+				else 'passed'
 			end;
 
 			update public.qorpera_surface_sessions
@@ -592,7 +601,11 @@ begin
 				checks_summary = coalesce(v_session.checks_summary, '{}'::jsonb) || jsonb_build_object(
 					'status', v_effective_status,
 					'summary', format('%s: %s', v_check_name, coalesce(nullif(v_conclusion, ''), v_check_status)),
-					'updatedAt', v_check_time
+					'updatedAt', v_check_time,
+					'github', jsonb_strip_nulls(jsonb_build_object(
+						'sha', v_effective_sha,
+						'runs', v_gh_runs
+					))
 				),
 				external_pr = case
 					when external_pr is not null then external_pr || jsonb_build_object(

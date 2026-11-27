@@ -514,6 +514,16 @@ describe("CodeGitHubSync", () => {
 			)
 			.mockResolvedValueOnce(
 				Response.json(
+					{
+						message: "Validation Failed",
+						errors: [{ message: "A pull request already exists for acme:feat/billing." }],
+					},
+					{ status: 422 },
+				),
+			)
+			.mockResolvedValueOnce(new Response("<html>not json</html>", { status: 200 }))
+			.mockResolvedValueOnce(
+				Response.json(
 					{ message: "Validation Failed", errors: [{ message: "No commits between main and feat/empty" }] },
 					{ status: 422 },
 				),
@@ -549,6 +559,14 @@ describe("CodeGitHubSync", () => {
 
 		const retried = await f.syncer.run(req, new AbortController().signal);
 		expect(retried).toEqual(created);
+
+		const badLookupJson = await f.syncer.run(req, new AbortController().signal);
+		expect(badLookupJson).toEqual({
+			schema: "qorpera.code-request-outcome/v1",
+			state: "refused",
+			code: "GITHUB_SYNC_PR_REFUSED",
+			messages: ["A pull request already exists for acme:feat/billing."],
+		});
 
 		const refused = await f.syncer.run(
 			{ ...req, headBranch: "feat/empty", sessionId: undefined },

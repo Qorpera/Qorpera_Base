@@ -371,6 +371,32 @@ begin
 	values (
 		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
 		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / lint',
+				'conclusion', 'success',
+				'head_sha', v_sha_1,
+				'pull_requests', jsonb_build_array(jsonb_build_object('number', 42))
+			)
+		)::text, 'utf8'),
+		100, repeat('4', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-rerun-pass'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'passed'
+			and external_pr ->> 'checksStatus' = 'passed'
+			and checks_summary -> 'commands' -> 0 ->> 'name' = 'vitest'
+		 from public.qorpera_surface_sessions where id = v_session_a),
+		'Re-running the previously failed check_run to success on the same headSha must clear failed to passed'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
 			'repository', jsonb_build_object('full_name', 'other/repo'),
 			'check_run', jsonb_build_object(
 				'name', 'ci / foreign',
@@ -386,6 +412,54 @@ begin
 	perform pg_temp.base_assert(
 		(select checks_summary is null from public.qorpera_surface_sessions where id = v_session_b),
 		'Cross-repo check_run matching branch_head_sha must be ignored'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / unit',
+				'conclusion', 'failure',
+				'head_sha', v_sha_2
+			)
+		)::text, 'utf8'),
+		100, repeat('3', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-nopr-fail'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'failed' from public.qorpera_surface_sessions where id = v_session_b),
+		'Failed check_run on no-PR session branch_head_sha must mark checks_summary failed'
+	);
+
+	update public.qorpera_surface_sessions
+	set branch_head_sha = v_sha_4
+	where id = v_session_b;
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / unit',
+				'conclusion', 'success',
+				'head_sha', v_sha_4
+			)
+		)::text, 'utf8'),
+		100, repeat('2', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-nopr-next-sha-pass'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'passed' from public.qorpera_surface_sessions where id = v_session_b),
+		'Passing check_run after no-PR session moves branch_head_sha must reset stale failure and show passed'
 	);
 
 	v_delivery_id := extensions.gen_random_uuid();

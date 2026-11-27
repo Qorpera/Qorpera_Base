@@ -1211,19 +1211,23 @@ export class CodeGitHubSync {
 				if (response.status === 422) {
 					const detail = extractGitHubErrorMessage(text) ?? "GitHub rejected pull request creation.";
 					if (/already exists/i.test(detail) || /already exists/i.test(text)) {
-						const lookupUrl = `${url}?state=open&head=${encodeURIComponent(`${request.githubOwner}:${headBranch}`)}&base=${encodeURIComponent(baseBranch)}&per_page=1`;
-						const existingResponse = await this.#fetch(lookupUrl, {
-							method: "GET",
-							redirect: "error",
-							signal,
-							headers,
-						});
-						if (existingResponse.status >= 200 && existingResponse.status < 300) {
-							const existingText = await readBoundedResponseText(existingResponse, MAX_PR_RESPONSE_BYTES);
-							const existingParsed = JSON.parse(existingText) as unknown;
-							if (Array.isArray(existingParsed) && existingParsed.length > 0) {
-								return parseGitHubPullRequest(existingParsed[0], { headBranch, baseBranch, title });
+						try {
+							const lookupUrl = `${url}?state=open&head=${encodeURIComponent(`${request.githubOwner}:${headBranch}`)}&base=${encodeURIComponent(baseBranch)}&per_page=1`;
+							const existingResponse = await this.#fetch(lookupUrl, {
+								method: "GET",
+								redirect: "error",
+								signal,
+								headers,
+							});
+							if (existingResponse.status >= 200 && existingResponse.status < 300) {
+								const existingText = await readBoundedResponseText(existingResponse, MAX_PR_RESPONSE_BYTES);
+								const existingParsed = JSON.parse(existingText) as unknown;
+								if (Array.isArray(existingParsed) && existingParsed.length > 0) {
+									return parseGitHubPullRequest(existingParsed[0], { headBranch, baseBranch, title });
+								}
 							}
+						} catch (lookupError) {
+							if (signal.aborted) throw lookupError;
 						}
 					}
 					throw new GitHubSyncRefusal("GITHUB_SYNC_PR_REFUSED", [], [detail]);

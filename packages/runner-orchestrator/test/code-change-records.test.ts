@@ -1608,6 +1608,44 @@ describe("change 1 of a repository brought in (step 6)", () => {
 			),
 		);
 	});
+
+	it("renders a pull change record for fast-forward and merged pulls", () => {
+		const pullBase: Partial<CodeChangeFile> = {
+			n: 9,
+			kind: "pull",
+			state: "landed",
+			how: "fast-forward",
+			title: "Pulled main from GitHub (Acme/Shop)",
+			session: null,
+			turn: null,
+			summary: "Pulled 2 commit(s) from Acme/Shop (main) via fast-forward.",
+			notice: null,
+			picture: null,
+			checksState: "not_run",
+			checks: null,
+		};
+		const fastForward = codeChangeRecordText(change(pullBase));
+		expect(fastForward).toContain("- What: a pull from GitHub");
+		expect(fastForward).toContain("- Went in as: a fast-forward");
+		expect(fastForward).toContain("- Checks: not run");
+		expect(fastForward).toContain(
+			"Not run: Qorpera does not check a pull from GitHub. The next change that goes in is checked with these files.",
+		);
+		expect(fastForward).toContain(
+			"## What was pulled\n\n> Pulled 2 commit(s) from Acme/Shop (main) via fast-forward.",
+		);
+
+		const merged = codeChangeRecordText(
+			change({
+				...pullBase,
+				how: "merged",
+				summary: "Pulled 1 commit(s) from Acme/Shop (main) via merged.",
+			}),
+		);
+		expect(merged).toContain("- What: a pull from GitHub");
+		expect(merged).toContain("- Went in as: a merge");
+		expect(merged).toContain("## What was pulled\n\n> Pulled 1 commit(s) from Acme/Shop (main) via merged.");
+	});
 });
 
 /** The other lines of work that came with a repository brought in (the import's follow-ups, migration
