@@ -660,9 +660,9 @@ begin
 	perform pg_temp.o_same(jsonb_array_length(v -> 'rows') || ' ' || (v #> '{rows,11}')::text || ' ' || (v #>> '{rows,0,0}'),
 		'12 ' || jsonb_build_array(v_month, 3, 600.00, 300.00)::text || ' '
 		|| to_char(date_trunc('month', pg_temp.o_today()::timestamp) - interval '11 months', 'YYYY-MM'), 'orders-months');
-	-- A company without a Stripe hook.
-	perform pg_temp.o_json(pg_temp.o_member('12740000-0000-4000-8000-000000000006', 'orders-now', '{}',
-		'12740000-0000-4000-8000-000000000020') -> 'rows', '[["none", 0, 0.00, null, 0, 0.00, 0, null]]', 'no Stripe hook');
+	perform pg_temp.o_same(pg_temp.o_refused('orders-now', '{}', '12740000-0000-4000-8000-000000000006',
+		'12740000-0000-4000-8000-000000000020'),
+		'55000 Not connected: orders count once card payments are connected or an order is added by hand', 'no Stripe hook');
 	-- A free order is to pack too, once the company sets states of its own.
 	update public.qorpera_orders set state_at = clock_timestamp()
 	where ref_sha256 = public.qorpera_order_ref_sha256('92400000-0000-4000-8000-000000000010', 'pi_Q1');

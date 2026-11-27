@@ -660,8 +660,9 @@ begin
 		'waiting 1', 'an added order, a hook that verified nothing');
 	perform pg_temp.c_paid('pi_HookLive', 1000, pg_temp.o_at());
 	perform pg_temp.o_same(pg_temp.o_now() ->> 'stripe', 'live', 'a verified Stripe delivery');
-	perform pg_temp.o_same(pg_temp.o_member('12740000-0000-4000-8000-000000000006', 'orders-now', '{}',
-		'12740000-0000-4000-8000-000000000020') -> 'rows' -> 0 ->> 0, 'none', 'no hook at all');
+	perform pg_temp.o_same(pg_temp.o_refused('orders-now', '{}', '12740000-0000-4000-8000-000000000006',
+		'12740000-0000-4000-8000-000000000020'),
+		'55000 Not connected: orders count once card payments are connected or an order is added by hand', 'no hook at all');
 end $$;
 
 -- 11. Rights: a member of the company who is not a viewer (owner, admin, contributor) and a run of it; a viewer sees
