@@ -311,7 +311,7 @@ describe("Mail at Google under Addresses", () => {
 		for (const [code, message, expected, hidesOffer] of rpcCases) {
 			let now = 1_000_000;
 			const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
-			const { main, controller, google } = await mailbox(() => {}, "owner", {
+			const { main, google } = await mailbox(() => {}, "owner", {
 				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
 				connectExisting: async () => {
 					throw new CloudRpcError("qorpera_connect_existing_google_mailbox", { message, code }, 400);
@@ -326,7 +326,8 @@ describe("Mail at Google under Addresses", () => {
 				expect(googleRow(main)!.querySelector(".mailbox-google-open")).not.toBeNull();
 				const callsBefore = vi.mocked(google.existing!).mock.calls.length;
 				now += 31_000;
-				await CompanyMail.of(controller)?.reread();
+				tab(main, "Inbox");
+				tab(main, "Addresses");
 				await vi.waitFor(() => expect(vi.mocked(google.existing!).mock.calls.length).toBeGreaterThan(callsBefore));
 				expect(googleRow(main)!.querySelector(".mailbox-google-existing")).toBeNull();
 			}
