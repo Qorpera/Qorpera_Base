@@ -50,12 +50,34 @@ export type MailAccount =
 			readonly lastUsedAt?: string;
 	  };
 
+export const GOOGLE_MAIL_STATES = ["bringing_in", "live", "sign_in_again", "paused"] as const;
+export type GoogleMailState = (typeof GOOGLE_MAIL_STATES)[number];
+export const GOOGLE_FIRST_IMPORT_LIMIT = 50_000;
+
+export interface GoogleMail {
+	readonly state: GoogleMailState;
+	readonly broughtIn: number;
+	readonly total: number | null;
+	readonly lastWeek: number;
+	readonly capped: boolean;
+}
+
+export interface ConnectedGoogleMailbox {
+	readonly outcome: "linked" | "relinked";
+	readonly mailboxId: string;
+	readonly hookId: string;
+	readonly address: string;
+	readonly secretId: string;
+}
+
 export interface MailAddress {
 	readonly address: string;
+	readonly hookId?: string;
 	readonly status?: string;
 	readonly handledBy: readonly MailAgent[];
 	readonly routines: readonly { readonly routineId: string; readonly title: string; readonly staffAgentId?: string }[];
 	readonly last7Days: number;
+	readonly google?: GoogleMail;
 }
 
 export interface MailCursor {
@@ -295,10 +317,24 @@ function optional<K extends string, T>(key: K, value: T | undefined): { [P in K]
 	return value === undefined ? {} : ({ [key]: value } as { [P in K]?: T });
 }
 
+const count = (value: unknown, label: string) => boundedInteger(value, label, 0, Number.MAX_SAFE_INTEGER);
+
+function parseGoogleMail(value: unknown): GoogleMail {
+	const item = cloudRecord(value, "google mail");
+	return {
+		state: oneOf(item.state, GOOGLE_MAIL_STATES, "google mail state"),
+		broughtIn: absent(item.broughtIn) ? 0 : count(item.broughtIn, "google mail count"),
+		total: absent(item.total) ? null : count(item.total, "google mail total"),
+		lastWeek: absent(item.lastWeek) ? 0 : count(item.lastWeek, "google mail week"),
+		capped: flag(item.capped, "google mail capped"),
+	};
+}
+
 function parseAddress(value: unknown): MailAddress {
 	const item = cloudRecord(value, "mail address");
 	return {
 		address: nonEmptyString(item.address, "mail address", 320),
+		...(absent(item.hookId) ? {} : { hookId: cloudUuid(item.hookId, "mail address hook") }),
 		...optional("status", shownText(item.status, 64)),
 		handledBy: array(item.handledBy ?? [], "mail address agents").flatMap((entry) => {
 			const found = agent(entry, "mail address agent");
@@ -314,7 +350,8 @@ function parseAddress(value: unknown): MailAddress {
 					: { staffAgentId: cloudUuid(routine.staffAgentId, "mail routine agent") }),
 			};
 		}),
-		last7Days: absent(item.last7Days) ? 0 : boundedInteger(item.last7Days, "mail count", 0, Number.MAX_SAFE_INTEGER),
+		last7Days: absent(item.last7Days) ? 0 : count(item.last7Days, "mail count"),
+		...(item.kind === "google" ? { google: parseGoogleMail(item.google) } : {}),
 	};
 }
 
@@ -441,6 +478,38 @@ export async function readMailAddresses(
 		? cloud.rpc("qorpera_member_mail_addresses", args, signal)
 		: cloud.rpc("qorpera_member_mail_addresses", args));
 	return array(answer, "mail addresses").map(parseAddress);
+}
+
+export async function pauseGoogleMailbox(cloud: Cloud, mailboxId: string, paused: boolean): Promise<void> {
+	await cloud.rpc("qorpera_pause_google_mailbox", { p_mailbox_id: mailboxId, p_paused: paused });
+}
+
+export async function connectExistingGoogleMailbox(
+	cloud: Cloud,
+	environmentId: string,
+	secretId: string,
+	signal?: AbortSignal,
+): Promise<ConnectedGoogleMailbox> {
+	const args = { p_environment_id: environmentId, p_secret_id: secretId };
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_connect_existing_google_mailbox", args, signal)
+			: cloud.rpc("qorpera_connect_existing_google_mailbox", args)),
+		"google mailbox connection",
+	);
+	if (answer.schema === "qorpera.google-mailbox-refused/v1") {
+		const reason = typeof answer.reason === "string" ? answer.reason : "provider_error";
+		const address = typeof answer.address === "string" && answer.address ? { address: answer.address } : {};
+		throw Object.assign(new Error("Google mail could not be brought in."), { reason, ...address });
+	}
+	if (answer.schema !== "qorpera.google-mailbox-connected/v1") throw new CloudShapeError("google mailbox connection");
+	return {
+		outcome: oneOf(answer.outcome, ["linked", "relinked"] as const, "google mailbox outcome"),
+		mailboxId: cloudUuid(answer.mailboxId, "google mailbox"),
+		hookId: cloudUuid(answer.hookId, "google mailbox hook"),
+		address: nonEmptyString(answer.address, "google mailbox address", 320),
+		secretId: cloudUuid(answer.secretId, "google mailbox secret"),
+	};
 }
 
 /** A page of threads, newest first. */

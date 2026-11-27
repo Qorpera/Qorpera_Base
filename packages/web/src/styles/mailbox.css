@@ -383,6 +383,30 @@ span.mailbox-open { cursor: default; }
 .mailbox-week { color: var(--text); font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .mailbox-address.is-digital-post strong { display: inline-flex; align-items: center; gap: 6px; }
 .mailbox-address.is-digital-post strong svg { width: 17px; height: 17px; }
+.mailbox-google-mark { flex: none; display: inline-block; width: 16px; height: 16px; vertical-align: -2px; }
+.mailbox-address.is-google strong, .mailbox-manage .settings-copy strong:has(> .mailbox-google-mark) {
+	display: inline-flex; align-items: center; gap: 7px;
+}
+.mailbox-address.is-google .mailbox-address-row > button { grid-area: 1 / -2; justify-self: end; }
+.mailbox-address.is-google .mailbox-address-row > .mailbox-text { margin-right: -12px; }
+.mailbox-google-open, .mailbox-google-existing {
+	display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 0 var(--mailbox-gutter) 18px 28px;
+	animation: mailbox-in var(--motion-fast) var(--ease-out) both;
+}
+.mailbox-google-existing-item { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; width: 100%; }
+.mailbox-google-open > p, .mailbox-google-existing-item > p {
+	flex-basis: 100%; margin: 0; max-width: 34em; color: var(--text); font-size: 14.5px; line-height: 1.45;
+}
+.mailbox-google-open > .mailbox-error, .mailbox-google-existing > .mailbox-error {
+	flex-basis: 100%; margin: 0; color: var(--danger); font-size: 13.5px;
+}
+.mailbox-google-week { white-space: nowrap; }
+.mailbox-google-line {
+	display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px var(--mailbox-gutter) 8px 28px;
+	color: var(--text-muted); font-size: 13.5px; font-weight: 500;
+}
+.mailbox-google-line.is-waiting { color: var(--mailbox-waiting); }
+.mailbox-google-count { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
 .mailbox-picks {
 	display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 var(--mailbox-gutter) 14px 28px;
 	animation: mailbox-in var(--motion-fast) var(--ease-out) both;
@@ -537,6 +561,9 @@ span.mailbox-open { cursor: default; }
 .mailbox-manage .btn-primary, :root[data-theme="dark"] .mailbox-manage .btn-primary { background: var(--mailbox-accent); color: var(--mailbox-on-accent); }
 .mailbox-manage .btn-primary:hover:not(:disabled), :root[data-theme="dark"] .mailbox-manage .btn-primary:hover:not(:disabled) {
 	background: var(--composer-accent-hover);
+}
+.mailbox-manage .settings-copy small.hook-note, :root[data-theme="dark"] .mailbox-manage .settings-copy small.hook-note {
+	color: var(--mailbox-waiting); font-weight: 600;
 }
 
 /* ---- Write: a mail app's new-message window, docked at the foot ------------------ */
@@ -721,6 +748,7 @@ span.mailbox-open { cursor: default; }
 	.mailbox-row > .mailbox-actions { grid-area: actions; justify-self: end; padding-top: 6px; }
 	.mailbox-row > .mailbox-error { grid-area: error; margin: 6px 0 0; }
 	.mailbox-older { padding-left: 4px; }
+	.mailbox-google-line { padding-left: 16px; font-size: 13px; }
 }
 
 /* ---- narrow: a phone's mail app ----------------------------------------------- */
@@ -766,7 +794,7 @@ span.mailbox-open { cursor: default; }
 	.mailbox-draft > .mailbox-message-body { padding: 12px 14px 10px; }
 	.mailbox-thread.is-letter > p.mailbox-folder { padding-left: 0; margin-left: -12px; }
 
-	.mailbox-address-row, .mailbox-picks { padding-left: var(--mailbox-gutter); }
+	.mailbox-address-row, .mailbox-picks, .mailbox-google-open, .mailbox-google-existing { padding-left: var(--mailbox-gutter); }
 	.mailbox-manage { --manage-start: var(--mailbox-gutter); }
 	.mailbox-manage .service-card, .mailbox-manage .service-card:has(> .mailbox-answer-line) { grid-template-columns: minmax(0, 1fr); }
 	.mailbox-manage .service-card > .mailbox-answer-line,

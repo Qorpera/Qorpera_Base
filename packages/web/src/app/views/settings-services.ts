@@ -50,7 +50,7 @@ function returnReason(reason: unknown): string {
 
 type ServiceReturn = HostedConnectorReturn & { connector: HostedConnectorId };
 const isServiceReturn = (outcome: HostedConnectorReturn | undefined): outcome is ServiceReturn =>
-	outcome !== undefined && outcome.connector !== "bank";
+	outcome !== undefined && outcome.connector !== "bank" && outcome.signIn.target !== "mailbox";
 
 let pendingReturn: ServiceReturn | undefined;
 export function noteConnectorReturn(outcome: HostedConnectorReturn | undefined): void {
@@ -221,7 +221,11 @@ export class ServicesView {
 	#current(connectorId: HostedConnectorId): HostedConnectorConnection | undefined {
 		return this.#connections
 			?.filter(
-				(item) => item.connectorId === connectorId && item.status === "active" && item.ownerKind === "company",
+				(item) =>
+					item.connectorId === connectorId &&
+					item.status === "active" &&
+					item.ownerKind === "company" &&
+					!item.secretName.startsWith("mailbox-"),
 			)
 			.sort((left, right) => right.version - left.version)[0];
 	}

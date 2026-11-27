@@ -911,6 +911,29 @@ describe("settings session lifecycle", () => {
 			"Gmail was not connected. The sign-in was cancelled before access was granted.",
 		);
 	});
+	it("leaves Settings closed when a Mailbox Google sign-in comes back", async () => {
+		sessionStorage.setItem(
+			"qorpera.connector-sign-in.v1",
+			JSON.stringify({
+				ticketId: id(63),
+				connectorId: "gmail",
+				companyId: profileA.profileId,
+				serviceOrigin: "https://broker.fixture.invalid",
+				browserProof: "c".repeat(43),
+				startedAt: Date.now(),
+				target: "mailbox",
+			}),
+		);
+		history.replaceState(
+			null,
+			"",
+			`/#/c/${profileA.profileId}/chat/${session.sessionId}?connector=gmail&connection=failed&reason=declined`,
+		);
+		const f = await setup();
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+	});
 	it("accepts a company invitation from the Friends window and opens that company", async () => {
 		const fixtureState = fixture();
 		const invitation = {
