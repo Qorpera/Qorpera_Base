@@ -1036,7 +1036,8 @@ export class CloudGmailMailboxes {
 		tally: { messages: number },
 	): Promise<PassEnd> {
 		const historyId = claim.historyId ?? profile.historyId;
-		const total = claim.historyId === null || claim.total === null ? (profile.messagesTotal ?? claim.total) : claim.total;
+		const total =
+			claim.historyId === null || claim.total === null ? (profile.messagesTotal ?? claim.total) : claim.total;
 		let pageToken = claim.pageToken;
 		let count = claim.importCount;
 		for (;;) {

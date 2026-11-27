@@ -409,11 +409,11 @@ insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_auth
 	envelope_sha256, created_by_user_id)
 values ('12970000-0000-4000-8000-000000000f01', 1, '12970000-0000-4000-8000-0000000000d1', 'key-1', '\x01',
 	encode(extensions.digest('\x01'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
-insert into public.qorpera_cloud_secret_operation_grants(profile_id, environment_id, secret_id, grantee_kind,
-	connector_id, operation_id, operation_version, created_by_user_id)
+insert into public.qorpera_cloud_secret_operation_grants(profile_id, environment_id, secret_id, staff_agent_id,
+	connector_id, operation_id, operation_version, tool_name, issued_by_user_id)
 values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
-	'12970000-0000-4000-8000-000000000f01', 'all_agents', 'gmail', 'search_messages', 1,
-	'92400000-0000-4000-8000-000000000001');
+	'12970000-0000-4000-8000-000000000f01', '92400000-0000-4000-8000-000000000030', 'gmail', 'search_messages', 1,
+	'gmail_search_messages', '92400000-0000-4000-8000-000000000001');
 select set_config('qorpera_test.g_reuse', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
 select set_config('qorpera_test.g_linked', pg_temp.g_complete(current_setting('qorpera_test.g_reuse')::jsonb,
