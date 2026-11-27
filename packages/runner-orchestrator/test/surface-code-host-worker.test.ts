@@ -1633,4 +1633,88 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		);
 		expect(peerHead).not.toBe(shaB);
 	}, 20_000);
+
+	it("prefers claimed liveHeadSha over a stale payload.liveHeadSha when publishing", async () => {
+		const f = await createCodeHostFixture();
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const workerId = randomUUID();
+
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const wt = join(f.code, "worktrees", workerId);
+		await writeFile(join(wt, "index.html"), "<!doctype html><h1>Fresh Main</h1>\n");
+		await f.git(wt, "add", "index.html");
+		await f.git(wt, "commit", "-m", "Fresh main commit");
+		const freshSha = await f.git(wt, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", freshSha);
+
+		const publishJobId = randomUUID();
+		const publishLease = randomUUID();
+		const uploadedHtml: string[] = [];
+		const rpcCalls: { method: SurfaceCodeHostRpc; args: Record<string, unknown> }[] = [];
+		let claimedOnce = false;
+
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimedOnce) return { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+						claimedOnce = true;
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId: publishJobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: freshSha,
+									leaseToken: publishLease,
+									repositoryKey: "thetaband/website",
+									siteId,
+									payload: { liveHeadSha: f.baseSha, repositoryKey: "thetaband/website" },
+								},
+							],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_version_begin") {
+						return { state: "uploading", versionId: randomUUID(), siteId, siteSlug: "thetaband", listed: false };
+					}
+					if (method === "qorpera_surface_site_version_put") {
+						const parts = (args.p_parts as { parts: { path: string; contentBase64: string }[] }).parts;
+						for (const part of parts) {
+							if (part.path === "index.html") {
+								uploadedHtml.push(Buffer.from(part.contentBase64, "base64").toString("utf8"));
+							}
+						}
+						return { state: "ok" };
+					}
+					return { state: "ok" };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const pass = await worker.pass(new AbortController().signal);
+		expect(pass).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(uploadedHtml.join("")).toContain("Fresh Main");
+		const complete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish");
+		expect(complete?.args).toMatchObject({
+			p_job_id: publishJobId,
+			p_status: "published",
+			p_published_head_sha: freshSha,
+			p_lease_token: publishLease,
+		});
+	});
 });

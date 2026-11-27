@@ -1825,7 +1825,10 @@ export class SurfaceSessionDrawer {
 					h(
 						"div",
 						{ class: "surface-done-acts" },
-						!actionSession && surface && surface.archetype !== "ops" && surface.unpublishedChangeCount > 0
+						!actionSession &&
+							surface &&
+							surface.archetype !== "ops" &&
+							(surface.unpublishedChangeCount > 0 || surface.hasUnpublishedChanges)
 							? h(
 									"button",
 									{ type: "button", class: "btn btn-primary btn-small", "data-act": "open-publish" },
@@ -1836,7 +1839,7 @@ export class SurfaceSessionDrawer {
 							"button",
 							{
 								type: "button",
-								class: `btn btn-small${actionSession || !surface || surface.unpublishedChangeCount === 0 ? " btn-primary" : ""}`,
+								class: `btn btn-small${actionSession || !surface || (surface.unpublishedChangeCount === 0 && !surface.hasUnpublishedChanges) ? " btn-primary" : ""}`,
 								"data-act": "close",
 							},
 							t("Close"),
