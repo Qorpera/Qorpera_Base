@@ -13,6 +13,7 @@ do $$ begin
 	if to_regclass('public.qorpera_surfaces') is null
 		or to_regclass('public.qorpera_code_repositories') is null
 		or to_regclass('public.qorpera_code_requests') is null
+		or to_regclass('public.qorpera_coding_sessions') is null
 		or to_regprocedure('public.qorpera_create_surface(uuid,text,text,text,text,text,text,text,text,boolean)') is null
 		or to_regprocedure('public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)') is null
 		or to_regprocedure('public.qorpera_native_surface_propose(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)') is null
@@ -20,7 +21,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_surface_describe_company_senses(uuid)') is null
 		or to_regprocedure('public.qorpera_native_list_company_interfaces(jsonb)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
-		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null then
+		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
+		or to_regprocedure('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)') is null then
 		raise exception '20260930934000 requires earlier surface and code repository migrations first';
 	end if;
 end $$;
@@ -122,7 +124,8 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_surface_describe_company_senses(uuid)'::regprocedure,
 		'public.qorpera_native_list_company_interfaces(jsonb)'::regprocedure,
 		'public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure,
-		'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure
+		'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
+		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure
 	]);
 
 create function pg_temp.srsb_apply(p_def text, p_label text, p_pairs text[])
@@ -223,6 +226,21 @@ $new$				'folderRoot', surf.folder_root,
 				'repositorySubpath', surf.repository_subpath,
 				'defaultBranch', surf.default_branch,
 				'siteId', surf.site_id,$new$
+	]
+);
+
+select pg_temp.srsb_patch(
+	'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+	array[
+$old$						select 1 from public.qorpera_surfaces surf
+						where surf.profile_id = p_profile_id
+							and surf.source_kind = 'code_repo'
+							and surf.status <> 'archived'$old$,
+$new$						select 1 from public.qorpera_surfaces surf
+						where surf.profile_id = p_profile_id
+							and surf.source_kind = 'code_repo'
+							and surf.status <> 'archived'
+							and surf.repository_subpath is null$new$
 	]
 );
 
@@ -572,6 +590,18 @@ begin
 		raise exception 'Approve or discard open changes before switching repositories' using errcode = '55000';
 	end if;
 
+	if v_repo_subpath is null and exists (
+		select 1
+		from public.qorpera_coding_sessions cs
+		where cs.profile_id = v_surface.profile_id
+			and cs.surface_session_id is null
+			and cs.phase in ('queued', 'preparing', 'running', 'awaiting_input', 'input_ready', 'publishing')
+			and cs.repository ->> 'host' = 'qorpera'
+			and lower(coalesce(cs.repository ->> 'owner', '')) || '/' || lower(coalesce(cs.repository ->> 'name', '')) = v_repo_key
+	) then
+		raise exception 'Wait for active coding sessions on this repository to finish before binding the whole repository' using errcode = '55000';
+	end if;
+
 	update public.qorpera_surfaces
 	set
 		repository_key = v_repo_key,
@@ -633,7 +663,7 @@ begin
 			raise exception '20260930934000 function has an API owner: %', v_owner;
 		end if;
 		execute format('grant select, insert, update on public.qorpera_surfaces to %I', v_owner);
-		execute format('grant select on public.qorpera_code_repositories, public.qorpera_code_requests, public.qorpera_surface_sessions, public.qorpera_surface_jobs, public.qorpera_surface_changes to %I', v_owner);
+		execute format('grant select on public.qorpera_code_repositories, public.qorpera_code_requests, public.qorpera_coding_sessions, public.qorpera_surface_sessions, public.qorpera_surface_jobs, public.qorpera_surface_changes to %I', v_owner);
 		execute format('grant select, update on public.qorpera_surface_previews to %I', v_owner);
 		execute format(
 			'grant execute on function public.qorpera_assert_surface_member(uuid, boolean), '

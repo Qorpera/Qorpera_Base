@@ -41,6 +41,16 @@ declare
 	v_lease uuid;
 	v_job_id uuid;
 	v_surface_row public.qorpera_surfaces%rowtype;
+	v_cofounder public.qorpera_profile_staff%rowtype;
+	v_agent_folder text;
+	v_run_id uuid;
+	v_actor jsonb;
+	v_rule jsonb;
+	v_todo_id uuid := extensions.gen_random_uuid();
+	v_worker_id uuid := extensions.gen_random_uuid();
+	v_whole_surface_id uuid;
+	v_sponsor_binding_id uuid;
+	v_sponsor_version bigint;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 
@@ -414,4 +424,187 @@ begin
 	v_turn := public.qorpera_native_surface_read_session_turn(v_profile, v_session_id, v_lease);
 	perform pg_temp.srsb_assert(v_turn ->> 'repositorySubpath' = 'packages/site', 'read_session_turn must include repositorySubpath');
 	perform pg_temp.srsb_assert(v_turn ->> 'defaultBranch' = 'develop', 'read_session_turn must include defaultBranch');
+
+	select * into strict v_cofounder
+	from public.qorpera_profile_staff
+	where profile_id = v_profile and folder_environment_id = v_env_id and folder_retired_at is null and deleted_at is null
+	order by created_at asc
+	limit 1;
+	v_agent_folder := public.qorpera_folder_key(public.qorpera_folder_parent_path(v_cofounder.folder_path));
+
+	perform pg_temp.as_service();
+	perform set_config('qorpera.folder_wake_admission', '', true);
+	perform public.qorpera_folder_materialize_company(v_profile, 16);
+	reset role;
+
+	select r.id into strict v_run_id
+	from public.qorpera_execution_runs r
+	where r.profile_id = v_profile and r.staff_agent_id = v_cofounder.staff_agent_id
+	order by r.created_at asc
+	limit 1;
+
+	select sv.binding_id, sv.version
+	into strict v_sponsor_binding_id, v_sponsor_version
+	from public.qorpera_execution_sponsor_versions sv
+	join public.qorpera_execution_sponsor_bindings sb on sb.id = sv.binding_id
+	where sb.profile_id = v_profile
+	order by sv.version desc
+	limit 1;
+
+	insert into public.qorpera_runtime_agent_todos(
+		id, profile_id, environment_id, staff_agent_id, todo_key, title, state,
+		folder_environment_id, folder_path, folder_path_version, folder_commit_id
+	)
+	values (
+		v_todo_id, v_profile, v_env_id, v_cofounder.staff_agent_id, 'monorepo-todo', 'Monorepo todo', 'open',
+		v_env_id, v_agent_folder || '/todos/monorepo-todo.md', v_cofounder.folder_path_version, v_cofounder.folder_commit_id
+	);
+
+	v_actor := jsonb_build_object(
+		'staffAgentId', v_cofounder.staff_agent_id,
+		'runId', v_run_id,
+		'requesterUserId', v_owner,
+		'audience', jsonb_build_object('kind', 'company')
+	);
+
+	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses)
+	values (v_env_id, 'exec-1416', true, array['codex']);
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'dispatch',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Backend fix in monorepo',
+			'goal', 'Fix packages/api in monorepo',
+			'doneWhen', 'Tests pass',
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'qorpera_base', 'baseBranch', 'main')
+		)::text,
+		true
+	);
+	v_rule := public.qorpera_company_state_worker_rules(
+		v_env_id,
+		v_profile,
+		v_actor,
+		null,
+		v_agent_folder || '/todos/monorepo-todo/api-fix/brief.md',
+		jsonb_build_object(
+			'kind', 'worker-brief',
+			'id', '14160000-0000-4000-8000-000000000001',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Backend fix in monorepo',
+			'goal', 'Fix packages/api in monorepo',
+			'doneWhen', 'Tests pass',
+			'context', null,
+			'sources', '[]'::jsonb,
+			'followUps', '0',
+			'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'qorpera_base', 'baseBranch', 'main')
+		) || public.qorpera_company_state_worker_standing('coding', 'read', 'each'),
+		'{}'::jsonb
+	);
+	perform pg_temp.srsb_assert(
+		v_rule is null,
+		'monorepo subpath binding must NOT block manage_worker on shared monorepo: ' || coalesce(v_rule::text, 'null')
+	);
+
+	perform pg_temp.srsb_as(v_owner);
+	set local role authenticated;
+	v_whole_surface_id := (public.qorpera_create_surface(
+		v_profile, 'Dedicated Site', 'dedicated-site', 'live_build', 'website', 'globe', null, null, null, false
+	) ->> 'id')::uuid;
+	reset role;
+
+	insert into public.qorpera_runtime_workers(
+		id, profile_id, environment_id, staff_agent_id, todo_id, worker_key, species, title,
+		access, revival, dispatch, state, requested_by_user_id, steering_run_id,
+		folder_environment_id, folder_path, folder_key, folder_brief_version, folder_commit_id,
+		owner_user_id, owner_sponsor_binding_id, owner_sponsor_version
+	)
+	values (
+		v_worker_id, v_profile, v_env_id, v_cofounder.staff_agent_id, v_todo_id, 'whole-repo-worker', 'coding', 'Active worker',
+		'read', 'each', jsonb_build_object('action', 'dispatch', 'species', 'coding', 'harness', 'codex'), 'active', v_owner, v_run_id,
+		v_env_id, v_agent_folder || '/todos/monorepo-todo/whole-repo-worker/brief.md',
+		v_agent_folder || '/todos/monorepo-todo/whole-repo-worker', v_cofounder.folder_path_version, v_cofounder.folder_commit_id,
+		v_owner, v_sponsor_binding_id, v_sponsor_version
+	);
+	insert into public.qorpera_coding_sessions(
+		worker_id, profile_id, environment_id, session_id, harness, repository, branch, phase
+	)
+	values (
+		v_worker_id, v_profile, v_env_id,
+		(select run.session_id from public.qorpera_execution_runs run where run.id = v_run_id),
+		'codex',
+		jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main'),
+		'qorpera/coding/' || v_worker_id::text, 'running'
+	);
+
+	perform pg_temp.srsb_as(v_owner);
+	set local role authenticated;
+	begin
+		perform public.qorpera_bind_surface_repository(v_whole_surface_id, 'qorpera/dedicated_repo', null, 'main');
+		perform pg_temp.srsb_assert(false, 'whole-repo bind must refuse while manage_worker coding session is active on that repo');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 for active coding session on whole-repo bind, got ' || v_errcode);
+	end;
+	reset role;
+
+	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = v_worker_id;
+
+	perform pg_temp.srsb_as(v_owner);
+	set local role authenticated;
+	v_bound := public.qorpera_bind_surface_repository(v_whole_surface_id, 'qorpera/dedicated_repo', null, 'main');
+	perform pg_temp.srsb_assert(v_bound ->> 'repositoryKey' = 'qorpera/dedicated_repo' and v_bound ->> 'repositorySubpath' is null, 'whole-repo bind must succeed after coding session completes');
+	reset role;
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'dispatch',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Direct dedicated site write',
+			'goal', 'Write directly to dedicated repo',
+			'doneWhen', 'Done',
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+		)::text,
+		true
+	);
+	v_rule := public.qorpera_company_state_worker_rules(
+		v_env_id,
+		v_profile,
+		v_actor,
+		null,
+		v_agent_folder || '/todos/monorepo-todo/dedicated-write/brief.md',
+		jsonb_build_object(
+			'kind', 'worker-brief',
+			'id', '14160000-0000-4000-8000-000000000002',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Direct dedicated site write',
+			'goal', 'Write directly to dedicated repo',
+			'doneWhen', 'Done',
+			'context', null,
+			'sources', '[]'::jsonb,
+			'followUps', '0',
+			'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+		) || public.qorpera_company_state_worker_standing('coding', 'read', 'each'),
+		'{}'::jsonb
+	);
+	perform pg_temp.srsb_assert(
+		v_rule ->> 'ok' = 'false' and position('start_surface_session' in coalesce(v_rule -> 'problems' -> 0 ->> 'message', '')) > 0,
+		'whole-repo Interface binding must still block manage_worker: ' || coalesce(v_rule::text, 'null')
+	);
 end $$;
