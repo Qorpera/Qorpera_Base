@@ -45,9 +45,6 @@ insert into public.qorpera_cloud_secret_broker_authorities(id,profile_id,service
 values ('38000000-0000-4000-8000-000000000040','38000000-0000-4000-8000-000000000010',
 	'https://secrets.qorpera.test','company-kek-1',repeat('c',64));
 
--- The shipped catalog: three connectors, twenty-one closed operations (GitHub's
--- create_repository since 20260930556000), tool names prefixed by their
--- connector, every schema closed.
 select pg_temp.connector_assert((select count(*)=24 from public.qorpera_cloud_connector_operations
 	where connector_id in ('github','gmail','google_drive') and status='active'),'Connector catalog rows are missing');
 select pg_temp.connector_assert((select count(*)=8 from public.qorpera_cloud_connector_operations where connector_id='github'),
