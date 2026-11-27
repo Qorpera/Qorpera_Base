@@ -171,6 +171,36 @@ describe("code host seed", () => {
 		expect(await readdir(c.scratchRoot)).toEqual([]);
 	});
 
+	it("does not rewrite unchanged files in main/ when FUSE commit timestamps drift ahead of the git index", async () => {
+		const f = await fixture(),
+			c = await f.company();
+		const first = await f.commit({ "keep.txt": "unchanged\n", "tamper.txt": "hello\n", "edit.txt": "v1\n" }, "init");
+		await seedCodeArea(c.job, {
+			repository: f.repository,
+			baseSha: first,
+			bundle: await f.bundle("refs/heads/main"),
+		});
+		const keepPath = join(c.code, "main/keep.txt");
+		const tamperPath = join(c.code, "main/tamper.txt");
+		const shifted = new Date(Date.now() + 10_000);
+		await utimes(keepPath, shifted, shifted);
+		const beforeKeep = await lstat(keepPath);
+		await writeFile(tamperPath, "HELLO\n");
+
+		const second = await f.commit({ "edit.txt": "v2\n" }, "edit one file");
+		const updated = await seedCodeArea(c.job, {
+			repository: f.repository,
+			baseSha: second,
+			bundle: await f.bundle("main", `^${first}`),
+		});
+		expect(updated).toEqual({ state: "updated", baseSha: second, restored: [] });
+		const afterKeep = await lstat(keepPath);
+		expect(afterKeep.ino).toBe(beforeKeep.ino);
+		expect(afterKeep.mtimeMs).toBe(beforeKeep.mtimeMs);
+		expect(await readFile(tamperPath, "utf8")).toBe("hello\n");
+		expect(await readFile(join(c.code, "main/edit.txt"), "utf8")).toBe("v2\n");
+	});
+
 	it("inspects the code area: its base, main/ at it, and whether it holds a commit", async () => {
 		const f = await fixture(),
 			c = await f.company();

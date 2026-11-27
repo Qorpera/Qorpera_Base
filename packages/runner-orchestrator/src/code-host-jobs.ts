@@ -1061,7 +1061,8 @@ printf 'start\\n' >&3; answer start || finish 10
 if [ "$new" = "$old" ]; then printf 'verify %s %s\\n' "$ref" "$old"; else printf 'update %s %s %s\\n' "$ref" "$new" "$old"; fi >&3
 printf 'prepare\\n' >&3; answer prepare || finish 10
 case $state in
-present) "$git" --no-replace-objects --git-dir="$repo/worktrees/main" --work-tree="$main" checkout --quiet --force --detach "$new" ;;
+present) "$git" --no-replace-objects --git-dir="$repo/worktrees/main" --work-tree="$main" update-index -q --refresh || true
+	"$git" --no-replace-objects --git-dir="$repo/worktrees/main" --work-tree="$main" checkout --quiet --force --detach "$new" ;;
 *) { [ "$state" = none ] || rm -rf -- "$main" "$repo/worktrees/main"; } &&
 	"$git" --no-replace-objects --git-dir="$repo" worktree add --quiet --lock --reason "$reason" --detach "$main" "$new" &&
 	{ printf 'gitdir: %s/worktrees/main\\n' "$repo" | cmp -s - "$main/.git" || { echo "main/ did not get the admin directory worktrees/main" >&2; false; }; } ;;

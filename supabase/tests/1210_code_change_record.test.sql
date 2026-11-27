@@ -679,8 +679,8 @@ begin
 		'another machine, or no executor of it');
 	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, nas_machine_id_sha256)
 	values (pg_temp.rec_here(), 'exec-two', true, array['codex'], repeat('6', 64));
-	perform pg_temp.base_assert(pg_temp.rec_due_names() = '' and pg_temp.rec_due_names('exec-two', repeat('6', 64)) = ''
-		and pg_temp.rec_files() -> 'changes' = '[]'::jsonb, 'two executors');
+	perform pg_temp.base_assert(pg_temp.rec_due_names() = 'shop,site' and pg_temp.rec_due_names('exec-two', repeat('6', 64)) = ''
+		and pg_temp.rec_files(p_owner => 'exec-two', p_machine => repeat('6', 64)) -> 'changes' = '[]'::jsonb, 'two executors: primary holds change files');
 	delete from public.qorpera_coding_executors where owner = 'exec-two';
 	insert into public.qorpera_company_deletions(profile_id, requested_by_user_id)
 	values ('92400000-0000-4000-8000-000000000010', null);

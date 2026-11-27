@@ -277,6 +277,7 @@ export class CompanyFolderBrowser {
 	readonly #lost = new Map<string, { key: string; unit: CloudMemberFolderUnit; version: string }>();
 	#busy = false;
 	#disposed = false;
+	#usageSeq = 0;
 
 	constructor(
 		host: HTMLElement,
@@ -460,6 +461,23 @@ export class CompanyFolderBrowser {
 		);
 	}
 
+	refreshUsage(): void {
+		if (!this.#disposed && this.#ready) this.#refreshUsage();
+	}
+
+	#refreshUsage(): void {
+		const load = this.#options.usage;
+		if (!load || this.#disposed) return;
+		const seq = ++this.#usageSeq;
+		void load().then(
+			(file) => {
+				if (!this.#disposed && seq === this.#usageSeq)
+					this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
+			},
+			() => undefined,
+		);
+	}
+
 	/** Opens the top of the folder, then follows its hint. */
 	async open(): Promise<void> {
 		const cachedRoot = this.#readCache("");
@@ -468,13 +486,7 @@ export class CompanyFolderBrowser {
 			replace(this.#root, listSkeleton(t("Opening Company File"), 4));
 		}
 		this.#client = this.#source.folder();
-		void this.#options.usage?.().then(
-			(file) => {
-				if (!this.#disposed)
-					this.#usage.textContent = t("{used} in total", { used: fmtBytes(file.storageUsedBytes) });
-			},
-			() => undefined,
-		);
+		this.#refreshUsage();
 		this.#downloads ??= new WebFileDownloads({ signal: this.#signal(), current: () => this.#live() });
 		const downloads = this.#downloads;
 		const client = this.#client;
@@ -498,6 +510,7 @@ export class CompanyFolderBrowser {
 				changed: (path) => {
 					this.#invalidatePath(path);
 					this.#changed.add(path);
+					this.#refreshUsage();
 					this.#navigate();
 				},
 			});
@@ -1032,6 +1045,7 @@ export class CompanyFolderBrowser {
 		}
 		let touchedFolder = false,
 			touchedFile = false,
+			touchedUsage = false,
 			authority = false,
 			reset = false;
 		for (let pages = 0; ; pages++) {
@@ -1058,6 +1072,7 @@ export class CompanyFolderBrowser {
 					authority = true;
 					continue;
 				}
+				if (event.changes.length > 0) touchedUsage = true;
 				for (const change of event.changes) {
 					this.#listingCache.delete(parentOf(change.path));
 					this.#listingCache.delete(change.path);
@@ -1073,10 +1088,12 @@ export class CompanyFolderBrowser {
 			this.#listingCache.clear();
 			this.#position = null;
 			await this.#reload();
+			this.#refreshUsage();
 			return;
 		}
 		if (touchedFolder) await this.#reloadFolder();
 		if (touchedFile) await this.#refreshOpened();
+		if (touchedUsage) this.#refreshUsage();
 		if (this.#section === "recents") await this.#loadRecents("refresh");
 	}
 
@@ -1682,6 +1699,7 @@ export class CompanyFolderBrowser {
 		const result = answer.units[0];
 		if (result?.outcome === "saved") {
 			this.#listingCache.delete(parentOf(path));
+			this.#refreshUsage();
 			this.#say(t("Restored {name}.", { name }));
 			await this.#reopen(path);
 		} else if (result?.outcome === "conflict") {

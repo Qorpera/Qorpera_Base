@@ -2145,4 +2145,74 @@ describe("choose mode: Open's \"A file…\" on an agent's computer (202609307580
 		secondSrc.hint(4);
 		expect(listingCache.size).toBe(0);
 	});
+
+	it("refreshes the storage total on folder changes, restore, and explicit refresh without stale races", async () => {
+		const firstUsage = deferred<{ storageUsedBytes: number }>();
+		const secondUsage = deferred<{ storageUsedBytes: number }>();
+		let calls = 0;
+		const usage = vi.fn(() => {
+			calls += 1;
+			if (calls === 1) return firstUsage.promise;
+			if (calls === 2) return secondUsage.promise;
+			return Promise.resolve({ storageUsedBytes: calls * 1024 });
+		});
+		const fake = folderFake();
+		const src = source(fake);
+		const host = document.createElement("section");
+		document.body.append(host);
+		const browser = new CompanyFolderBrowser(host, src.value, people, { usage });
+		disposers.push(() => browser.dispose());
+		await browser.open();
+		expect(usage).toHaveBeenCalledTimes(1);
+
+		browser.refreshUsage();
+		expect(usage).toHaveBeenCalledTimes(2);
+		secondUsage.resolve({ storageUsedBytes: 2048 });
+		await settle();
+		expect(host.querySelector(".storage-foot")?.textContent).toContain("2.0 KiB in total");
+
+		firstUsage.resolve({ storageUsedBytes: 512 });
+		await settle();
+		expect(host.querySelector(".storage-foot")?.textContent).toContain("2.0 KiB in total");
+
+		vi.useFakeTimers();
+		try {
+			fake.changes.push({
+				asOfSeq: 5,
+				resync: false,
+				next: { afterSeq: 5, cursor: null },
+				more: false,
+				events: [
+					{
+						kind: "change_set",
+						seq: 5,
+						commitId: id(300),
+						at,
+						by: { kind: "agent", staffAgentId: agent },
+						changes: [
+							{
+								unitNo: 1,
+								op: "write",
+								kind: "file",
+								path: "notes/plan.md",
+								version: id(601),
+								priorVersion: id(101),
+								updatedAt: at,
+								file: file("updated"),
+								target: null,
+							},
+						],
+					},
+				],
+			});
+			src.hint(5);
+			await vi.advanceTimersByTimeAsync(1100);
+			await vi.runOnlyPendingTimersAsync();
+		} finally {
+			vi.useRealTimers();
+		}
+		await settle();
+		expect(usage).toHaveBeenCalledTimes(3);
+		expect(host.querySelector(".storage-foot")?.textContent).toContain("3.0 KiB in total");
+	});
 });

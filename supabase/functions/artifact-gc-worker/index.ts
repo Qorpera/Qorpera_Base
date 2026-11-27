@@ -200,7 +200,7 @@ Deno.serve(async (request) => {
 					},
 				},
 				crypto.randomUUID(),
-				{ sweep: 25, claim: 25, budgetMs: folderBudgetMs },
+				{ sweep: 100, claim: 100, budgetMs: folderBudgetMs },
 			);
 		} catch {
 			folderObjects = { error: true };
