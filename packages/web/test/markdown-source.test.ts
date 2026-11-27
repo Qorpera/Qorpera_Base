@@ -304,9 +304,7 @@ describe("a place in drawn Markdown, found in its source", () => {
 			"",
 			"Keep `[1.1.3, 1.1.4]` in code and [1.2.5](https://example.com) in links, even after [1.2.5, 1.2.9]!",
 		].join("\n");
-		expect(
-			[...markdown(sample).querySelectorAll("p")].map((el) => el.textContent),
-		).toEqual([
+		expect([...markdown(sample).querySelectorAll("p")].map((el) => el.textContent)).toEqual([
 			"Locked to one catalog [1.1.3, 1.1.4]. Adjacent [1.1.4] [1.1.5] tags, and two-part [1.2].",
 			"Keep [1.1.3, 1.1.4] in code and 1.2.5 in links, even after [1.2.5, 1.2.9]!",
 		]);
