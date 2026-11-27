@@ -494,6 +494,7 @@ export class CloudConnectorOAuthFlows {
 			.authorize(
 				{
 					bank: { name: bank.name, country: bank.country },
+					// A minute short of the longest, so a clock a little ahead of the bank's is never refused.
 					validUntil: new Date(this.#now() + Math.min(longest, BANK_CONSENT_MS) - 60_000),
 					state,
 					redirectUrl: this.#callbackUrl,

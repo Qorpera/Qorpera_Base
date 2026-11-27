@@ -466,6 +466,7 @@ export function createWebConnectors(
 				{
 					schema: "qorpera.cloud-connector-oauth-start/v2",
 					captureCapability: issued.captureCapability,
+					// The broker returns only to the app's root page; the route is in the hash.
 					returnTo,
 					browserProofSha256: await sha256Hex(browserProof),
 					...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),

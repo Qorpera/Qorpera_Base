@@ -535,6 +535,54 @@ it("reports classified bank start failures with non-secret logging while keeping
 		expect(errorSpy).toHaveBeenLastCalledWith(
 			"Bank sign-in start failed (reason: bank_service_inactive, provider: unconfigured).",
 		);
+
+		const transportFailure = routeFixture("bank", {
+			aspspsResponse: () => Promise.reject(new TypeError("fetch failed")),
+		});
+		const transportPort = await transportFailure.service.start();
+		const transportStart = await post(
+			transportPort,
+			`/v1/oauth/${transportFailure.ticketId}/start?company=${transportFailure.identity.companyId}`,
+			{
+				schema: "qorpera.cloud-connector-oauth-start/v2",
+				captureCapability: transportFailure.capability,
+				returnTo: `${WEB}/`,
+				browserProofSha256: proofHash(transportFailure.proof),
+				bank: { name: "Nordea", country: "DK", psuType: "business" },
+			},
+		);
+		expect(transportStart.status).toBe(403);
+		expect(await transportStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "provider_error",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith(
+			"Bank sign-in start failed (reason: provider_error, provider: transport).",
+		);
+
+		const upstreamError = routeFixture("bank", {
+			aspspsResponse: () => Response.json({ message: "Upstream error" }, { status: 500 }),
+		});
+		const upstreamPort = await upstreamError.service.start();
+		const upstreamStart = await post(
+			upstreamPort,
+			`/v1/oauth/${upstreamError.ticketId}/start?company=${upstreamError.identity.companyId}`,
+			{
+				schema: "qorpera.cloud-connector-oauth-start/v2",
+				captureCapability: upstreamError.capability,
+				returnTo: `${WEB}/`,
+				browserProofSha256: proofHash(upstreamError.proof),
+				bank: { name: "Nordea", country: "DK", psuType: "business" },
+			},
+		);
+		expect(upstreamStart.status).toBe(403);
+		expect(await upstreamStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "provider_error",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith(
+			"Bank sign-in start failed (reason: provider_error, provider: provider_error).",
+		);
 	} finally {
 		errorSpy.mockRestore();
 	}
