@@ -3032,4 +3032,197 @@ describe("cold-boot waterfall optimizations", () => {
 		expect(completeSiteDoor()[0]).toMatchObject({ type: SITE_DOOR_PASS });
 		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(true);
 	});
+
+	it("keeps the target company alive when switching back to the oldest warm company across 4 companies and leaves the company selector working", async () => {
+		const profileC: HostedProfile = {
+			...profileA,
+			profileId: id(901),
+			environmentId: id(902),
+			profileName: "Company C",
+		};
+		const profileD: HostedProfile = {
+			...profileA,
+			profileId: id(903),
+			environmentId: id(904),
+			profileName: "Dekura",
+		};
+		const siteA = surfaceSummary({
+			id: id(911),
+			slug: "website",
+			title: "Company A Website",
+			archetype: "live_build",
+			siteSlug: "company-a",
+			liveUrl: null,
+			activeSessionCount: 1,
+		});
+		const moneyA = surfaceSummary({
+			id: id(912),
+			slug: "money",
+			title: "Company A Money",
+			archetype: "live_build",
+			siteSlug: "company-a-money",
+			liveUrl: null,
+			activeSessionCount: 1,
+		});
+		const siteB = surfaceSummary({
+			id: id(913),
+			slug: "website",
+			title: "Company B Website",
+			archetype: "live_build",
+			siteSlug: "company-b",
+			liveUrl: null,
+		});
+		const siteC = surfaceSummary({
+			id: id(914),
+			slug: "website",
+			title: "Company C Website",
+			archetype: "live_build",
+			siteSlug: "company-c",
+			liveUrl: null,
+		});
+		const siteD = surfaceSummary({
+			id: id(915),
+			slug: "website",
+			title: "Dekura Website",
+			archetype: "live_build",
+			siteSlug: "dekura",
+			liveUrl: null,
+			activeSessionCount: 1,
+		});
+		const dekuraSession = surfaceSession(["staged"], {
+			id: id(921),
+			surfaceId: siteD.id,
+			title: "Dekura Website Directions",
+		});
+		const moneyASession = surfaceSession(["staged"], {
+			id: id(922),
+			surfaceId: moneyA.id,
+			title: "Company A Money Review",
+		});
+		const siteASession = surfaceSession(["staged"], {
+			id: id(923),
+			surfaceId: siteA.id,
+			title: "Company A Site Update",
+		});
+
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockImplementation(async (companyId: string) => {
+			if (companyId === profileA.profileId) return [siteA, moneyA];
+			if (companyId === profileB.profileId) return [siteB];
+			if (companyId === profileC.profileId) return [siteC];
+			if (companyId === profileD.profileId) return [siteD];
+			return [];
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockImplementation(async (surfaceId: string) => {
+			if (surfaceId === siteA.id) return surfaceWorkspace([siteASession], { surface: siteA });
+			if (surfaceId === moneyA.id) return surfaceWorkspace([moneyASession], { surface: moneyA });
+			if (surfaceId === siteD.id) return surfaceWorkspace([dekuraSession], { surface: siteD });
+			if (surfaceId === siteB.id) return surfaceWorkspace([], { surface: siteB });
+			return surfaceWorkspace([], { surface: siteC });
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		const f = mounted(`#/c/${profileA.profileId}/s/website`);
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB, profileC, profileD]);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_list_company_sites") return [];
+			if (name === "qorpera_company_site_access") return { schema: "qorpera.company-site-access/v1", sites: [] };
+			throw new Error(`Unexpected RPC: ${name}`);
+		});
+
+		for (const nextHash of [
+			undefined,
+			`#/c/${profileB.profileId}/s/website`,
+			`#/c/${profileC.profileId}/s/website`,
+			`#/c/${profileD.profileId}/s/website`,
+		]) {
+			if (nextHash) location.hash = nextHash;
+			await draw();
+			await draw();
+			await draw();
+		}
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe("Dekura");
+		expect(f.root.querySelector("main")?.textContent).toContain("Dekura Website Directions");
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		await draw();
+		await draw();
+
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileA.profileName);
+		expect(f.root.querySelector("main")?.textContent).toContain("Company A Site Update");
+		expect(f.root.querySelector("main")?.textContent).not.toContain("Dekura Website Directions");
+
+		const moneyLink = f.root.querySelector<HTMLAnchorElement>('.rail-surface[data-surface-slug="money"]')!;
+		expect(moneyLink).not.toBeNull();
+		moneyLink.click();
+		await draw();
+		await draw();
+		await draw();
+
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/s/money`);
+		expect(f.root.querySelector('.rail-surface[data-surface-slug="money"]')?.classList.contains("active")).toBe(true);
+		expect(f.root.querySelector("main")?.textContent).toContain("Company A Money Review");
+		expect(f.root.querySelector("main")?.textContent).not.toContain("Dekura Website Directions");
+
+		const companyButton = f.root.querySelector<HTMLButtonElement>(".rail-company")!;
+		companyButton.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+		companyButton.click();
+		const menu = document.querySelector<HTMLElement>('.context-menu[role="menu"]');
+		expect(menu).not.toBeNull();
+		expect(menu?.textContent).toContain("Dekura");
+		expect(menu?.textContent).toContain("Company B");
+		expect(menu?.textContent).toContain("Company C");
+	});
+
+	it("restarts an in-flight SurfacesStore load when rapidly switching away from and back to a warm company", async () => {
+		const firstEnabled = deferred<boolean>();
+		let enabledAttempt = 0;
+		const siteA = surfaceSummary({
+			id: id(931),
+			slug: "website",
+			title: "Website",
+			archetype: "live_build",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockImplementation(() => {
+			enabledAttempt += 1;
+			if (enabledAttempt === 1) return firstEnabled.promise;
+			return Promise.resolve(true);
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([siteA]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockResolvedValue(
+			surfaceWorkspace([], { surface: siteA }),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		const f = mounted(`#/c/${profileA.profileId}/s/website`);
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		await draw();
+		await draw();
+		expect(enabledAttempt).toBe(1);
+
+		location.hash = `#/c/${profileB.profileId}/team`;
+		await draw();
+		await draw();
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		firstEnabled.reject(new DOMException("Aborted", "AbortError"));
+		await draw();
+		await draw();
+
+		expect(enabledAttempt).toBeGreaterThanOrEqual(2);
+		expect(f.root.querySelector("main .surface-page")).not.toBeNull();
+		expect(f.root.querySelector('.rail-surface[data-surface-slug="website"]')).not.toBeNull();
+	});
 });

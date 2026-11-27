@@ -1789,4 +1789,15 @@ describe("Reset sidebar's Undo (review of #1677)", () => {
 		await settle();
 		expect(company.store.get().sidebarReset).toBe(newer);
 	});
+
+	it("reopens the company selector even if aria-expanded stayed true after its menu closed", () => {
+		const { rail } = companyWith(demo());
+		const companyButton = rail.querySelector<HTMLButtonElement>(".rail-company")!;
+		companyButton.setAttribute("aria-expanded", "true");
+		companyButton.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+		companyButton.click();
+		const menu = document.querySelector<HTMLElement>('.context-menu[role="menu"]');
+		expect(menu).not.toBeNull();
+		expect(menu?.textContent).toContain(profileA.profileName.replace(" PRIVATE", ""));
+	});
 });

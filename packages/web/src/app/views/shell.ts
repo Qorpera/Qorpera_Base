@@ -977,6 +977,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			(event) => {
 				if (!created.toolbar.isConnected) return;
 				pressClosesMenu =
+					Boolean(openMenu()?.el.isConnected) &&
 					companyButton.getAttribute("aria-expanded") === "true" &&
 					event.target instanceof Node &&
 					companyButton.contains(event.target);
@@ -998,7 +999,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 					pressClosesMenu = false;
 					return;
 				}
-				if (openMenu()?.el.isConnected && companyButton.getAttribute("aria-expanded") === "true") return;
+				const menuConnected = Boolean(openMenu()?.el.isConnected);
+				if (menuConnected && companyButton.getAttribute("aria-expanded") === "true") return;
+				if (!menuConnected && companyButton.getAttribute("aria-expanded") === "true") {
+					companyButton.setAttribute("aria-expanded", "false");
+				}
 				const box = companyButton.getBoundingClientRect();
 				const profiles = created.context?.profiles ?? [company.profile];
 				if (profiles.length > 1) created.context?.prefetchCompanyWordmarks?.(profiles);

@@ -1930,6 +1930,7 @@ export class SurfacesStore {
 		if (this.#options.signal.aborted || this.#suspended) return;
 		this.#suspended = true;
 		this.#visitAbort.abort();
+		if (this.state.source === "loading") this.#loaded = undefined;
 		this.#activeSurfaceId = undefined;
 		if (this.#pollTimer) clearInterval(this.#pollTimer);
 		if (this.#hintTimer) clearTimeout(this.#hintTimer);
@@ -1954,7 +1955,7 @@ export class SurfacesStore {
 		if (this.#options.signal.aborted || !this.#suspended) return;
 		this.#suspended = false;
 		this.#visitAbort = new AbortController();
-		if ((this.state.source === "loading" && !this.#loaded) || this.#fallbackAfterLoadError) {
+		if (this.state.source === "loading" || this.#fallbackAfterLoadError) {
 			this.#loaded = undefined;
 			void this.load();
 			return;
@@ -2105,7 +2106,7 @@ export class SurfacesStore {
 		}
 		const signal = this.#visitAbort.signal;
 		if (this.#options.signal.aborted || this.#suspended || signal.aborted) {
-			if (this.state.source === "loading") this.#loaded = undefined;
+			if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 			return;
 		}
 		if (client.isSurfacesEnabled) {
@@ -2113,7 +2114,7 @@ export class SurfacesStore {
 				const enabled = await client.isSurfacesEnabled(signal);
 				if (this.#options.signal.aborted) return;
 				if (signal.aborted) {
-					if (this.state.source === "loading") this.#loaded = undefined;
+					if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 					return;
 				}
 				if (!enabled) {
@@ -2124,7 +2125,7 @@ export class SurfacesStore {
 			} catch (error) {
 				if (this.#options.signal.aborted) return;
 				if (signal.aborted) {
-					if (this.state.source === "loading") this.#loaded = undefined;
+					if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 					return;
 				}
 				if (isMissingSurfaceRpcError(error) || isSurfacesDisabledError(error)) {
@@ -2133,7 +2134,7 @@ export class SurfacesStore {
 					return;
 				}
 				// WHY: Keep loading on transient network errors so Surfaces do not stay hidden or redirect home for the rest of the session.
-				this.#loaded = undefined;
+				if (this.#visitAbort.signal === signal) this.#loaded = undefined;
 				this.store.set({ source: "loading", error: describe(error) });
 				if (!this.#retryLoadTimer && !this.#suspended) {
 					this.#retryLoadTimer = setTimeout(() => {
@@ -2150,7 +2151,7 @@ export class SurfacesStore {
 			let surfaces = await client.listSurfaces(this.#options.companyId, signal);
 			if (this.#options.signal.aborted) return;
 			if (signal.aborted) {
-				if (this.state.source === "loading") this.#loaded = undefined;
+				if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 				return;
 			}
 			if (surfaces.length === 0 && client.bootstrapCompanySurfaces) {
@@ -2158,12 +2159,12 @@ export class SurfacesStore {
 					surfaces = await client.bootstrapCompanySurfaces(this.#options.companyId, signal);
 					if (this.#options.signal.aborted) return;
 					if (signal.aborted) {
-						if (this.state.source === "loading") this.#loaded = undefined;
+						if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 						return;
 					}
 				} catch (bootstrapError) {
 					if (this.#options.signal.aborted || signal.aborted) {
-						if (this.state.source === "loading") this.#loaded = undefined;
+						if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 						return;
 					}
 					if (!isMissingSurfaceRpcError(bootstrapError)) {
@@ -2179,7 +2180,7 @@ export class SurfacesStore {
 		} catch (error) {
 			if (this.#options.signal.aborted) return;
 			if (signal.aborted) {
-				if (this.state.source === "loading") this.#loaded = undefined;
+				if (this.state.source === "loading" && this.#visitAbort.signal === signal) this.#loaded = undefined;
 				return;
 			}
 			if (isSurfacesDisabledError(error)) {
