@@ -448,7 +448,8 @@ describe("rail sections and pins", () => {
 			}),
 			{ signal: company.signal },
 		);
-		await surfaces.open();
+		cleanup.push(() => surfaces.dispose());
+		await surfaces.load();
 		attachSurfaces(company, surfaces);
 		await ready;
 		draw();
