@@ -40,8 +40,8 @@ const activationRequires = Object.freeze([
 	],
 	[
 		"20260930935000_surface_app_host_server_hosting",
-		"#2492 (surface server and hybrid hosting): bundle 295 pairs with qorpera_surface_site_deployment_register",
-		"exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_surface_site_deployment_register')",
+		"#2492 (surface server and hybrid hosting): bundle 295 pairs with qorpera_surface_site_deployment_set_upstream",
+		"to_regprocedure('public.qorpera_surface_site_deployment_set_upstream(uuid,text)') is not null",
 	],
 	[
 		"20260930936000_surface_app_secrets_and_auth_unblock",
@@ -60,8 +60,8 @@ const activationRequires = Object.freeze([
 	],
 	[
 		"20260930939000_surface_inspect_receipt_and_activity_hygiene",
-		"#2500 (studio-inspect receipt hygiene): bundle 295 pairs with requires_company_revision exemption in qorpera_folder_complete_run_job",
-		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_complete_run_job(uuid,text,uuid,text,uuid,uuid,uuid,jsonb)')), ''), 'requires_company_revision') > 0",
+		"#2500 (studio-inspect receipt hygiene): bundle 295 pairs with 20260930939000 exemption in qorpera_folder_complete_run_job",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_complete_run_job(uuid,text,uuid,text,uuid,uuid,uuid,jsonb)')), ''), '20260930939000') > 0",
 	],
 	[
 		"20260930940000_git_http_remote_and_ops_telemetry",
