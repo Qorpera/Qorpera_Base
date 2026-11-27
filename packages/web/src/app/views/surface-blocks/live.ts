@@ -8,7 +8,7 @@ import {
 	splitSurfaceAsk,
 	surfaceAskPreviousParams,
 } from "@qorpera/contracts";
-import { presentationLocale, t, timeZoneOption } from "../../../ui/preferences.ts";
+import { phrase, presentationLocale, t, timeZoneOption } from "../../../ui/preferences.ts";
 import type { CompanyLiveSource } from "../../interface-apps.ts";
 
 const MAX_CATEGORIES = 120;
@@ -17,7 +17,53 @@ const MAX_SERIES = 16;
 const NUMBER_TEXT = /^-?\d+(?:\.\d+)?$/;
 const CODE_TEXT = /^0\d/;
 const DAY_TEXT = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/;
+const LOCAL_HOUR = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/;
+const ZONED_HOUR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/;
 const MONTH_TEXT = /^(\d{4})-(\d{2})$/;
+const WHOLE_FROM = 100;
+const GROUPED_FROM = 10_000;
+
+/* The fixed codes the qorpera questions answer with (migrations 20260930767000, 776000, 777000), by question and
+ * column, in plain words; a company's own databases keep their values as written. */
+const QORPERA_CODES: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
+	"money-now": {
+		state: {
+			none: phrase("Not connected"),
+			waiting: phrase("Waiting"),
+			current: phrase("Up to date"),
+			paused: phrase("Paused"),
+		},
+	},
+	"money-kinds": {
+		direction: { in: phrase("Money in"), out: phrase("Money out") },
+		kind: {
+			all: phrase("All"),
+			salaries: phrase("Salaries"),
+			taxes: phrase("Taxes and VAT"),
+			rent: phrase("Rent"),
+			utilities: phrase("Utilities"),
+			subscriptions: phrase("Subscriptions"),
+			fees: phrase("Card and app fees"),
+			other: phrase("Other"),
+		},
+	},
+	"orders-now": {
+		stripe: { none: phrase("Not connected"), live: phrase("Live"), waiting: phrase("Waiting") },
+	},
+	"orders-states": {
+		state: {
+			paid: phrase("Paid"),
+			packed: phrase("Packed"),
+			on_the_way: phrase("On the way"),
+			delivered: phrase("Delivered"),
+			cancelled: phrase("Cancelled"),
+			failed: phrase("Failed"),
+		},
+	},
+	"orders-sources": {
+		source: { stripe: phrase("Card payments"), added: phrase("Added by hand") },
+	},
+};
 
 export interface SurfaceLiveHosts {
 	readonly numbers?: CompanyLiveSource | undefined;
@@ -28,6 +74,7 @@ export type SurfaceAskState =
 	| { readonly state: "loading" }
 	| { readonly state: "answered"; readonly answer: CloudMemberDataAnswer }
 	| { readonly state: "refused" }
+	| { readonly state: "unconnected" }
 	| { readonly state: "unavailable" };
 
 export interface SurfaceAskHandle {
@@ -57,6 +104,18 @@ export function isRefusal(error: unknown): boolean {
 	return status === 404 || /\bNo question \S+ that you may read\b/i.test(error.message);
 }
 
+export function isUnconnected(error: unknown): boolean {
+	return error instanceof Error && /^Not connected\b/.test(error.message.trim());
+}
+
+export function codeWords(source: Pick<SurfaceAskSource, "ask">, column: string, value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const split = splitSurfaceAsk(source.ask);
+	if (split?.database !== "qorpera") return undefined;
+	const words = QORPERA_CODES[split.question]?.[column];
+	return words && Object.hasOwn(words, value) ? t(words[value]!) : undefined;
+}
+
 export function answerRecords(answer: CloudMemberDataAnswer): Record<string, unknown>[] {
 	return answer.rows.map((row) => Object.fromEntries(answer.columns.map((column, index) => [column, row[index]])));
 }
@@ -80,17 +139,30 @@ export function lastRecord(answer: CloudMemberDataAnswer): Record<string, unknow
 	return answerRecords(answer).at(-1);
 }
 
-export function figureText(value: unknown, grouping = true): string | undefined {
+function numberText(number: number, grouping: boolean): string {
+	return new Intl.NumberFormat(presentationLocale(), {
+		maximumFractionDigits: Math.abs(number) >= WHOLE_FROM ? 0 : 2,
+		useGrouping: grouping,
+	}).format(number);
+}
+
+export function figureText(value: unknown): string | undefined {
 	if (typeof value === "string" && CODE_TEXT.test(value.trim())) return value;
 	const number = answerNumber(value);
-	if (number !== null) {
-		return new Intl.NumberFormat(presentationLocale(), { maximumFractionDigits: 2, useGrouping: grouping }).format(
-			number,
-		);
-	}
+	if (number !== null) return numberText(number, true);
 	if (typeof value === "string") return value.trim() === "" ? undefined : value;
 	if (typeof value === "boolean") return String(value);
 	return undefined;
+}
+
+export function cellText(value: unknown): string | undefined {
+	if (typeof value === "string" && (CODE_TEXT.test(value.trim()) || /^-?\d+$/.test(value.trim()))) return value;
+	const number = answerNumber(value);
+	if (number !== null) {
+		const grouped = !Number.isInteger(number) || (typeof value === "number" && Math.abs(number) >= GROUPED_FROM);
+		return numberText(number, grouped);
+	}
+	return figureText(value);
 }
 
 export function withUnit(text: string, unit: string | undefined): string {
@@ -110,14 +182,52 @@ export function answerAge(answer: CloudMemberDataAnswer): string | undefined {
 	return t("As of {time}", { time });
 }
 
+interface HourText {
+	readonly day: string;
+	readonly time: string;
+}
+
+function hourOf(value: string): HourText | undefined {
+	const local = LOCAL_HOUR.exec(value);
+	if (local) return { day: local[1]!, time: local[2]! };
+	if (!ZONED_HOUR.test(value)) return undefined;
+	const at = new Date(value);
+	if (Number.isNaN(at.getTime())) return undefined;
+	const zone = timeZoneOption();
+	const parts = new Intl.DateTimeFormat("en-CA", {
+		year: "numeric",
+		month: "2-digit",
+		day: "2-digit",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+		...zone,
+	}).formatToParts(at);
+	const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? "";
+	return { day: `${part("year")}-${part("month")}-${part("day")}`, time: `${part("hour")}:${part("minute")}` };
+}
+
+function dayLabel(day: string): string {
+	const date = new Date(Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))));
+	return date.toLocaleDateString(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function hourLabels(keys: readonly string[]): string[] | undefined {
+	if (keys.every((key) => key.slice(11, 16) === "00:00")) return undefined;
+	const hours = keys.map(hourOf);
+	if (hours.length === 0 || hours.some((hour) => hour === undefined)) return undefined;
+	return hours.map((hour, at) => {
+		const { day, time } = hour!;
+		if (at > 0 && hours[at - 1]!.day === day) return time;
+		return time === "00:00" ? dayLabel(day) : `${dayLabel(day)} ${time}`;
+	});
+}
+
 function categoryText(value: unknown): string | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return String(value);
 	if (typeof value !== "string" || value.trim() === "") return undefined;
 	const day = DAY_TEXT.exec(value);
-	if (day) {
-		const date = new Date(Date.UTC(Number(day[1]), Number(day[2]) - 1, Number(day[3])));
-		return date.toLocaleDateString(presentationLocale(), { day: "numeric", month: "short", timeZone: "UTC" });
-	}
+	if (day) return dayLabel(`${day[1]}-${day[2]}-${day[3]}`);
 	const month = MONTH_TEXT.exec(value);
 	if (month) {
 		const date = new Date(Date.UTC(Number(month[1]), Number(month[2]) - 1, 1));
@@ -181,18 +291,19 @@ export function answerChart(answer: CloudMemberDataAnswer, source: SurfaceAskSou
 		return line;
 	};
 	const split = source.series !== undefined && ys.length === 1 ? source.series : undefined;
-	for (const y of ys) if (!split) lineOf(y, seriesTitle(y));
+	const named = (name: string) => (source.estimate === true ? t("{name} (estimate)", { name }) : name);
+	for (const y of ys) if (!split) lineOf(y, named(seriesTitle(y)));
 	for (const row of records) {
 		const at = index.get(String(row[x]));
 		if (at === undefined) continue;
 		if (split) {
 			const value = row[split];
 			const key = value === null || value === undefined ? "" : String(value);
-			const line = lineOf(key, key === "" ? "–" : key.slice(0, 80));
+			const line = lineOf(key, named(key === "" ? "–" : (codeWords(source, split, value) ?? key).slice(0, 80)));
 			if (line) line.data[at] = answerNumber(row[ys[0]!]);
 		} else {
 			for (const y of ys) {
-				const line = lineOf(y, seriesTitle(y));
+				const line = lineOf(y, named(seriesTitle(y)));
 				if (line) line.data[at] = answerNumber(row[y]);
 			}
 		}
@@ -200,16 +311,21 @@ export function answerChart(answer: CloudMemberDataAnswer, source: SurfaceAskSou
 	const shown = kind === "pie" || kind === "funnel" ? lines.slice(0, 1) : lines;
 	if (kept.length === 0 || shown.length === 0) return null;
 	if (!shown.some((line) => line.data.some((value) => value !== null))) return null;
+	const hours = hourLabels(kept);
 	const doc = parseSurfaceChartDocument({
 		kind,
-		categories: kept.map((key) => categoryText(key)),
-		series: shown.map((line) => ({ name: line.name, data: line.data.slice(-MAX_POINTS) })),
+		categories: hours ?? kept.map((key) => codeWords(source, x, key) ?? categoryText(key)),
+		series: shown.map((line) => ({
+			name: line.name,
+			data: line.data.slice(-MAX_POINTS),
+			...(source.estimate === true ? { estimate: true } : {}),
+		})),
 		...(source.stacked === true && (kind === "bar" || kind === "area" || kind === "line") ? { stacked: true } : {}),
 		...(source.unit !== undefined ? { unit: source.unit } : {}),
 		...(kind === "area" || kind === "line" ? { smooth: true } : {}),
 	});
 	if (!doc) return null;
-	const dayKeys = kept.map((key) => DAY_TEXT.exec(key)?.slice(1, 4).join("-"));
+	const dayKeys = kept.map((key) => (hours ? undefined : DAY_TEXT.exec(key)?.slice(1, 4).join("-")));
 	const first = dayKeys[0];
 	const last = dayKeys.at(-1);
 	const days =
@@ -254,6 +370,7 @@ interface AskEntry {
 }
 
 const UNAVAILABLE: SurfaceAskState = { state: "unavailable" };
+const UNCONNECTED: SurfaceAskState = { state: "unconnected" };
 const LOADING: SurfaceAskState = { state: "loading" };
 
 export class SurfaceAsks {
@@ -301,7 +418,7 @@ export class SurfaceAsks {
 		const asked = askQuestion(source);
 		const key = asked ? askKey(asked) : `!${source.ask}`;
 		const known = this.#entries.get(key);
-		if (known?.started && known.source && known.state === UNAVAILABLE) {
+		if (known?.started && known.source && (known.state === UNAVAILABLE || known.state === UNCONNECTED)) {
 			known.started = false;
 			this.#set(known, LOADING);
 		}
@@ -339,7 +456,7 @@ export class SurfaceAsks {
 		const page = this.#page.signal;
 		const failed = (error: unknown) => {
 			if (page.aborted) return;
-			this.#set(entry, isRefusal(error) ? { state: "refused" } : UNAVAILABLE);
+			this.#set(entry, isRefusal(error) ? { state: "refused" } : isUnconnected(error) ? UNCONNECTED : UNAVAILABLE);
 		};
 		if (entry.parent !== undefined) {
 			source.query(entry.asked, page).then((answer) => this.#set(entry, { state: "answered", answer }), failed);
@@ -358,7 +475,7 @@ export class SurfaceAsks {
 				},
 				(error: unknown) => {
 					if (page.aborted) return;
-					if (isRefusal(error)) {
+					if (isRefusal(error) || isUnconnected(error)) {
 						failed(error);
 						return;
 					}

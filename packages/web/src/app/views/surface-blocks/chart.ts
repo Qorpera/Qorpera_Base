@@ -15,6 +15,7 @@ import type * as ChartEngine from "./chart-engine.ts";
 import {
 	homeEmpty,
 	homeLocked,
+	homeUnconnected,
 	homeUnknown,
 	type SurfaceBlockContext,
 	type SurfaceBlockPrepared,
@@ -300,6 +301,10 @@ function liveChart(
 		if (!shaped) clear();
 		if (state.state === "refused") {
 			body.replaceChildren(homeLocked());
+			return;
+		}
+		if (state.state === "unconnected") {
+			body.replaceChildren(homeUnconnected());
 			return;
 		}
 		if (state.state === "unavailable") {

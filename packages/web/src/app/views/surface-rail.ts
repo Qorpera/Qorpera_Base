@@ -36,7 +36,7 @@ import { surfaceHash } from "../router.ts";
 import {
 	type SurfaceLook,
 	surfaceFigureOf,
-	surfaceKindSubtitle,
+	surfaceSubtitleOf,
 	surfaceLookOf,
 	surfaceTint,
 } from "../surface-kinds.ts";
@@ -142,7 +142,7 @@ function surfaceSubtitle(surface: SurfaceSummary, look: SurfaceLook, site: SiteA
 		const host = hostOf(surface.liveUrl);
 		return site === "live" ? t("Live · {host}", { host }) : site === "private" ? t("Not live yet") : host;
 	}
-	return surfaceKindSubtitle(look.kind);
+	return surfaceSubtitleOf(surface, look);
 }
 
 function setRowActive(row: HTMLElement, active: boolean): void {

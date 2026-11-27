@@ -19,6 +19,7 @@ import {
 } from "./context.ts";
 import {
 	answerAge,
+	codeWords,
 	figureText,
 	lastRecord,
 	pickFigure,
@@ -32,6 +33,7 @@ interface Fact {
 	readonly value?: string;
 	readonly changed: boolean;
 	readonly live?: SurfaceAskHandle | undefined;
+	readonly source?: SurfaceAskSource;
 	readonly pick?: string;
 	readonly unit?: string | undefined;
 }
@@ -67,8 +69,14 @@ function lockedMark(): HTMLElement {
 	return h("span", { class: "studio-fact-lock", role: "img", "aria-label": t("Not shared with you") }, icon("lock"));
 }
 
-function drawFigure(dd: HTMLElement, state: SurfaceAskState, pick: string, unit: string | undefined): void {
-	dd.classList.remove("is-loading", "is-locked", "is-unknown");
+function drawFigure(
+	dd: HTMLElement,
+	state: SurfaceAskState,
+	source: SurfaceAskSource,
+	pick: string,
+	unit: string | undefined,
+): void {
+	dd.classList.remove("is-loading", "is-locked", "is-unconnected", "is-unknown");
 	dd.removeAttribute("title");
 	if (state.state === "loading") {
 		dd.classList.add("is-loading");
@@ -81,13 +89,20 @@ function drawFigure(dd: HTMLElement, state: SurfaceAskState, pick: string, unit:
 		dd.replaceChildren(lockedMark());
 		return;
 	}
+	if (state.state === "unconnected") {
+		dd.classList.add("is-unconnected");
+		dd.title = t("Not connected yet");
+		dd.replaceChildren("–");
+		return;
+	}
 	if (state.state === "unavailable") {
 		dd.classList.add("is-unknown");
 		dd.replaceChildren("?");
 		return;
 	}
-	const figure = figureText(pickFigure(state.answer, pick));
-	const text = figure === undefined ? "–" : withUnit(figure, unit);
+	const value = pickFigure(state.answer, pick);
+	const figure = figureText(value);
+	const text = codeWords(source, pick, value) ?? (figure === undefined ? "–" : withUnit(figure, unit));
 	const age = answerAge(state.answer);
 	dd.title = age ? `${text} · ${age}` : text;
 	dd.replaceChildren(text);
@@ -121,6 +136,11 @@ function liveFacts(
 			list.replaceChildren(...placeholders(loadingMark, "is-loading"));
 			return;
 		}
+		if (state.state === "unconnected") {
+			holder.title = t("Not connected yet");
+			list.replaceChildren(...placeholders(() => "–", "is-unconnected"));
+			return;
+		}
 		if (state.state === "unavailable") {
 			list.replaceChildren(...placeholders(() => "?", "is-unknown"));
 			return;
@@ -130,6 +150,8 @@ function liveFacts(
 			record &&
 				Object.fromEntries(
 					Object.entries(record).map(([key, value]) => {
+						const words = codeWords(source, key, value);
+						if (words !== undefined) return [key, words];
 						const figure = figureText(value);
 						return [key, figure === undefined ? value : withUnit(figure, source.unit)];
 					}),
@@ -185,6 +207,7 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 					label: ctx.words(item.label),
 					changed: false,
 					live: ctx.ask?.(item.from),
+					source: item.from,
 					pick: item.from.pick ?? "",
 					unit: item.from.unit,
 				};
@@ -221,11 +244,12 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 						{ class: `studio-facts${filled ? "" : " is-empty"}${live ? " is-live" : ""}` },
 						facts.map((fact) => {
 							let dd: HTMLElement;
-							if (fact.pick !== undefined) {
+							if (fact.pick !== undefined && fact.source !== undefined) {
 								dd = h("dd");
-								const { pick, unit } = fact;
-								if (fact.live) fact.live.follow((state) => drawFigure(dd, state, pick, unit), signal);
-								else drawFigure(dd, { state: "unavailable" }, pick, unit);
+								const { pick, source, unit } = fact;
+								if (fact.live)
+									fact.live.follow((state) => drawFigure(dd, state, source, pick, unit), signal);
+								else drawFigure(dd, { state: "unavailable" }, source, pick, unit);
 							} else {
 								dd =
 									fact.value !== undefined

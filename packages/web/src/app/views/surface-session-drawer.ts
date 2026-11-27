@@ -103,6 +103,10 @@ function approveFace(text: string, shown: boolean, confirm: boolean, glyph?: str
 	);
 }
 
+function approveName(rest: string, armed: boolean): string {
+	return armed ? t("Confirm") : rest;
+}
+
 export function approveLabel(rest: string, armed: boolean, glyph?: string): HTMLElement {
 	return h(
 		"span",
@@ -1085,6 +1089,10 @@ export class SurfaceSessionDrawer {
 							{
 								type: "button",
 								class: `surface-overview-act surface-approve-btn surface-approve-all${armedAll ? " is-confirming" : ""}`,
+								"aria-label": approveName(
+									t("Approve all {count}", { count: approvableCount }),
+									armedAll,
+								),
 								"data-act": "approve-shown",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},
@@ -1901,6 +1909,12 @@ export class SurfaceSessionDrawer {
 							{
 								type: "button",
 								class: `btn btn-small surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"aria-label": approveName(
+									look.kind === "inbox"
+										? t("Send all {count}", { count: openActions.length })
+										: t("Approve all {count}", { count: openActions.length }),
+									armedAll,
+								),
 								"data-act": "approve-all",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},
@@ -2078,6 +2092,7 @@ export class SurfaceSessionDrawer {
 							{
 								type: "button",
 								class: `surface-changes-approve surface-approve-btn${armedAll ? " is-confirming" : ""}`,
+								"aria-label": approveName(t("Approve all"), armedAll),
 								"data-act": "approve-all",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},

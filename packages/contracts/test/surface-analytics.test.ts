@@ -5,6 +5,7 @@ import {
 	inferSurfaceKind,
 	isSurfaceAskSource,
 	liftSurfaceColorForDark,
+	parseSurfaceChartDocument,
 	parseSurfaceLayout,
 	readSurfaceLayout,
 	resolveSurfaceChartColors,
@@ -139,7 +140,7 @@ describe("an ask source", () => {
 		[
 			"with a key it does not take",
 			chart({ ask: "qorpera/orders-days", x: "day", y: "orders", versus: "last-month" }),
-			"has a field that an ask does not take; its fields are ask, params, pick, x, y, series, kind, stacked, unit, against",
+			"has a field that an ask does not take; its fields are ask, params, pick, x, y, series, kind, stacked, unit, against, estimate",
 		],
 		[
 			"a chart without x",
@@ -226,6 +227,25 @@ describe("an ask source", () => {
 		}
 	});
 
+	it("lets a chart's ask be an estimate, drawn dashed, and a chart file's series too", () => {
+		expect(firstBlock(layoutWith([chart({ ask: "a/b", x: "d", y: "v", estimate: true })]))).toMatchObject({
+			from: { estimate: true },
+		});
+		expect(firstBlock(layoutWith([chart({ ask: "a/b", x: "d", y: "v", estimate: false })]))).toMatchObject({
+			from: { estimate: false },
+		});
+		expect(SURFACE_ASK_FORMAT).toContain("estimate true draws it dashed, as an estimate");
+		const doc = parseSurfaceChartDocument({
+			kind: "line",
+			series: [
+				{ name: "Sold", data: [1, 2] },
+				{ name: "Expected", data: [2, 3], estimate: true },
+				{ name: "Loose", data: [2, 3], estimate: "yes" },
+			],
+		});
+		expect(doc?.series?.map((series) => series.estimate)).toEqual([undefined, true, undefined]);
+	});
+
 	it.each<[string, unknown, string]>([
 		[
 			"a kind it does not draw",
@@ -233,6 +253,17 @@ describe("an ask source", () => {
 			".from.kind must be one of line, area, bar, pie, funnel",
 		],
 		["stacked as text", chart({ ask: "a/b", x: "d", y: "v", stacked: "yes" }), ".from.stacked must be true or false"],
+		["estimate as text", chart({ ask: "a/b", x: "d", y: "v", estimate: "yes" }), ".from.estimate must be true or false"],
+		[
+			"estimate on a figure",
+			{ type: "facts", items: [{ label: "A", from: { ask: "a/b", pick: "v", estimate: true } }] },
+			"items[0].from.estimate is not taken by a figure's ask; it takes pick, unit",
+		],
+		[
+			"estimate on a table",
+			{ type: "table", from: { ask: "a/b", estimate: true } },
+			".from.estimate is not taken by table.from's ask",
+		],
 		[
 			"a long unit",
 			chart({ ask: "a/b", x: "d", y: "v", unit: "kroner-per-day" }),
