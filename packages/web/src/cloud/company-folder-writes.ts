@@ -205,6 +205,7 @@ export async function rewriteStateFile(
 	options: {
 		readonly locate: () => Promise<string | null>;
 		readonly rewrite: (text: string, path: string) => string | null;
+		readonly beforeWrite?: (file: CompanyStateFile, path: string) => Promise<void>;
 		readonly key: () => string;
 		readonly gone: string;
 		readonly failure: string;
@@ -225,6 +226,10 @@ export async function rewriteStateFile(
 		if (text === null) return false;
 		const parsed = parseStateFile(path, text);
 		if (!parsed.ok) throw invalid(options.failure, parsed.problems);
+		if (options.beforeWrite) {
+			await options.beforeWrite(parsed.file, path);
+			check();
+		}
 		options.sent?.(true);
 		const result = await commitUnit(
 			folder,

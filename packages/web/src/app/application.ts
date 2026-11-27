@@ -1546,7 +1546,11 @@ export function mountApplication(
 				};
 				const withLegacyRoutine = async (
 					signal: AbortSignal,
-					run: (routines: ReturnType<typeof createWebRoutines>) => Promise<void>,
+					run: (
+						routines: ReturnType<typeof createWebRoutines>,
+						scopeSignal: AbortSignal,
+						current: () => void,
+					) => Promise<void>,
 				): Promise<void> => {
 					await withAbortScopes([controller.signal, signal], async (scopeSignal) => {
 						const current = () => {
@@ -1575,7 +1579,7 @@ export function mountApplication(
 								current,
 							).folder();
 						});
-						await run(routines);
+						await run(routines, scopeSignal, current);
 					});
 				};
 				const surfaces = new SurfacesStore({
@@ -1633,7 +1637,21 @@ export function mountApplication(
 					loadCloudFiles: loadSurfaceCloudFiles,
 					readCloudBinary: readSurfaceCloudBinary,
 					renameLegacyRoutine: (routineId, clientRoutineId, title, signal) =>
-						withLegacyRoutine(signal, (routines) => routines.rename(routineId, clientRoutineId, title)),
+						withLegacyRoutine(signal, (routines, scopeSignal, current) =>
+							routines.rename(routineId, clientRoutineId, title, {
+								userId: controller.userId,
+								accounts: async () =>
+									(
+										await createWebNativeSubscription(
+											cloud,
+											controller.profile.profileId,
+											controller.userId,
+											scopeSignal,
+											current,
+										).listConnections()
+									).connections,
+							}),
+						),
 					deleteLegacyRoutine: (routineId, clientRoutineId, signal) =>
 						withLegacyRoutine(signal, (routines) => routines.delete(routineId, clientRoutineId)),
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {

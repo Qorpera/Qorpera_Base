@@ -145,6 +145,11 @@ export type WebRoutineLoginRefusal =
 	| "sign_in"
 	| "plan_listener";
 
+export interface WebRoutineRenameOptions {
+	readonly userId: string;
+	readonly accounts: () => Promise<readonly WebMemberConnection[]>;
+}
+
 export interface WebRoutines {
 	list(): Promise<WebRoutine[]>;
 	runs(): Promise<CloudRoutineOccurrence[]>;
@@ -176,7 +181,7 @@ export interface WebRoutines {
 	 * first, as a save's, then the pick. A routine that waited for a login runs again. The same null as `payer`; a
 	 * refusal is a `WebRoutineLoginRefusedError`. */
 	setLogin(routineId: string, account: WebMemberConnection): Promise<WebRoutinePayer | null>;
-	rename(routineId: string, clientRoutineId: string, title: string): Promise<void>;
+	rename(routineId: string, clientRoutineId: string, title: string, options: WebRoutineRenameOptions): Promise<void>;
 	delete(routineId: string, clientRoutineId: string): Promise<void>;
 }
 
@@ -875,20 +880,92 @@ export function createWebRoutines(
 				routineId,
 			);
 		},
-		async rename(routineId, clientRoutineId, title) {
+		async rename(routineId, clientRoutineId, title, options) {
 			const from = folder();
 			const nextTitle = title.trim();
 			const matchesRoutine = (id: string) => id === routineId || id === clientRoutineId;
+			let currentPayer: WebRoutinePayer | null = null;
+			let loadedConnections: readonly WebMemberConnection[] | undefined;
+			const sponsored = new Map<string, Promise<void>>();
+			const ensureSponsored = async (account: WebMemberConnection) => {
+				const cacheKey = `${account.connectionId}:${account.connectionVersion}`;
+				let pending = sponsored.get(cacheKey);
+				if (!pending) {
+					pending = sponsor(account).catch((error) => {
+						sponsored.delete(cacheKey);
+						throw error;
+					});
+					sponsored.set(cacheKey, pending);
+				}
+				await pending;
+			};
 			await rewriteStateFile(
 				from,
 				{
-					locate: () => findRoutinePath(from, routineId),
+					locate: async () => {
+						const payerInfo = await payerCall(
+							"qorpera_get_routine_payer",
+							{ p_routine_id: routineId },
+							routineId,
+						);
+						check();
+						if (!payerInfo) throw new WebRoutineNoPayerError("This routine cannot be renamed here.");
+						if (
+							payerInfo.status === "expired" ||
+							payerInfo.status === "concluded" ||
+							payerInfo.status === "retired"
+						)
+							throw new WebRoutineEndedError("This routine has ended.");
+						const serves =
+							payerInfo.connectionId !== null &&
+							(payerInfo.payer === "company" ||
+								(payerInfo.payer === "member" && payerInfo.payerUserId === options.userId));
+						if (!serves)
+							throw new WebRoutineNoPayerError("Another member's model account pays for this routine.");
+						if (payerInfo.status === "active" && payerInfo.payer === "company" && !payerInfo.canPay)
+							throw new WebRoutineNoPayerError(
+								"The model account paying for this routine cannot pay right now.",
+							);
+						currentPayer = payerInfo;
+						return findRoutinePath(from, routineId);
+					},
 					rewrite: (text, at) => {
 						const parsed = parseStateFile(at, text);
 						if (!parsed.ok || parsed.file.kind !== "routine" || !matchesRoutine(parsed.file.id))
 							throw new WebRoutineChangedError("This routine's file has changed.");
 						if (parsed.file.status === "concluded") throw new WebRoutineEndedError("This routine has ended.");
+						if (
+							currentPayer?.status === "paused" &&
+							currentPayer.pauseReason === "needs_model_account" &&
+							parsed.file.status === "active"
+						)
+							throw new WebRoutineNoPayerError("Choose a model account that can pay for this routine.");
 						return parsed.file.title === nextTitle ? null : setCompanyStateSettings(text, { title: nextTitle });
+					},
+					beforeWrite: async (file) => {
+						if (file.kind !== "routine" || !currentPayer || currentPayer.payer !== "member") return;
+						const listening =
+							file.trigger.when !== "every" &&
+							file.trigger.when !== "weekly" &&
+							file.trigger.when !== "window" &&
+							file.trigger.when !== "once";
+						loadedConnections ??= await options.accounts();
+						check();
+						const account = latestVersions(loadedConnections).find(
+							(item) => item.connectionId === currentPayer!.connectionId,
+						);
+						const accountCanPay =
+							account !== undefined &&
+							account.connectionStatus === "active" &&
+							account.authorizationState === "active" &&
+							canPayForRoutine(account, listening);
+						if (currentPayer.status === "active" && !accountCanPay)
+							throw new WebRoutineNoPayerError(
+								account && planLogin(account) && listening
+									? LISTENER_ON_PLAN
+									: "Choose a model account that can pay for this routine.",
+							);
+						if (accountCanPay) await ensureSponsored(account);
 					},
 					key: () => `web:routine-rename:${routineId}:${crypto.randomUUID()}`,
 					gone: "This routine has no file you can change.",

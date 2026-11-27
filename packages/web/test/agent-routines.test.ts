@@ -37,6 +37,7 @@ import {
 	type WebRoutineFile,
 	WebRoutineGoneError,
 	WebRoutineLoginRefusedError,
+	WebRoutineNoPayerError,
 	type WebRoutinePayer,
 	type WebRoutines,
 } from "../src/cloud/routines.ts";
@@ -3343,30 +3344,46 @@ describe("who pays for a routine (20260930095000)", () => {
 
 describe("WebRoutines.rename and WebRoutines.delete", () => {
 	const EVENT_HOOK = "10000000-0000-4000-8000-000000000099";
-
-	it("renames a schedule or listener routine file in place, keeping other fields and retrying version_changed", async () => {
-		const fake = seeded({
-			text: routineText({
-				status: "paused",
-				trigger: { when: "event", hook: EVENT_HOOK, only: null },
-				timezone: "Europe/Copenhagen",
-			}),
+	const VIEWER_ID = "10000000-0000-4000-8000-0000000000a1";
+	const TEAMMATE_ID = "10000000-0000-4000-8000-0000000000a2";
+	const PAYER_RPC = "qorpera_get_routine_payer";
+	const payerRow = (overrides: Record<string, unknown> = {}) => ({
+		schema: "qorpera.routine-payer/v1",
+		routineId: ROUTINE_ID,
+		routineVersion: 1,
+		status: "active",
+		pauseReason: null,
+		connectionId: account.connectionId,
+		payer: "member",
+		payerUserId: VIEWER_ID,
+		savedByUserId: VIEWER_ID,
+		canPay: true,
+		waitsFor: null,
+		since: "2026-09-17T06:00:00.000Z",
+		changedByUserId: null,
+		changeReason: null,
+		...overrides,
+	});
+	const withPayer = (
+		fake: FolderFake,
+		getPayer: () => unknown = () => payerRow(),
+		rows: () => unknown[] = () => [],
+	) =>
+		writer(fake, rows, (name) => {
+			if (name === PAYER_RPC) return getPayer();
+			throw new Error(`Unexpected call ${name}`);
 		});
-		const w = writer(fake);
+
+	it("sponsors the member's own login before committing an active rename, keeps other fields, retries version_changed, and skips no-op writes", async () => {
+		const fake = seeded({ text: routineText({ status: "active" }) });
+		const w = withPayer(fake);
+		const accounts = vi.fn(async () => [account]);
 		const originalCommit = fake.folder.commit.getMockImplementation()!;
 		let conflicted = false;
 		fake.folder.commit.mockImplementation(async (key, units, signal) => {
 			if (!conflicted) {
 				conflicted = true;
-				fake.put(
-					PATH,
-					routineText({
-						status: "paused",
-						trigger: { when: "event", hook: EVENT_HOOK, only: null },
-						timezone: "Europe/Copenhagen",
-						instructions: "Updated by agent meanwhile.",
-					}),
-				);
+				fake.put(PATH, routineText({ status: "active", instructions: "Updated by agent meanwhile." }));
 				return {
 					commitId: "10000000-0000-4000-8000-0000000000c1",
 					seq: 0,
@@ -3388,17 +3405,161 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 			return originalCommit(key, units, signal);
 		});
 
-		await w.routines.rename(ROUTINE_ID, FILE_ID, "  Answer Brooks mail  ");
+		await w.routines.rename(ROUTINE_ID, FILE_ID, "  Daily brief  ", { userId: VIEWER_ID, accounts });
 		const after = parsed(fake.text(PATH));
-		expect(after.title).toBe("Answer Brooks mail");
-		expect(after.status).toBe("paused");
-		expect(after.trigger).toEqual({ when: "event", hook: EVENT_HOOK, only: null });
+		expect(after.title).toBe("Daily brief");
+		expect(after.status).toBe("active");
 		expect(after.instructions).toBe("Updated by agent meanwhile.");
-		expect(fake.folder.commit).toHaveBeenCalledTimes(2);
+		expect(w.log).toEqual([PAYER_RPC, CONSENT, SPONSOR, "commit", PAYER_RPC, "commit"]);
+		expect(accounts).toHaveBeenCalledTimes(1);
 
-		fake.folder.commit.mockClear();
-		await w.routines.rename(ROUTINE_ID, FILE_ID, "Answer Brooks mail");
-		expect(fake.folder.commit).not.toHaveBeenCalled();
+		w.log.length = 0;
+		await w.routines.rename(ROUTINE_ID, FILE_ID, "Daily brief", { userId: VIEWER_ID, accounts });
+		expect(w.log).toEqual([PAYER_RPC]);
+		expect(accounts).toHaveBeenCalledTimes(1);
+	});
+
+	it("renames a paused listener routine paid by the member and a company-paid active routine without swapping payer", async () => {
+		const planAccount = {
+			...account,
+			provider: "openai-codex",
+			authenticationMode: "chatgpt_subscription",
+			allowAutonomous: false,
+		} as unknown as NativeMemberConnection;
+		const pausedFake = seeded({
+			text: routineText({
+				status: "paused",
+				trigger: { when: "event", hook: EVENT_HOOK, only: null },
+				timezone: "Europe/Copenhagen",
+			}),
+		});
+		const pausedWriter = withPayer(pausedFake, () =>
+			payerRow({ status: "paused", pauseReason: "member", canPay: false, waitsFor: "login" }),
+		);
+		await pausedWriter.routines.rename(ROUTINE_ID, FILE_ID, "Answer Brooks mail", {
+			userId: VIEWER_ID,
+			accounts: async () => [planAccount],
+		});
+		const renamed = parsed(pausedFake.text(PATH));
+		expect(renamed.title).toBe("Answer Brooks mail");
+		expect(renamed.status).toBe("paused");
+		expect(renamed.trigger).toEqual({ when: "event", hook: EVENT_HOOK, only: null });
+		expect(pausedWriter.log).toEqual([PAYER_RPC, "commit"]);
+
+		const companyFake = seeded({ text: routineText({ status: "active" }) });
+		const companyAccounts = vi.fn(async () => [account]);
+		const companyWriter = withPayer(companyFake, () =>
+			payerRow({ payer: "company", payerUserId: null, canPay: true }),
+		);
+		await companyWriter.routines.rename(ROUTINE_ID, FILE_ID, "Company brief", {
+			userId: VIEWER_ID,
+			accounts: companyAccounts,
+		});
+		expect(parsed(companyFake.text(PATH)).title).toBe("Company brief");
+		expect(companyAccounts).not.toHaveBeenCalled();
+		expect(companyWriter.log).toEqual([PAYER_RPC, "commit"]);
+	});
+
+	it("refuses renaming another member's routine, an unpaid active routine, a needs_model_account routine, an unavailable payer RPC, or an ended routine", async () => {
+		const teammateFake = seeded({ text: routineText({ status: "active" }) });
+		const teammateWriter = withPayer(teammateFake, () =>
+			payerRow({ payer: "member", payerUserId: TEAMMATE_ID, savedByUserId: TEAMMATE_ID }),
+		);
+		await expect(
+			teammateWriter.routines.rename(ROUTINE_ID, FILE_ID, "Hijacked", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineNoPayerError);
+		expect(teammateFake.folder.commit).not.toHaveBeenCalled();
+
+		const noLoginFake = seeded({ text: routineText({ status: "active" }) });
+		const noLoginWriter = withPayer(noLoginFake);
+		await expect(
+			noLoginWriter.routines.rename(ROUTINE_ID, FILE_ID, "Would pause", {
+				userId: VIEWER_ID,
+				accounts: async () => [],
+			}),
+		).rejects.toThrow(WebRoutineNoPayerError);
+		expect(noLoginFake.folder.commit).not.toHaveBeenCalled();
+
+		const companyUnpaidFake = seeded({ text: routineText({ status: "active" }) });
+		const companyUnpaidWriter = withPayer(companyUnpaidFake, () =>
+			payerRow({ payer: "company", payerUserId: null, canPay: false, waitsFor: "usage_limit" }),
+		);
+		await expect(
+			companyUnpaidWriter.routines.rename(ROUTINE_ID, FILE_ID, "Would pause company", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineNoPayerError);
+		expect(companyUnpaidFake.folder.commit).not.toHaveBeenCalled();
+
+		const waitingFake = seeded({ text: routineText({ status: "active" }) });
+		const waitingWriter = withPayer(waitingFake, () =>
+			payerRow({ status: "paused", pauseReason: "needs_model_account", canPay: false, waitsFor: "login" }),
+		);
+		await expect(
+			waitingWriter.routines.rename(ROUTINE_ID, FILE_ID, "Would resume", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineNoPayerError);
+		expect(waitingFake.folder.commit).not.toHaveBeenCalled();
+
+		const missingRpcFake = seeded({ text: routineText({ status: "active" }) });
+		const missingRpcWriter = writer(missingRpcFake, () => [], (name) => {
+			if (name === PAYER_RPC)
+				throw new CloudRpcError(PAYER_RPC, { message: "Could not find the function", code: "PGRST202" }, 404);
+			throw new Error(`Unexpected call ${name}`);
+		});
+		await expect(
+			missingRpcWriter.routines.rename(ROUTINE_ID, FILE_ID, "Old cloud", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineNoPayerError);
+		expect(missingRpcFake.folder.commit).not.toHaveBeenCalled();
+
+		const expiredFake = seeded({ text: routineText({ status: "active" }) });
+		const expiredWriter = withPayer(expiredFake, () => payerRow({ status: "expired" }));
+		await expect(
+			expiredWriter.routines.rename(ROUTINE_ID, FILE_ID, "Would revive", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineEndedError);
+		expect(expiredFake.folder.commit).not.toHaveBeenCalled();
+
+		const retryExpiredFake = seeded({ text: routineText({ status: "active" }) });
+		let reads = 0;
+		const retryExpiredWriter = withPayer(retryExpiredFake, () =>
+			payerRow({ status: reads++ === 0 ? "active" : "expired" }),
+		);
+		retryExpiredFake.folder.commit.mockResolvedValueOnce({
+			commitId: "10000000-0000-4000-8000-0000000000c3",
+			seq: 0,
+			replay: false,
+			units: [
+				{
+					unit: 0,
+					op: "write",
+					path: PATH,
+					to: null,
+					version: null,
+					outcome: "conflict",
+					reason: "version_changed",
+					problems: [],
+				},
+			],
+		});
+		await expect(
+			retryExpiredWriter.routines.rename(ROUTINE_ID, FILE_ID, "Expired mid-retry", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineEndedError);
+		expect(retryExpiredFake.folder.commit).toHaveBeenCalledTimes(1);
 	});
 
 	it("accepts a routine file whose frontmatter id matches routineId and refuses a different or concluded routine", async () => {
@@ -3420,23 +3581,35 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 		);
 		byRoutineId.mkdir(ROUTINES);
 		byRoutineId.put(PATH, routineText({ id: ROUTINE_ID, title: "Old title" }));
-		const w1 = writer(byRoutineId);
-		await w1.routines.rename(ROUTINE_ID, FILE_ID, "New title");
+		const w1 = withPayer(byRoutineId);
+		await w1.routines.rename(ROUTINE_ID, FILE_ID, "New title", {
+			userId: VIEWER_ID,
+			accounts: async () => [account],
+		});
 		expect(parsed(byRoutineId.text(PATH)).title).toBe("New title");
 
 		const concludedFake = seeded({ text: routineText({ status: "concluded", conclusion: "Done." }) });
-		await expect(writer(concludedFake).routines.rename(ROUTINE_ID, FILE_ID, "After")).rejects.toThrow(
-			WebRoutineEndedError,
-		);
+		const concludedWriter = withPayer(concludedFake, () => payerRow({ status: "concluded" }));
+		await expect(
+			concludedWriter.routines.rename(ROUTINE_ID, FILE_ID, "After", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineEndedError);
 
 		const swappedFake = seeded({ text: routineText({ id: OTHER_FILE }) });
-		const swapped = writer(swappedFake);
+		const swapped = withPayer(swappedFake);
 		swappedFake.folder.stateFolders.mockResolvedValueOnce({
 			agents: [{ staffAgentId: staff.id, file: AGENT_PATH }],
 			groups: [],
 			routines: [{ routineId: ROUTINE_ID, staffAgentId: staff.id, file: PATH }],
 		});
-		await expect(swapped.routines.rename(ROUTINE_ID, FILE_ID, "Wrong")).rejects.toThrow(WebRoutineChangedError);
+		await expect(
+			swapped.routines.rename(ROUTINE_ID, FILE_ID, "Wrong", {
+				userId: VIEWER_ID,
+				accounts: async () => [account],
+			}),
+		).rejects.toThrow(WebRoutineChangedError);
 	});
 
 	it("deletes a routine file, retries version_changed, handles already-retired routines, and refuses unbacked active or swapped files", async () => {
