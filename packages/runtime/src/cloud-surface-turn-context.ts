@@ -636,7 +636,9 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 			`Repository subfolder: ${repositorySubpath} (scope app edits, preview builds, and checks to this subfolder unless shared monorepo files require coordinated updates)`,
 		);
 	}
-	if (defaultBranch && defaultBranch !== "main") headerLines.push(`Target branch: ${defaultBranch}`);
+	if (defaultBranch && defaultBranch !== "main") {
+		headerLines.push(`Upstream branch: ${defaultBranch} (local changes land on main)`);
+	}
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
 
 	const isFolderOnly = Boolean(folderRoot && !repositoryKey);

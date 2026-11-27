@@ -1159,7 +1159,7 @@ describe("editing the platform subdomain", () => {
 	});
 
 	it("lets owners and admins switch code source repository, subfolder, and branch from the address sheet", async () => {
-		const saved: { repositoryKey: string; repositorySubpath?: string | null; defaultBranch?: string }[] = [];
+		const saved: { repositoryKey: string; repositorySubpath?: string | null; defaultBranch?: string | null }[] = [];
 		const listRepositories = vi.fn().mockResolvedValue([
 			{
 				repositoryKey: "qorpera/qorpera_base",

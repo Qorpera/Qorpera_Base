@@ -566,10 +566,12 @@ describe("creating surfaces", () => {
 		await flush();
 
 		const subpath = sheet.querySelector<HTMLInputElement>('input[aria-label="Subfolder (optional)"]')!;
-		const branch = sheet.querySelector<HTMLInputElement>('input[aria-label="Branch"]')!;
+		const branch = sheet.querySelector<HTMLInputElement>('input[aria-label="Upstream branch"]')!;
 		expect(branch.value).toBe("master");
 		subpath.value = "packages/web";
-		sheet.querySelector<HTMLFormElement>(".surface-create-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		sheet
+			.querySelector<HTMLFormElement>(".surface-create-form")!
+			.dispatchEvent(new Event("submit", { cancelable: true }));
 		await flush();
 
 		expect(createCalls).toHaveLength(1);
@@ -586,7 +588,7 @@ describe("creating surfaces", () => {
 		await flush();
 		const sourceSheet = document.querySelector<HTMLDialogElement>(".surface-source-sheet")!;
 		const rebindSubpath = sourceSheet.querySelector<HTMLInputElement>('input[aria-label="Subfolder (optional)"]')!;
-		const rebindBranch = sourceSheet.querySelector<HTMLInputElement>('input[aria-label="Branch"]')!;
+		const rebindBranch = sourceSheet.querySelector<HTMLInputElement>('input[aria-label="Upstream branch"]')!;
 		rebindSubpath.value = "packages/admin";
 		rebindBranch.value = "release/v2";
 		sourceSheet.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { cancelable: true }));

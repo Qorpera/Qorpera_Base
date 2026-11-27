@@ -3742,7 +3742,7 @@ export class SurfacesStore {
 					error: undefined,
 				};
 			});
-			void this.refreshWorkspace(surfaceId, { background: true });
+			void this.refreshWorkspace(surfaceId, 0, { background: true });
 			return updated;
 		}
 		const surface = this.state.surfaces.find((item) => item.id === surfaceId);

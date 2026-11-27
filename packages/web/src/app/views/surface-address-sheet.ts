@@ -343,8 +343,8 @@ export class SurfaceAddress {
 		this.#sourceRepoField.placeholder = t("owner/repository");
 		this.#sourceSubpathField.setAttribute("aria-label", t("Subfolder (optional)"));
 		this.#sourceSubpathField.placeholder = t("e.g. packages/web");
-		this.#sourceBranchField.setAttribute("aria-label", t("Branch"));
-		this.#sourceBranchField.placeholder = "main";
+		this.#sourceBranchField.setAttribute("aria-label", t("Upstream branch"));
+		this.#sourceBranchField.placeholder = t("e.g. main");
 		this.#sourceBranchField.addEventListener("input", () => {
 			this.#sourceBranchEdited = true;
 		});
@@ -1469,7 +1469,7 @@ export class SurfaceAddress {
 					? h("label", { class: "surface-address-field" }, h("span", null, t("Repository key")), this.#sourceRepoField)
 					: null,
 				h("label", { class: "surface-address-field" }, h("span", null, t("Subfolder (optional)")), this.#sourceSubpathField),
-				h("label", { class: "surface-address-field" }, h("span", null, t("Branch")), this.#sourceBranchField),
+				h("label", { class: "surface-address-field" }, h("span", null, t("Upstream branch")), this.#sourceBranchField),
 				h(
 					"div",
 					{ class: "surface-address-end" },

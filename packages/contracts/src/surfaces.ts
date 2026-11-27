@@ -14,8 +14,8 @@ export const SURFACE_SCHEMA_VERSION = "qorpera.surface/v1";
 
 export const SURFACE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SURFACE_OPTION_GROUP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-export const SURFACE_REPOSITORY_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-export const SURFACE_REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/;
+export const SURFACE_REPOSITORY_OWNER_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/;
+export const SURFACE_REPOSITORY_NAME_PATTERN = /^[a-z0-9_](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?$/;
 export const SURFACE_REPOSITORY_SUBPATH_SEGMENT_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 export const SURFACE_DEFAULT_BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 export const SURFACE_MAX_REPOSITORY_SUBPATH_CHARS = 240;
@@ -635,12 +635,12 @@ export interface CompanyCodeRepositorySummary {
 
 export function isSurfaceRepositoryKey(value: unknown): value is string {
 	if (typeof value !== "string") return false;
-	const parts = value.split("/");
+	const parts = value.toLowerCase().split("/");
 	if (parts.length !== 2) return false;
 	const [owner, name] = parts;
 	if (!owner || !name) return false;
 	if (!SURFACE_REPOSITORY_OWNER_PATTERN.test(owner) || !SURFACE_REPOSITORY_NAME_PATTERN.test(name)) return false;
-	return name !== "." && name !== ".." && !name.startsWith(".") && !name.toLowerCase().endsWith(".git");
+	return name !== "." && name !== ".." && !name.startsWith(".") && !name.endsWith(".git");
 }
 
 export function normalizeSurfaceRepositorySubpath(value: string | null | undefined): string | null {
@@ -670,6 +670,8 @@ export function isSurfaceRepositorySubpath(value: unknown): value is string {
 export function isSurfaceDefaultBranch(value: unknown): value is string {
 	if (typeof value !== "string") return false;
 	if (value.length === 0 || UTF8_ENCODER.encode(value).byteLength > SURFACE_MAX_DEFAULT_BRANCH_CHARS) return false;
+	const lower = value.toLowerCase();
+	if (lower === "qorpera" || lower.startsWith("qorpera/")) return false;
 	if (!SURFACE_DEFAULT_BRANCH_PATTERN.test(value) || value.includes("..") || value.includes("//") || value.includes("@{"))
 		return false;
 	if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;

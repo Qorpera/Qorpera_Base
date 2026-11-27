@@ -81,6 +81,8 @@ language sql immutable set search_path = '' as $$
 		p_branch is not null
 		and octet_length(p_branch) between 1 and 128
 		and p_branch ~ '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$'
+		and lower(p_branch) <> 'qorpera'
+		and lower(p_branch) not like 'qorpera/%'
 		and strpos(p_branch, '..') = 0
 		and strpos(p_branch, '//') = 0
 		and strpos(p_branch, '@{') = 0
@@ -309,6 +311,11 @@ begin
 	if p_archetype = 'live_build' and v_repo_key is null then
 		v_repo_key := 'surfaces/' || v_slug;
 	end if;
+	if p_archetype = 'live_build'
+		and v_repo_key is distinct from 'surfaces/' || v_slug
+		and coalesce(public.qorpera_member_role(p_company_id)::text, '') not in ('owner', 'admin') then
+		raise exception 'Only founders and admins can bind an existing code repository' using errcode = '42501';
+	end if;
 
 	select coalesce(max(sort_order), 0) + 10 into v_sort_order
 	from public.qorpera_surfaces
@@ -385,11 +392,7 @@ begin
 $old$		status, icon, source_kind, repository_key, folder_root, preview_mode, brief_summary$old$,
 $new$		status, icon, source_kind, repository_key, repository_subpath, default_branch, folder_root, preview_mode, brief_summary$new$,
 $old$		p_source_kind, v_repo_key, v_folder_root, coalesce(p_preview_mode, 'none'), p_brief_summary$old$,
-$new$		p_source_kind, v_repo_key, v_repo_subpath, v_default_branch, v_folder_root, coalesce(p_preview_mode, 'none'), p_brief_summary$new$,
-$old$		repository_key = coalesce(public.qorpera_surfaces.repository_key, excluded.repository_key),$old$,
-$new$		repository_key = coalesce(public.qorpera_surfaces.repository_key, excluded.repository_key),
-		repository_subpath = coalesce(public.qorpera_surfaces.repository_subpath, excluded.repository_subpath),
-		default_branch = case when public.qorpera_surfaces.default_branch = 'main' then excluded.default_branch else public.qorpera_surfaces.default_branch end,$new$
+$new$		p_source_kind, v_repo_key, v_repo_subpath, v_default_branch, v_folder_root, coalesce(p_preview_mode, 'none'), p_brief_summary$new$
 	]);
 	drop function public.qorpera_propose_surface(uuid, text, text, text, text, text, text, text, text, text, text, text, text, boolean, boolean);
 	execute v_def;
@@ -482,17 +485,16 @@ declare
 	v_repo_subpath text := public.qorpera_surface_normalize_subpath(p_repository_subpath);
 	v_default_branch text := coalesce(nullif(btrim(coalesce(p_default_branch, '')), ''), 'main');
 	v_repo_changed boolean;
-	v_branch_changed boolean;
 	v_now timestamptz := clock_timestamp();
 begin
+	if auth.role() is distinct from 'authenticated' or auth.uid() is null then
+		raise exception 'Only founders and admins can change a surface code repository' using errcode = '42501';
+	end if;
 	select s.profile_id into v_profile_id
 	from public.qorpera_surfaces s
 	where s.id = p_surface_id;
-	if v_profile_id is null then
-		raise exception 'Surface not found' using errcode = 'P0002';
-	end if;
-	v_role := public.qorpera_member_role(v_profile_id);
-	if auth.role() is distinct from 'authenticated' or auth.uid() is null or v_role is null or v_role not in ('owner', 'admin') then
+	v_role := case when v_profile_id is null then null else public.qorpera_member_role(v_profile_id) end;
+	if v_profile_id is null or v_role is null or v_role not in ('owner', 'admin') then
 		raise exception 'Only founders and admins can change a surface code repository' using errcode = '42501';
 	end if;
 	if v_repo_key is null or not public.qorpera_surface_repository_key_valid(v_repo_key) then
@@ -522,7 +524,7 @@ begin
 	where s.id = p_surface_id
 	for update;
 	if v_surface.id is null then
-		raise exception 'Surface not found' using errcode = 'P0002';
+		raise exception 'Only founders and admins can change a surface code repository' using errcode = '42501';
 	end if;
 	if v_surface.status = 'archived' then
 		raise exception 'This interface was deleted' using errcode = '55000';
@@ -550,7 +552,15 @@ begin
 	end if;
 
 	v_repo_changed := lower(coalesce(v_surface.repository_key, '')) is distinct from v_repo_key;
-	v_branch_changed := coalesce(v_surface.default_branch, 'main') is distinct from v_default_branch;
+
+	if v_repo_changed and exists (
+		select 1
+		from public.qorpera_surface_sessions ss
+		where ss.surface_id = p_surface_id
+			and ss.state not in ('completed', 'discarded')
+	) then
+		raise exception 'Close or discard open sessions before switching repositories' using errcode = '55000';
+	end if;
 
 	if v_repo_changed and exists (
 		select 1
@@ -567,11 +577,11 @@ begin
 		repository_key = v_repo_key,
 		repository_subpath = v_repo_subpath,
 		default_branch = v_default_branch,
-		live_head_sha = case when v_repo_changed or v_branch_changed then null else live_head_sha end,
-		published_head_sha = case when v_repo_changed or v_branch_changed then null else published_head_sha end,
-		unpublished_change_count = case when v_repo_changed or v_branch_changed then 0 else unpublished_change_count end,
-		publish_status = case when v_repo_changed or v_branch_changed then 'idle' else publish_status end,
-		last_publish_error = case when v_repo_changed or v_branch_changed then null else last_publish_error end,
+		live_head_sha = case when v_repo_changed then null else live_head_sha end,
+		published_head_sha = case when v_repo_changed then null else published_head_sha end,
+		unpublished_change_count = case when v_repo_changed then 0 else unpublished_change_count end,
+		publish_status = case when v_repo_changed then 'idle' else publish_status end,
+		last_publish_error = case when v_repo_changed then null else last_publish_error end,
 		updated_at = v_now
 	where id = p_surface_id
 	returning * into v_surface;

@@ -4504,7 +4504,9 @@ describe("cloud surface runtime tools", () => {
 		const parsed = tool.parseArguments({
 			slug: "web-app",
 			title: "Web App",
+			group: "products",
 			archetype: "live_build",
+			sourceKind: "code_repo",
 			kind: "web_app",
 			repositoryKey: "qorpera/qorpera_base",
 			repositorySubpath: "/packages/web/",
@@ -4523,7 +4525,9 @@ describe("cloud surface runtime tools", () => {
 			tool.parseArguments({
 				slug: "bad-sub",
 				title: "Bad Sub",
+				group: "products",
 				archetype: "live_build",
+				sourceKind: "code_repo",
 				repositorySubpath: "../escape",
 			}),
 		).toThrow();
@@ -4531,40 +4535,54 @@ describe("cloud surface runtime tools", () => {
 			tool.parseArguments({
 				slug: "bad-branch",
 				title: "Bad Branch",
+				group: "products",
 				archetype: "live_build",
+				sourceKind: "code_repo",
 				defaultBranch: "bad..branch",
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				slug: "reserved-branch",
+				title: "Reserved Branch",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				defaultBranch: "qorpera/coding/abc",
 			}),
 		).toThrow();
 
 		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			briefMarkdown: null,
 			surfaceSlug: "web-app",
 			surfaceTitle: "Web App",
-			surfaceKind: "web_app",
 			sourceKind: "code_repo",
 			repositoryKey: "qorpera/qorpera_base",
 			repositorySubpath: "packages/web",
 			defaultBranch: "master",
-			prompt: "Update the login screen.",
 		});
 		expect(brief).toContain("qorpera/qorpera_base");
 		expect(brief).toContain("packages/web");
-		expect(brief).toContain("master");
+		expect(brief).toContain("Upstream branch: master (local changes land on main)");
 
-		const section = buildCompanyInterfacesSection([
-			{
-				slug: "web-app",
-				title: "Web App",
-				kind: "web_app",
-				archetype: "live_build",
-				sourceKind: "code_repo",
-				repositoryKey: "qorpera/qorpera_base",
-				repositorySubpath: "packages/web",
-				defaultBranch: "master",
-				folderRoot: null,
-				briefSummary: "Main web application",
-				isGlobal: false,
-			},
-		]);
+		const section = buildCompanyInterfacesSection({
+			interfaces: [
+				{
+					slug: "web-app",
+					title: "Web App",
+					kind: "web_app",
+					archetype: "live_build",
+					sourceKind: "code_repo",
+					repositoryKey: "qorpera/qorpera_base",
+					repositorySubpath: "packages/web",
+					defaultBranch: "master",
+					folderRoot: null,
+					briefSummary: "Main web application",
+					isGlobal: false,
+				},
+			],
+		});
 		expect(section).toContain("qorpera/qorpera_base");
 		expect(section).toContain("packages/web");
 		expect(section).toContain("master");

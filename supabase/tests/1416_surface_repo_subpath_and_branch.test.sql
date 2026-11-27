@@ -113,12 +113,35 @@ begin
 	end;
 
 	begin
+		perform public.qorpera_create_surface(v_profile, 'Reserved Branch', null, 'live_build', 'web_app', 'monitor', null, null, null, false, 'qorpera/base', 'apps/web', 'qorpera/coding/abc');
+		perform pg_temp.srsb_assert(false, 'qorpera/* defaultBranch must raise 22023');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '22023', 'Expected 22023 for reserved qorpera/* defaultBranch, got ' || v_errcode);
+	end;
+
+	begin
 		perform public.qorpera_create_surface(v_profile, 'Studio With Repo', null, 'studio', 'custom', 'spark', null, null, null, false, 'qorpera/base', null, 'main');
 		perform pg_temp.srsb_assert(false, 'studio surface with repositoryKey must raise 22023');
 	exception when others then
 		get stacked diagnostics v_errcode = returned_sqlstate;
 		perform pg_temp.srsb_assert(v_errcode = '22023', 'Expected 22023 for studio repositoryKey, got ' || v_errcode);
 	end;
+	reset role;
+
+	perform pg_temp.srsb_as(v_member);
+	set local role authenticated;
+	begin
+		perform public.qorpera_create_surface(v_profile, 'Member External Repo', null, 'live_build', 'web_app', 'monitor', null, null, null, false, 'qorpera/qorpera_base', 'packages/web', 'master');
+		perform pg_temp.srsb_assert(false, 'contributor must not bind external repository via create_surface');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '42501', 'Expected 42501 for contributor external repo create, got ' || v_errcode);
+	end;
+	perform pg_temp.srsb_assert(
+		(public.qorpera_create_surface(v_profile, 'Member Fresh Site', 'member-fresh', 'live_build', 'website', 'globe', null, null, null, false) ->> 'repositoryKey') = 'surfaces/member-fresh',
+		'contributor may still create a fresh default live_build surface'
+	);
 	reset role;
 
 	perform pg_temp.as_service();
@@ -130,6 +153,18 @@ begin
 	perform pg_temp.srsb_assert(v_proposed ->> 'repositoryKey' = 'qorpera/marketing', 'propose_surface must normalize repositoryKey');
 	perform pg_temp.srsb_assert(v_proposed ->> 'repositorySubpath' = 'site/public', 'propose_surface must store repositorySubpath');
 	perform pg_temp.srsb_assert(v_proposed ->> 'defaultBranch' = 'release/v2', 'propose_surface must store defaultBranch');
+
+	v_proposed := public.qorpera_propose_surface(
+		v_profile, 'marketing-site', 'Marketing Site', 'products', 'live_build', 'code_repo',
+		'globe', 'qorpera/other', null, 'static_site', 'Attempt overwrite', 'website', null, false, true,
+		'other/sub', 'other-branch'
+	);
+	perform pg_temp.srsb_assert(
+		v_proposed ->> 'repositoryKey' = 'qorpera/marketing'
+		and v_proposed ->> 'repositorySubpath' = 'site/public'
+		and v_proposed ->> 'defaultBranch' = 'release/v2',
+		're-proposing existing slug must not overwrite repositoryKey, repositorySubpath, or defaultBranch'
+	);
 
 	v_native_proposed := public.qorpera_native_surface_propose(
 		v_profile, 'admin-console', 'Admin Console', 'products', 'live_build', 'code_repo',
@@ -185,6 +220,13 @@ begin
 		get stacked diagnostics v_errcode = returned_sqlstate;
 		perform pg_temp.srsb_assert(v_errcode = '42501', 'Expected 42501 for non-admin bind, got ' || v_errcode);
 	end;
+	begin
+		perform public.qorpera_bind_surface_repository('00000000-0000-4000-8000-000000009999'::uuid, 'surfaces/site-a', null, 'main');
+		perform pg_temp.srsb_assert(false, 'unknown surface id must raise 42501 without leaking existence');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '42501', 'Expected 42501 for unknown surface bind, got ' || v_errcode);
+	end;
 	reset role;
 
 	perform pg_temp.srsb_as(v_owner);
@@ -218,6 +260,17 @@ begin
 	values (v_profile, v_web_app_id, 'Check layout', 'Check layout', 'member', 'ready', repeat('1', 40))
 	returning id into v_session_id;
 
+	perform pg_temp.srsb_as(v_owner);
+	set local role authenticated;
+	begin
+		perform public.qorpera_bind_surface_repository(v_web_app_id, 'surfaces/site-a', null, 'main');
+		perform pg_temp.srsb_assert(false, 'switching repository with idle ready session must raise 55000');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 when switching repo with idle ready session, got ' || v_errcode);
+	end;
+	reset role;
+
 	insert into public.qorpera_surface_changes(profile_id, surface_id, session_id, seq, title, summary, kind, parent_sha, head_sha, status)
 	values (v_profile, v_web_app_id, v_session_id, 1, 'Update nav', 'Nav update', 'git_range', repeat('1', 40), repeat('2', 40), 'staged')
 	returning id into v_change_id;
@@ -232,13 +285,13 @@ begin
 		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 when switching repo with open change, got ' || v_errcode);
 	end;
 
-	v_bound := public.qorpera_bind_surface_repository(v_web_app_id, 'qorpera/qorpera_base', 'apps/console', 'master');
+	v_bound := public.qorpera_bind_surface_repository(v_web_app_id, 'qorpera/qorpera_base', 'apps/console', 'release/v3');
 	perform pg_temp.srsb_assert(v_bound ->> 'repositorySubpath' = 'apps/console', 'updating subpath on same repo must succeed');
-	perform pg_temp.srsb_assert(v_bound ->> 'defaultBranch' = 'master', 'branch must stay master');
+	perform pg_temp.srsb_assert(v_bound ->> 'defaultBranch' = 'release/v3', 'branch metadata must update on same repo');
 	reset role;
 
 	select * into strict v_surface_row from public.qorpera_surfaces where id = v_web_app_id;
-	perform pg_temp.srsb_assert(v_surface_row.live_head_sha = repeat('1', 40), 'subpath-only update on same repo and branch must keep live_head_sha');
+	perform pg_temp.srsb_assert(v_surface_row.live_head_sha = repeat('1', 40), 'same-repo subpath and branch metadata update must keep live_head_sha');
 	select expires_at into v_preview_expires from public.qorpera_surface_previews where id = v_preview_id;
 	perform pg_temp.srsb_assert(v_preview_expires <= clock_timestamp(), 'rebinding subpath must expire active previews');
 

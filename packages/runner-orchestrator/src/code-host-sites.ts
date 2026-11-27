@@ -605,10 +605,21 @@ export async function readSurfaceSiteTree(
 	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<{ files: CodeSiteTreeFile[]; manifestSha256: string }> {
 	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
-	const input = hasSubpath ? closed(value, ["repository", "tree", "subpath"]) : closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
-	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(input.subpath) : null;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {
@@ -643,10 +654,21 @@ export async function readSurfacePreviewPlan(
 	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<SurfacePreviewPlan> {
 	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
-	const input = hasSubpath ? closed(value, ["repository", "tree", "subpath"]) : closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
-	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(input.subpath) : null;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {
@@ -685,10 +707,21 @@ export async function readSurfacePreviewPlanAndTree(
 	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<SurfacePreviewPlanAndTree> {
 	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
-	const input = hasSubpath ? closed(value, ["repository", "tree", "subpath"]) : closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
-	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(input.subpath) : null;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {

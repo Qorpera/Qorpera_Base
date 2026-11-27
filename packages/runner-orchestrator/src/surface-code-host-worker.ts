@@ -409,7 +409,7 @@ async function resolveMainHeadAndTree(
 	codeHostJob: CodeHostJob,
 	repository: CloudCodingRepository,
 	explicitHeadSha: string | null,
-	options: { readonly readOnly?: boolean; readonly defaultBranch?: string | null } = {},
+	options: { readonly readOnly?: boolean } = {},
 ): Promise<{ readonly headSha: string; readonly treeSha: string }> {
 	const kept = keptRepositoryOf(repository);
 	return await withJob(codeHostJob, kept, async (run) => {
@@ -420,19 +420,8 @@ async function resolveMainHeadAndTree(
 				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 			}
 		}
-		let targetRef =
+		const targetRef =
 			explicitHeadSha && GIT_SHA.test(explicitHeadSha) ? explicitHeadSha : `refs/heads/${kept.baseBranch}`;
-		const preferredBranch = options.defaultBranch?.trim();
-		if (
-			!(explicitHeadSha && GIT_SHA.test(explicitHeadSha)) &&
-			preferredBranch &&
-			preferredBranch !== kept.baseBranch
-		) {
-			const preferredRef = `refs/heads/${preferredBranch}`;
-			if ((await run.ref(preferredRef)) !== null) {
-				targetRef = preferredRef;
-			}
-		}
 		const lines = (
 			await run.gitOk(
 				run.repo,
@@ -2133,7 +2122,6 @@ export class SurfaceCodeHostWorker {
 			const resolveJob: CodeHostJob = seedFirst ? { ...codeHostJob, preparedKeptArea: area } : codeHostJob;
 			const resolved = await resolveMainHeadAndTree(resolveJob, repository, explicitHeadSha, {
 				readOnly: !seedFirst,
-				defaultBranch: pub.defaultBranch,
 			});
 			const preparedJob: CodeHostJob = { ...codeHostJob, preparedKeptArea: area };
 			if (this.#useCombinedPlanAndTree) {

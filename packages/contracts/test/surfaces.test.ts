@@ -689,6 +689,8 @@ describe("surfaces contracts", () => {
 		expect(isSurfaceRepositoryKey("surfaces/web-app")).toBe(true);
 		expect(isSurfaceRepositoryKey("bad/repo.git")).toBe(false);
 		expect(isSurfaceRepositoryKey("bad/.hidden")).toBe(false);
+		expect(isSurfaceRepositoryKey("acme/site.")).toBe(false);
+		expect(isSurfaceRepositoryKey("acme/site.web")).toBe(true);
 		expect(isSurfaceRepositoryKey("no-slash")).toBe(false);
 		expect(isSurfaceRepositoryKey("a/b/c")).toBe(false);
 
@@ -705,6 +707,9 @@ describe("surfaces contracts", () => {
 		expect(isSurfaceDefaultBranch("main")).toBe(true);
 		expect(isSurfaceDefaultBranch("master")).toBe(true);
 		expect(isSurfaceDefaultBranch("release/v2")).toBe(true);
+		expect(isSurfaceDefaultBranch("qorpera")).toBe(false);
+		expect(isSurfaceDefaultBranch("qorpera/coding/abc")).toBe(false);
+		expect(isSurfaceDefaultBranch("Qorpera/internal")).toBe(false);
 		expect(isSurfaceDefaultBranch("bad..branch")).toBe(false);
 		expect(isSurfaceDefaultBranch("bad.lock")).toBe(false);
 		expect(isSurfaceDefaultBranch(".hidden")).toBe(false);

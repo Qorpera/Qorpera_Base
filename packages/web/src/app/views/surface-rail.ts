@@ -43,7 +43,6 @@ import {
 	type SurfaceTeammate,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
-import { openSurfaceCodeSourceSheet } from "./surface-migration-sheet.ts";
 
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,
@@ -328,6 +327,12 @@ export class SurfaceRail {
 	readonly #signal: AbortSignal;
 	readonly #reportError: ((text: string) => void) | undefined;
 	readonly #siteAnswer: ((surface: SurfaceSummary) => SiteAnswer) | undefined;
+	readonly #codeSource:
+		| {
+				readonly canManage: () => boolean;
+				readonly open: (surface: SurfaceSummary) => void;
+		  }
+		| undefined;
 	readonly #crew = new CrewFigures();
 	readonly #groups = new Map<string, HTMLElement>();
 	readonly #rows = new Map<string, SurfaceRowEntry & { readonly item: HTMLElement }>();
@@ -346,6 +351,10 @@ export class SurfaceRail {
 		arranger?: SurfaceRailArranger,
 		reportError?: (text: string) => void,
 		siteAnswer?: (surface: SurfaceSummary) => SiteAnswer,
+		codeSource?: {
+			readonly canManage: () => boolean;
+			readonly open: (surface: SurfaceSummary) => void;
+		},
 	) {
 		this.#store = store;
 		this.#profileId = profileId;
@@ -353,6 +362,7 @@ export class SurfaceRail {
 		this.#arranger = arranger;
 		this.#reportError = reportError;
 		this.#siteAnswer = siteAnswer;
+		this.#codeSource = codeSource;
 		this.el.addEventListener("click", (event) => this.#click(event), { signal });
 		this.el.addEventListener("contextmenu", (event) => this.#menu(event), { signal });
 		pressToOpenMenu(this.el, signal, (event) => this.#menu(event));
@@ -495,12 +505,12 @@ export class SurfaceRail {
 								multiple: true,
 								select: () => void this.#store.setAutoPublish(surface.id, !surface.autoPublish),
 							},
-							...(surface.sourceKind === "code_repo"
+							...(surface.sourceKind === "code_repo" && this.#codeSource?.canManage()
 								? [
 										{
 											label: t("Code source"),
 											icon: "code",
-											select: () => openSurfaceCodeSourceSheet(this.#store, surface),
+											select: () => this.#codeSource?.open(surface),
 										},
 									]
 								: []),

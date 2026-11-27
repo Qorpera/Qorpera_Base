@@ -1739,20 +1739,20 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		await writeFile(
 			join(wt, "packages/web/.qorpera/checks.json"),
 			JSON.stringify({
-				checks: [],
+				checks: [{ name: "build", run: "npm run build" }],
 				site: { folder: "dist" },
 				preview: { run: "npm run build", cwd: ".", folder: "dist" },
 			}),
 		);
 		await f.git(wt, "add", ".");
 		await f.git(wt, "commit", "-m", "Add monorepo web subapp");
-		const masterSha = await f.git(wt, "rev-parse", "HEAD");
-		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/master", masterSha);
-		const masterTreeSha = await f.git(join(f.code, "repo.git"), "--git-dir=.", "rev-parse", `${masterSha}^{tree}`);
+		const mainSha = await f.git(wt, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", mainSha);
+		const mainTreeSha = await f.git(join(f.code, "repo.git"), "--git-dir=.", "rev-parse", `${mainSha}^{tree}`);
 
 		const plan = await readSurfacePreviewPlan(f.job, {
 			repository: f.repository,
-			tree: masterTreeSha,
+			tree: mainTreeSha,
 			subpath: "packages/web",
 		});
 		expect(plan.kind).toBe("build");
@@ -1763,7 +1763,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 
 		const subTree = await readSurfaceSiteTree(f.job, {
 			repository: f.repository,
-			tree: masterTreeSha,
+			tree: mainTreeSha,
 			subpath: "packages/web",
 		});
 		expect(subTree.files.map((file) => file.path).sort()).toEqual(["app.js", "index.html"]);
@@ -1773,12 +1773,12 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 
 		await writeFile(
 			join(wt, "packages/web/.qorpera/checks.json"),
-			JSON.stringify({ checks: [], site: { folder: "dist" } }),
+			JSON.stringify({ checks: [{ name: "lint", run: "true" }], site: { folder: "dist" } }),
 		);
 		await f.git(wt, "add", "packages/web/.qorpera/checks.json");
 		await f.git(wt, "commit", "-m", "Static subapp output");
-		const staticMasterSha = await f.git(wt, "rev-parse", "HEAD");
-		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/master", staticMasterSha);
+		const staticMainSha = await f.git(wt, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", staticMainSha);
 
 		const publishJobId = randomUUID();
 		const publishLease = randomUUID();
@@ -1842,13 +1842,13 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 
 		const pass = await worker.pass(new AbortController().signal);
 		expect(pass).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
-		expect(uploadedPaths.sort()).toEqual(["app.js", "index.html"]);
+		expect(uploadedPaths.filter((p) => !p.includes("qorpera-")).sort()).toEqual(["app.js", "index.html"]);
 		expect(uploadedHtml.join("")).toContain("Web Subapp");
 		const complete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish");
 		expect(complete?.args).toMatchObject({
 			p_job_id: publishJobId,
 			p_status: "published",
-			p_published_head_sha: staticMasterSha,
+			p_published_head_sha: staticMainSha,
 			p_lease_token: publishLease,
 		});
 	});

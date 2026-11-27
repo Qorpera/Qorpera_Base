@@ -343,8 +343,8 @@ function createCodeSourceFields(
 		type: "text",
 		class: "surface-create-input",
 		value: initial?.defaultBranch?.trim() || "main",
-		placeholder: "main",
-		"aria-label": t("Branch"),
+		placeholder: t("e.g. main"),
+		"aria-label": t("Upstream branch"),
 		autocomplete: "off",
 		autocapitalize: "none",
 		spellcheck: "false",
@@ -436,7 +436,7 @@ function createCodeSourceFields(
 			"div",
 			{ class: "surface-source-row" },
 			h("label", { class: "surface-create-field" }, h("span", null, t("Subfolder (optional)")), subpathInput),
-			h("label", { class: "surface-create-field" }, h("span", null, t("Branch")), branchInput),
+			h("label", { class: "surface-create-field" }, h("span", null, t("Upstream branch")), branchInput),
 		),
 	);
 	return {
@@ -503,7 +503,7 @@ export function openSurfaceCodeSourceSheet(store: SurfacesStore, surface: Surfac
 		h(
 			"p",
 			{ class: "surface-sheet-lead" },
-			t("Connect this surface to an existing repository, subfolder, and default branch."),
+			t("Connect this surface to an existing repository, subfolder, and upstream branch."),
 		),
 		fields.el,
 		h("div", { class: "surface-sheet-actions" }, status, submit),
@@ -534,7 +534,11 @@ export function openSurfaceCodeSourceSheet(store: SurfacesStore, surface: Surfac
 	dialog.open();
 }
 
-export function openCreateSurfaceSheet(store: SurfacesStore): void {
+export function openCreateSurfaceSheet(
+	store: SurfacesStore,
+	options?: { readonly canConnectExistingRepo?: boolean },
+): void {
+	const canConnectExistingRepo = options?.canConnectExistingRepo !== false;
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
 	let figureChosen = false;
@@ -602,7 +606,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	existingBtn.addEventListener("click", () => setSourceMode("existing"));
 	const sourcePanel = h(
 		"div",
-		{ class: "surface-create-source", hidden: selected.archetype !== "live_build" },
+		{ class: "surface-create-source", hidden: !canConnectExistingRepo || selected.archetype !== "live_build" },
 		h("div", { class: "surface-create-source-tabs", role: "group", "aria-label": t("Code source") }, freshBtn, existingBtn),
 		sourceFields.el,
 	);
@@ -662,8 +666,8 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		}
 		line.textContent = kindLine(preset);
 		customPanel.hidden = preset.kind !== "custom";
-		sourcePanel.hidden = preset.archetype !== "live_build";
-		if (preset.archetype !== "live_build") setSourceMode("fresh");
+		sourcePanel.hidden = !canConnectExistingRepo || preset.archetype !== "live_build";
+		if (!canConnectExistingRepo || preset.archetype !== "live_build") setSourceMode("fresh");
 		if (!figureChosen) {
 			figure = surfaceKindFigure(preset.kind);
 			markSurfaceFigure(figures, figure);

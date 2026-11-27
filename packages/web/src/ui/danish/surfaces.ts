@@ -672,13 +672,14 @@ export const SURFACES: Record<string, string> = {
 	"owner/repository": "ejer/arkiv",
 	"Subfolder (optional)": "Undermappe (valgfrit)",
 	"e.g. packages/web": "fx packages/web",
-	Branch: "Gren",
+	"e.g. main": "fx main",
+	"Upstream branch": "Upstream-gren",
 	"Other repository…": "Andet arkiv…",
 	"Enter a repository like owner/name.": "Skriv et arkiv som ejer/navn.",
 	"Use a relative subfolder like packages/web.": "Brug en relativ undermappe som packages/web.",
 	"Enter a valid branch name.": "Skriv et gyldigt grennavn.",
-	"Connect this surface to an existing repository, subfolder, and default branch.":
-		"Forbind denne surface med et eksisterende arkiv, en undermappe og en standardgren.",
+	"Connect this surface to an existing repository, subfolder, and upstream branch.":
+		"Forbind denne surface med et eksisterende arkiv, en undermappe og en upstream-gren.",
 	"Start fresh": "Start forfra",
 	"Connect existing repository": "Forbind eksisterende arkiv",
 };
