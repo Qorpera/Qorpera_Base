@@ -449,6 +449,7 @@ describe("the folder core's entry points (core C3)", () => {
 		"qorpera_folder_code_history",
 		"qorpera_folder_code_query",
 		"qorpera_folder_code_lifecycle",
+		"qorpera_folder_code_github_sync",
 		"qorpera_folder_request_code_undo_v2",
 		"qorpera_folder_code_request_v2",
 	] as const;

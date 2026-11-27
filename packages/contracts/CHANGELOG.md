@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Extended `SurfaceSessionExternalPr` and `parseSurfaceSessionExternalPr` (`surfaces.ts`) with optional `headSha`, `draft`, and `checksStatus` fields for live GitHub pull request and check status synchronization.
 - Added app workbench isolated update track contracts (`surfaces.ts`): `SurfaceSessionArtifact`, `SurfaceSessionProgressStep`, `SurfaceSessionCheckCommand`, `SurfaceSessionChecksSummary`, `SurfaceSessionExternalPr`, `SurfacePreviewScope`, `SurfaceCombineTracksResult`, and corresponding parsers (`parseSurfaceSessionArtifact`, `parseSurfaceSessionProgressStep`, `parseSurfaceSessionChecksSummary`, `parseSurfaceSessionExternalPr`, `parseSurfaceCombineTracksResult`), plus optional track metadata fields on `SurfaceSession` and `SurfacePreviewCompositionState`.
 - Added surface app runtime configuration contracts (`surfaces.ts`): `SURFACE_APP_SECRET_SCOPES`, `SURFACE_APP_TARGET_ENVS`, `SURFACE_DEPLOYMENT_KINDS`, `isSurfaceRuntimeEnvKey`, `isSurfaceLinkedDatabaseName`, `SurfaceAppSecretGrantSummary`, `SurfaceAvailableSecretSummary`, `SurfaceAppRuntimeConfig`, and `parseSurfaceAppRuntimeConfig`.
 - Added surface repository binding contracts (`surfaces.ts`): optional `repositorySubpath` and `defaultBranch` on `SurfaceSummary` / `parseSurfaceSummary`, `CompanyCodeRepositorySummary` / `parseCompanyCodeRepositorySummary`, and validation/normalization helpers `isSurfaceRepositoryKey`, `normalizeSurfaceRepositorySubpath`, `isSurfaceRepositorySubpath`, and `isSurfaceDefaultBranch`.

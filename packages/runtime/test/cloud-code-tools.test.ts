@@ -150,7 +150,7 @@ async function fixture(
 }
 
 describe("manage_code: the tool an agent's own run is offered", () => {
-	it("is one tool with 15 actions, described concisely within the catalog's bound", async () => {
+	it("is one tool with 19 actions, described concisely within the catalog's bound", async () => {
 		const f = await fixture(() => queued);
 		try {
 			expect(f.tools.map((tool) => [tool.name, tool.source])).toEqual([["manage_code", "runtime"]]);
@@ -167,6 +167,7 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 				"- describe:",
 				"- bring_in:",
 				"- create / archive / unarchive / tag / prune:",
+				"- sync / pull / push / create_pr:",
 			])
 				expect(tool.description).toContain(said);
 			expect(tool.inputSchema).toMatchObject({
@@ -192,6 +193,10 @@ describe("manage_code: the tool an agent's own run is offered", () => {
 							"unarchive",
 							"tag",
 							"prune",
+							"sync",
+							"pull",
+							"push",
+							"create_pr",
 						],
 					},
 					change: { type: "integer", minimum: 1 },
@@ -2358,6 +2363,162 @@ describe("manage_code read queries, history, lifecycle, and v2 undo", () => {
 			});
 			expect(siteAware.success).toBe(true);
 			expect(siteAware.text).toContain("change 16");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("handles sync, pull, push, create_pr and refuses invalid GitHub sync inputs", async () => {
+		const GITHUB_SYNC = "qorpera_folder_code_github_sync";
+		const f = await fixture((method, args) => {
+			if (method === GITHUB_SYNC) {
+				const req = args.p_request as Record<string, unknown>;
+				if (req.github === "acme/no-conn") {
+					return { schema: "qorpera.code-github-sync/v1", state: "refused", reason: "no_github_connection" };
+				}
+				return { schema: "qorpera.code-github-sync/v1", state: "queued", requestId: REQUEST };
+			}
+			if (method === STANDS) {
+				const last = f.calls.filter((call) => call.method === GITHUB_SYNC).at(-1);
+				const op = (last?.args.p_request as Record<string, unknown>)?.op;
+				if (op === "sync") {
+					return stands({
+						kind: "github_sync",
+						state: "done",
+						result: "synced",
+						data: {
+							githubRepo: "acme/shop",
+							remoteBranch: "main",
+							remoteSha: "a".repeat(40),
+							mainSha: "b".repeat(40),
+							ahead: 1,
+							behind: 2,
+							diverged: true,
+						},
+					});
+				}
+				if (op === "pull") {
+					return stands({
+						kind: "github_sync",
+						state: "done",
+						result: "pulled",
+						data: {
+							githubRepo: "acme/shop",
+							remoteBranch: "main",
+							mainBefore: "b".repeat(40),
+							mainAfter: "a".repeat(40),
+							remoteSha: "a".repeat(40),
+							mode: "fast-forward",
+							commitsPulled: 2,
+						},
+					});
+				}
+				if (op === "push") {
+					return stands({
+						kind: "github_sync",
+						state: "done",
+						result: "pushed",
+						data: {
+							githubRepo: "acme/shop",
+							localRef: "refs/heads/main",
+							remoteBranch: "feat/billing",
+							headSha: "c".repeat(40),
+							previousRemoteSha: null,
+							created: true,
+						},
+					});
+				}
+				return stands({
+					kind: "github_sync",
+					state: "done",
+					result: "pr_created",
+					data: {
+						githubRepo: "acme/shop",
+						number: 19,
+						url: "https://github.com/acme/shop/pull/19",
+						prState: "open",
+						headBranch: "feat/billing",
+						baseBranch: "main",
+						title: "Billing redesign",
+						headSha: "c".repeat(40),
+						draft: false,
+						updatedAt: "2026-11-27T12:00:00Z",
+					},
+				});
+			}
+			throw new Error(`Unexpected ${method}`);
+		});
+		try {
+			const badPush = await f.invoke({
+				action: "push",
+				operationKey: "gh-bad",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+			});
+			expect(badPush.success).toBe(false);
+			expect(badPush.text).toContain("INVALID_ARGUMENTS");
+
+			const noConn = await f.invoke({
+				action: "sync",
+				operationKey: "gh-nc",
+				owner: "acme",
+				name: "shop",
+				github: "acme/no-conn",
+			});
+			expect(noConn.success).toBe(false);
+			expect(noConn.text).toContain("No active company GitHub connection");
+
+			const synced = await f.invoke({
+				action: "sync",
+				operationKey: "gh-sync",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+			});
+			expect(synced.success).toBe(true);
+			expect(JSON.parse(synced.text)).toMatchObject({ action: "sync", result: "synced", diverged: true });
+
+			const pulled = await f.invoke({
+				action: "pull",
+				operationKey: "gh-pull",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				remoteBranch: "main",
+			});
+			expect(pulled.success).toBe(true);
+			expect(JSON.parse(pulled.text)).toMatchObject({ action: "pull", result: "pulled", mode: "fast-forward" });
+
+			const pushed = await f.invoke({
+				action: "push",
+				operationKey: "gh-push",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				remoteBranch: "feat/billing",
+			});
+			expect(pushed.success).toBe(true);
+			expect(JSON.parse(pushed.text)).toMatchObject({ action: "push", result: "pushed", created: true });
+
+			const pr = await f.invoke({
+				action: "create_pr",
+				operationKey: "gh-pr",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				head: "feat/billing",
+				base: "main",
+				title: "Billing redesign",
+				sessionId: "93800000-0000-4000-8000-000000000001",
+			});
+			expect(pr.success).toBe(true);
+			expect(JSON.parse(pr.text)).toMatchObject({
+				action: "create_pr",
+				result: "pr_created",
+				number: 19,
+				url: "https://github.com/acme/shop/pull/19",
+			});
 		} finally {
 			f.run.close();
 		}

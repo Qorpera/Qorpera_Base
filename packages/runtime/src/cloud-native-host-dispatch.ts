@@ -71,6 +71,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_folder_cancel_agent_worker", "standard"],
 	["qorpera_folder_close_proposal", "standard"],
 	["qorpera_folder_code_claim_overlaps", "standard"],
+	["qorpera_folder_code_github_sync", "standard"],
 	["qorpera_folder_code_history", "standard"],
 	["qorpera_folder_code_import", "standard"],
 	["qorpera_folder_code_lifecycle", "standard"],

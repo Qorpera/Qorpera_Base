@@ -12,6 +12,7 @@ import { createNativeEdgeAutoRedeploy } from "../../packages/runner-orchestrator
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
+import { CodeGitHubSync } from "../../packages/runner-orchestrator/src/code-github-sync.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import {
 	archiveCodeArea, bundleCodeArea, checkCodeArea, collectCodeGarbage, diffCodeArea, fsckCodeArea, listCodeBranches,
@@ -31,7 +32,11 @@ import { CodeHostJobs, type CodeHostViewEvent } from "../../packages/runner-orch
 import { CodeSiteUploads } from "../../packages/runner-orchestrator/src/code-site-uploads.ts";
 import { RealtimeOrchestratorWake } from "../../packages/runner-orchestrator/src/orchestrator-wake.ts";
 import { SurfaceCodeHostWorker } from "../../packages/runner-orchestrator/src/surface-code-host-worker.ts";
-import { LxdCodingExecutorHost, type LxdCodingExecutorHostOptions } from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
+import {
+	type CodingRepositoryCredentials,
+	LxdCodingExecutorHost,
+	type LxdCodingExecutorHostOptions,
+} from "../../packages/runner-orchestrator/src/coding-executor-host.ts";
 import { CodingMachineCommandSecrets } from "../../packages/runner-orchestrator/src/coding-command-secrets.ts";
 import { codingCommandExecution } from "../../packages/runner-orchestrator/src/coding-folder-command-transport.ts";
 import { CodingFolderControl } from "../../packages/runner-orchestrator/src/coding-folder-control.ts";
@@ -516,8 +521,9 @@ export function codeHostRequestsOf(parts: {
 	control: CodeHostRequestsOptions["control"]; hosts: Pick<CodeHostJobs, "run">; records: CodeHostRequestsOptions["records"];
 	sites?: CodeHostRequestsOptions["sites"];
 	bundles: CodeBundleStore | undefined; transports: CodeImportTransports; owner: string; machineIdSha256: string;
+	credentials?: CodingRepositoryCredentials | null; journalRoot?: string;
 }): CodeHostRequests {
-	const { control, hosts, records, sites, bundles, transports, owner, machineIdSha256 } = parts;
+	const { control, hosts, records, sites, bundles, transports, owner, machineIdSha256, credentials, journalRoot } = parts;
 	return new CodeHostRequests({
 		control, hosts, records, ...(sites ? { sites } : {}), owner, machineIdSha256,
 		jobs: {
@@ -532,6 +538,9 @@ export function codeHostRequestsOf(parts: {
 		...(bundles ? { imports: new CodeImport({
 			control, hosts, bundles, imports: bundles, transports, fetch: fetchGitHubImport, jobs: CODE_HOST_IMPORT_JOBS, owner,
 			machineIdSha256, report: logCodeRecord,
+		}) } : {}),
+		...(credentials && journalRoot ? { githubSync: new CodeGitHubSync({
+			hosts, credentials, journalRoot, report: logCodeRecord,
 		}) } : {}),
 		report: logCodeRecord,
 	});
@@ -669,6 +678,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		transports: codeImportTransports(config.broker ? { origin: config.broker.origin,
 			executorToken: await credential(config.broker.executorTokenCredential), executorOwner: config.owner } : null),
 		owner: config.owner, machineIdSha256,
+		credentials: brokered, journalRoot,
 	}) : undefined;
 	// WHY: Enable Realtime wake on all coding-worker nodes (not just nodes with memberScreens) using publishableKey when configured or serviceRoleKey otherwise.
 	const wakeKey =

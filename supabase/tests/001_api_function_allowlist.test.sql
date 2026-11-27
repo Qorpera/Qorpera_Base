@@ -475,6 +475,7 @@ insert into api_function_allowlist(signature, anon, authenticated, reason) value
 	('public.qorpera_get_surface_app_runtime_config(uuid)', false, true, 'member: auth.uid() + qorpera_assert_surface_member(profile, false); reads per-app non-secret runtime env, linked database name, and secret grant metadata without secret values (20260930936000)'),
 	('public.qorpera_get_surface_session_artifact(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); reads full contentText of one surface session artifact on demand (20260930937000)'),
 	('public.qorpera_get_surface_workspace(uuid)', false, true, 'member: qorpera_assert_surface_member(profile, false); reads sessions, changes, explorations, and previews of one surface (20260930843000)'),
+	('public.qorpera_link_surface_track_pr(uuid,jsonb,text)', false, true, 'member: qorpera_assert_surface_member(profile, true) + qorpera_assert_surfaces_enabled(); links or unlinks an external GitHub pull request on a surface track (20260930938000)'),
 	('public.qorpera_list_automations(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surface automations (20260930843000)'),
 	('public.qorpera_list_company_code_repositories(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company code repositories available for binding to live-build surfaces (20260930934000)'),
 	('public.qorpera_list_surfaces(uuid)', false, true, 'member: qorpera_assert_surface_member(company, false); lists company surfaces (20260930840000)'),

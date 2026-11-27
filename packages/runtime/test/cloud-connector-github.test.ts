@@ -441,3 +441,187 @@ it("refuses a repository name outside GitHub's rules before any request", async 
 	);
 	expect(fetchImplementation).not.toHaveBeenCalled();
 });
+
+it("lists pull requests, reviews, check runs, and branches with bounded payloads", async () => {
+	const fetchImplementation = server({
+		"GET /repos/acme/app/pulls": (url) => {
+			expect(url.searchParams.get("state")).toBe("open");
+			expect(url.searchParams.get("head")).toBe("acme:feat/billing");
+			return Response.json([
+				{
+					number: 12,
+					title: "Redesign billing",
+					state: "open",
+					draft: false,
+					user: { login: "alice" },
+					head: { ref: "feat/billing", sha: "a".repeat(40) },
+					base: { ref: "main" },
+					html_url: "https://github.com/acme/app/pull/12",
+					updated_at: "2026-11-27T10:00:00Z",
+				},
+			]);
+		},
+		"GET /repos/acme/app/pulls/12/reviews": () =>
+			Response.json([
+				{
+					id: 501,
+					user: { login: "bob" },
+					state: "APPROVED",
+					body: "Looks good",
+					submitted_at: "2026-11-27T10:05:00Z",
+				},
+			]),
+		"GET /repos/acme/app/commits/feat%2Fbilling/check-runs": () =>
+			Response.json({
+				total_count: 1,
+				check_runs: [
+					{
+						id: 901,
+						name: "ci / test",
+						status: "completed",
+						conclusion: "success",
+						html_url: "https://github.com/acme/app/runs/901",
+						completed_at: "2026-11-27T10:06:00Z",
+					},
+				],
+			}),
+		"GET /repos/acme/app/branches": () =>
+			Response.json([{ name: "main", protected: true, commit: { sha: "b".repeat(40) } }]),
+	});
+
+	await expect(
+		adapter("list_pull_requests", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", state: "open", head: "acme:feat/billing" }),
+		),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: {
+			pull_requests: [
+				{
+					number: 12,
+					title: "Redesign billing",
+					state: "open",
+					head: "feat/billing",
+					head_sha: "a".repeat(40),
+					base: "main",
+				},
+			],
+		},
+	});
+	await expect(
+		adapter("list_pull_request_reviews", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", number: 12 }),
+		),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: { reviews: [{ id: 501, author: "bob", state: "APPROVED", body: "Looks good" }] },
+	});
+	await expect(
+		adapter("list_check_runs", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", ref: "feat/billing" }),
+		),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: { total_count: 1, check_runs: [{ name: "ci / test", status: "completed", conclusion: "success" }] },
+	});
+	await expect(
+		adapter("list_branches", fetchImplementation).execute(input({ owner: "acme", repository: "app" })),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: { branches: [{ name: "main", protected: true, sha: "b".repeat(40) }] },
+	});
+});
+
+it("creates and updates pull requests and surfaces 422 validation errors", async () => {
+	const fetchImplementation = server({
+		"POST /repos/acme/app/pulls": (_url, init) => {
+			const parsed = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			if (parsed.head === "dup-branch") {
+				return Response.json(
+					{
+						message: "Validation Failed",
+						errors: [{ message: "A pull request already exists for acme:dup-branch." }],
+					},
+					{ status: 422 },
+				);
+			}
+			expect(parsed).toEqual({
+				title: "Add billing settings",
+				head: "feat/billing",
+				base: "main",
+				body: "Summary",
+				draft: true,
+			});
+			return Response.json(
+				{
+					number: 14,
+					title: "Add billing settings",
+					state: "open",
+					draft: true,
+					head: { ref: "feat/billing", sha: "c".repeat(40) },
+					base: { ref: "main" },
+					html_url: "https://github.com/acme/app/pull/14",
+					updated_at: "2026-11-27T11:00:00Z",
+				},
+				{ status: 201 },
+			);
+		},
+		"PATCH /repos/acme/app/pulls/14": (_url, init) => {
+			expect(JSON.parse(String(init?.body))).toEqual({ title: "Updated billing settings", state: "closed" });
+			return Response.json({
+				number: 14,
+				title: "Updated billing settings",
+				state: "closed",
+				draft: false,
+				head: { ref: "feat/billing", sha: "c".repeat(40) },
+				base: { ref: "main" },
+				html_url: "https://github.com/acme/app/pull/14",
+				updated_at: "2026-11-27T11:05:00Z",
+			});
+		},
+	});
+
+	await expect(
+		adapter("create_pull_request", fetchImplementation).execute(
+			input({
+				owner: "acme",
+				repository: "app",
+				title: "Add billing settings",
+				head: "feat/billing",
+				base: "main",
+				body: "Summary",
+				draft: true,
+			}),
+		),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: { number: 14, state: "open", draft: true, head: "feat/billing", base: "main" },
+	});
+	await expect(
+		adapter("create_pull_request", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", title: "Dup", head: "dup-branch", base: "main" }),
+		),
+	).resolves.toMatchObject({
+		status: "failed",
+		reason: "invalid_request",
+		detail: "GitHub: A pull request already exists for acme:dup-branch.",
+	});
+	await expect(
+		adapter("update_pull_request", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", number: 14, title: "Updated billing settings", state: "closed" }),
+		),
+	).resolves.toMatchObject({
+		status: "completed",
+		result: { number: 14, title: "Updated billing settings", state: "closed" },
+	});
+	await expect(
+		adapter("update_pull_request", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", number: 14 }),
+		),
+	).resolves.toMatchObject({ status: "failed", reason: "invalid_request" });
+	await expect(
+		adapter("list_check_runs", fetchImplementation).execute(
+			input({ owner: "acme", repository: "app", ref: "bad..ref" }),
+		),
+	).resolves.toMatchObject({ status: "failed", reason: "invalid_request" });
+});

@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const CATALOG_MIGRATION = "supabase/migrations/20260930931000_mailbox_email_actions.sql";
+export const CATALOG_MIGRATION = "supabase/migrations/20260930938000_github_track_pr_sync_and_webhooks.sql";
 const BEGIN = "-- BEGIN GENERATED CONNECTOR CATALOG (scripts/generate-cloud-connector-catalog.mjs)";
 const END = "-- END GENERATED CONNECTOR CATALOG";
 

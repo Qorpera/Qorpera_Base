@@ -9,6 +9,7 @@ import {
 import { MAX_CODE_CHECKS_FILE_BYTES, parseCodeChecksText } from "./cloud-code-checks.ts";
 import {
 	type CloudCompanyCodeDescribed,
+	type CloudCompanyCodeGitHubSyncAsked,
 	type CloudCompanyCodeHistoryPage,
 	type CloudCompanyCodeImport,
 	type CloudCompanyCodeImportAsked,
@@ -58,6 +59,10 @@ const ACTIONS = [
 	"unarchive",
 	"tag",
 	"prune",
+	"sync",
+	"pull",
+	"push",
+	"create_pr",
 ] as const;
 const READ_ONLY_ACTIONS = new Set<string>(["status", "log", "diff", "show", "branches", "merge_preview", "history"]);
 const KEYS = {
@@ -90,6 +95,22 @@ const KEYS = {
 	unarchive: ["action", "operationKey", "owner", "name"],
 	tag: ["action", "operationKey", "owner", "name", "mode", "tag", "ref", "message"],
 	prune: ["action", "operationKey", "owner", "name", "deleteMergedBranches"],
+	sync: ["action", "operationKey", "owner", "name", "github", "remoteBranch"],
+	pull: ["action", "operationKey", "owner", "name", "github", "remoteBranch"],
+	push: ["action", "operationKey", "owner", "name", "github", "remoteBranch", "ref", "allowDefaultBranch"],
+	create_pr: [
+		"action",
+		"operationKey",
+		"owner",
+		"name",
+		"github",
+		"head",
+		"base",
+		"title",
+		"body",
+		"draft",
+		"sessionId",
+	],
 } as const;
 const HISTORY_STATES = ["landed", "reverted", "conflict", "refused", "lost"] as const;
 const TAG_MODES = ["create", "list"] as const;
@@ -111,14 +132,15 @@ const MAX_SHOW_BYTES = 128 * 1024;
 
 export const CLOUD_CODE_TOOL_DESCRIPTION = [
 	"Look after the company's code kept in Qorpera. Qorpera numbers every change that goes into main and writes its record at code/<owner>/<name>/changes/<number>.md. Change numbers are yours, never the members' words.",
-	"Every action takes owner and name. Mutating actions (undo, describe, bring_in, create, archive, unarchive, tag, prune) also take operationKey; read-only actions (status, log, diff, show, branches, merge_preview, history) omit it.",
+	"Every action takes owner and name. Mutating actions also take operationKey; read-only actions (status, log, diff, show, branches, merge_preview, history) omit it.",
 	"- status: inspect a repository in one SQL call: active/recent coding sessions with claimedPaths, worktrees, recent changes, queue, archive/site state, and checks config.",
 	"- log / diff / show / branches / merge_preview: lightweight read-only git inspection without booting a coding VM. Refs accept main, a change number, a 40-char SHA, worker:<id>, tag:<name> or imported:<branch>.",
 	"- history: paginated, filterable SQL history of recorded changes (by state, workerId, path, cursor, limit).",
-	"- undo: revert one change, a range (change + toChange), a list (changes) or with andLater true. Supports dryRun, runChecks (gate on a prior checks-verified state unless force true), and site-aware revert.",
+	"- undo: revert one change, a range (change + toChange), a list (changes) or with andLater true. Supports dryRun, runChecks, and site-aware revert.",
 	"- describe: set a change's customer-facing notice and picture.",
 	'- bring_in: bring existing code in from {"github":"owner/name"} or {"file":"code/_incoming/<folder>/<name>.bundle"} (look true only inspects it).',
-	"- create / archive / unarchive / tag / prune: initialize an empty repository, archive or unarchive a repository (preserving reads), create or list git tags, or prune archived worktrees and merged worker branches.",
+	"- create / archive / unarchive / tag / prune: initialize, archive/unarchive, tag, or prune archived worktrees and merged worker branches.",
+	"- sync / pull / push / create_pr: two-way GitHub sync (check ahead/behind, pull into main, push a branch with default-branch protection, or open a GitHub PR optionally linked to a surface session).",
 ].join("\n");
 
 type CodeRefInput = string | number;
@@ -245,6 +267,45 @@ interface CodePrune {
 	readonly name: string;
 	readonly deleteMergedBranches: boolean;
 }
+interface CodeGitHubSync {
+	readonly action: "sync";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly github: string;
+	readonly remoteBranch: string;
+}
+interface CodeGitHubPull {
+	readonly action: "pull";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly github: string;
+	readonly remoteBranch: string;
+}
+interface CodeGitHubPush {
+	readonly action: "push";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly github: string;
+	readonly remoteBranch: string;
+	readonly ref?: CodeRefInput;
+	readonly allowDefaultBranch: boolean;
+}
+interface CodeGitHubCreatePr {
+	readonly action: "create_pr";
+	readonly operationKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly github: string;
+	readonly head: string;
+	readonly base: string;
+	readonly title: string;
+	readonly body?: string;
+	readonly draft: boolean;
+	readonly sessionId?: string;
+}
 type CodeCall =
 	| CodeStatus
 	| CodeLog
@@ -260,7 +321,11 @@ type CodeCall =
 	| CodeArchive
 	| CodeUnarchive
 	| CodeTag
-	| CodePrune;
+	| CodePrune
+	| CodeGitHubSync
+	| CodeGitHubPull
+	| CodeGitHubPush
+	| CodeGitHubCreatePr;
 
 function line(value: unknown, field: string, characters: number): string | undefined {
 	const text = typeof value === "string" ? value.trim() : value;
@@ -275,7 +340,7 @@ function line(value: unknown, field: string, characters: number): string | undef
 	return text;
 }
 
-function github(value: unknown): string {
+function github(value: unknown, field = "from.github"): string {
 	const parts = (typeof value === "string" ? value.trim() : "")
 		.replace(/^(?:https:\/\/)?(?:www\.)?github\.com\//i, "")
 		.replace(/(?:\.git)?\/?$/i, "")
@@ -284,7 +349,7 @@ function github(value: unknown): string {
 		if (parts.length !== 2) throw new Error("INVALID_CODING_REPOSITORY");
 		parseGitHubCodingRepository({ host: "github.com", owner: parts[0], name: parts[1], baseBranch: "main" });
 	} catch {
-		throw new CloudToolArgumentRefusal("from.github is a GitHub project's owner/name, such as acme/shop");
+		throw new CloudToolArgumentRefusal(`${field} is a GitHub project's owner/name, such as acme/shop`);
 	}
 	return parts.join("/");
 }
@@ -557,6 +622,72 @@ function parse(value: unknown): CodeCall {
 		if (a.deleteMergedBranches !== undefined && typeof a.deleteMergedBranches !== "boolean")
 			throw new CloudToolArgumentRefusal("deleteMergedBranches is true or false");
 		return { action, operationKey, owner, name, deleteMergedBranches: a.deleteMergedBranches === true };
+	}
+	if (action === "sync" || action === "pull") {
+		const githubRepo = github(a.github, "github");
+		const remoteBranch =
+			a.remoteBranch === undefined
+				? "main"
+				: (() => {
+						const cleaned =
+							typeof a.remoteBranch === "string" ? a.remoteBranch.trim().replace(/^refs\/heads\//, "") : "";
+						if (!branchTaken(cleaned))
+							throw new CloudToolArgumentRefusal(
+								"remoteBranch must be a valid git branch name of at most 200 bytes",
+							);
+						return cleaned;
+					})();
+		return { action, operationKey, owner, name, github: githubRepo, remoteBranch };
+	}
+	if (action === "push") {
+		const githubRepo = github(a.github, "github");
+		const remoteBranch =
+			typeof a.remoteBranch === "string" ? a.remoteBranch.trim().replace(/^refs\/heads\//, "") : "";
+		if (!branchTaken(remoteBranch))
+			throw new CloudToolArgumentRefusal("remoteBranch must be a valid git branch name of at most 200 bytes");
+		if (a.allowDefaultBranch !== undefined && typeof a.allowDefaultBranch !== "boolean")
+			throw new CloudToolArgumentRefusal("allowDefaultBranch is true or false");
+		return {
+			action,
+			operationKey,
+			owner,
+			name,
+			github: githubRepo,
+			remoteBranch,
+			...(a.ref === undefined ? {} : { ref: parseRef(a.ref, "ref") }),
+			allowDefaultBranch: a.allowDefaultBranch === true,
+		};
+	}
+	if (action === "create_pr") {
+		const githubRepo = github(a.github, "github");
+		const head = typeof a.head === "string" ? a.head.trim().replace(/^refs\/heads\//, "") : "";
+		if (!branchTaken(head))
+			throw new CloudToolArgumentRefusal("head must be a valid git branch name of at most 200 bytes");
+		const base =
+			a.base === undefined ? "main" : typeof a.base === "string" ? a.base.trim().replace(/^refs\/heads\//, "") : "";
+		if (!branchTaken(base))
+			throw new CloudToolArgumentRefusal("base must be a valid git branch name of at most 200 bytes");
+		const title = line(a.title, "title", 256);
+		if (title === undefined) throw new CloudToolArgumentRefusal("create_pr needs title of 1 to 256 characters");
+		if (a.body !== undefined && (typeof a.body !== "string" || a.body.length > 20_000))
+			throw new CloudToolArgumentRefusal("body must be a string of at most 20000 characters");
+		if (a.draft !== undefined && typeof a.draft !== "boolean")
+			throw new CloudToolArgumentRefusal("draft is true or false");
+		if (a.sessionId !== undefined && (typeof a.sessionId !== "string" || !UUID_PATTERN.test(a.sessionId)))
+			throw new CloudToolArgumentRefusal("sessionId must be a valid UUID");
+		return {
+			action,
+			operationKey,
+			owner,
+			name,
+			github: githubRepo,
+			head,
+			base,
+			title,
+			...(a.body === undefined ? {} : { body: a.body }),
+			draft: a.draft === true,
+			...(a.sessionId === undefined ? {} : { sessionId: a.sessionId }),
+		};
 	}
 	if (action === "bring_in") {
 		if (a.look !== undefined && typeof a.look !== "boolean")
@@ -856,6 +987,26 @@ function queryRefused(
 	}
 }
 
+function githubSyncRefused(
+	reason: Extract<CloudCompanyCodeGitHubSyncAsked, { state: "refused" }>["reason"],
+	request: CodeGitHubSync | CodeGitHubPull | CodeGitHubPush | CodeGitHubCreatePr,
+): string {
+	switch (reason) {
+		case "archived":
+			return `Nothing was changed: ${request.owner}/${request.name} is archived.`;
+		case "no_session":
+			return "No matching surface session was found for sessionId in this company.";
+		case "no_github_connection":
+			return "No active company GitHub connection is available to this agent. Ask an owner or admin to connect GitHub under Settings -> Company connections.";
+		case "busy":
+			return `Another repository update is already running on ${request.owner}/${request.name}. Call again with a new operationKey when it finishes.`;
+		case "no_executor":
+			return "Qorpera's code service is not running for this company right now. Try again in a few minutes, with a new operationKey.";
+		default:
+			return raised(reason, request);
+	}
+}
+
 function importStop(
 	code: string,
 	request: CodeBringIn,
@@ -1103,6 +1254,7 @@ export function cloudCodeTools(options: {
 		| "codeHistory"
 		| "codeQuery"
 		| "codeLifecycle"
+		| "codeGitHubSync"
 		| "describeCodeChange"
 		| "requestCodeImport"
 		| "codeImport"
@@ -1123,7 +1275,7 @@ export function cloudCodeTools(options: {
 
 	const pollCodeRequest = async (
 		requestId: string,
-		expectedKind: "undo" | "query" | "lifecycle",
+		expectedKind: "undo" | "query" | "lifecycle" | "github_sync",
 		maxWaitMs: number,
 		signal: AbortSignal,
 	): Promise<CloudCompanyCodeRequestV2 | undefined> => {
@@ -1568,6 +1720,79 @@ export function cloudCodeTools(options: {
 		return said(text);
 	};
 
+	const runGitHubSync = async (
+		request: CodeGitHubSync | CodeGitHubPull | CodeGitHubPush | CodeGitHubCreatePr,
+		context: CloudToolContext,
+	): Promise<CloudToolContent> => {
+		const payload: Record<string, unknown> & { readonly operationKey: string } =
+			request.action === "sync" || request.action === "pull"
+				? {
+						operationKey: request.operationKey,
+						op: request.action,
+						owner: request.owner,
+						name: request.name,
+						github: request.github,
+						remoteBranch: request.remoteBranch,
+					}
+				: request.action === "push"
+					? {
+							operationKey: request.operationKey,
+							op: "push",
+							owner: request.owner,
+							name: request.name,
+							github: request.github,
+							remoteBranch: request.remoteBranch,
+							...(request.ref === undefined ? {} : { ref: request.ref }),
+							allowDefaultBranch: request.allowDefaultBranch,
+						}
+					: {
+							operationKey: request.operationKey,
+							op: "create_pr",
+							owner: request.owner,
+							name: request.name,
+							github: request.github,
+							head: request.head,
+							base: request.base,
+							title: request.title,
+							...(request.body === undefined ? {} : { body: request.body }),
+							draft: request.draft,
+							...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+						};
+		const asked = await folder.codeGitHubSync(payload, context.signal);
+		if (asked.state === "refused") throw new CloudToolRefusal(githubSyncRefused(asked.reason, request));
+		const ended = await pollCodeRequest(asked.requestId, "github_sync", waitMs, context.signal);
+		if (!ended) {
+			return said(
+				cloudToolJsonText({
+					schema: "qorpera.code-github-sync-pending/v1",
+					requestId: asked.requestId,
+					action: request.action,
+					state: "pending",
+					message: `GitHub ${request.action} is still running; call again with the same operationKey.`,
+				}),
+			);
+		}
+		if (ended.state === "refused") {
+			throw new CloudToolRefusal(
+				`GitHub ${request.action} refused${inFiles(ended.paths)}.${formatMessages(ended.messages)}${codeMark(ended.code)}`,
+			);
+		}
+		if (ended.state !== "done") {
+			throw new CloudToolRefusal(`GitHub ${request.action} failed.${codeMark(ended.code)}`);
+		}
+		const text = fitTextFieldJson({
+			schema: "qorpera.code-github-sync/v1",
+			action: request.action,
+			state: "done",
+			result: ended.result ?? "ok",
+			owner: request.owner,
+			name: request.name,
+			...((ended.data ?? {}) as Record<string, JsonValue>),
+		});
+		context.observation?.update({ outputBytes: Buffer.byteLength(text) });
+		return said(text);
+	};
+
 	const undo = async (request: CodeUndo, signal: AbortSignal): Promise<CloudToolContent> => {
 		const { action: _action, ...asked } = request;
 		const answer = await folder.requestCodeUndoV2(asked, signal);
@@ -1708,6 +1933,30 @@ export function cloudCodeTools(options: {
 					description:
 						"With prune: also delete fully-merged qorpera/coding/* branches whose worktrees are gone; a later follow-up on such a session resumes from current main.",
 				},
+				github: {
+					type: "string",
+					minLength: 3,
+					maxLength: 200,
+					description: "With sync, pull, push, create_pr: target GitHub repository as owner/name.",
+				},
+				remoteBranch: {
+					type: "string",
+					minLength: 1,
+					maxLength: BRANCH_BYTES,
+					description: "With sync, pull, push: GitHub branch name (defaults to main for sync/pull).",
+				},
+				allowDefaultBranch: {
+					type: "boolean",
+					description: "With push: allow pushing directly to GitHub's default branch (default false).",
+				},
+				title: { type: "string", minLength: 1, maxLength: 256, description: "With create_pr: pull request title." },
+				body: { type: "string", maxLength: 20_000, description: "With create_pr: pull request body in Markdown." },
+				draft: { type: "boolean", description: "With create_pr: open pull request as a draft." },
+				sessionId: {
+					type: "string",
+					pattern: UUID_PATTERN.source,
+					description: "With create_pr: optional surface session ID to link the created PR to.",
+				},
 			},
 		},
 		parseArguments: (value) => parse(value) as never,
@@ -1743,6 +1992,13 @@ export function cloudCodeTools(options: {
 				request.action === "prune"
 			)
 				return runLifecycle(request, context);
+			if (
+				request.action === "sync" ||
+				request.action === "pull" ||
+				request.action === "push" ||
+				request.action === "create_pr"
+			)
+				return runGitHubSync(request, context);
 			if (request.action === "bring_in") return bringIn(request, context.signal);
 			return request.action === "undo" ? undo(request, context.signal) : describe(request, context.signal);
 		},

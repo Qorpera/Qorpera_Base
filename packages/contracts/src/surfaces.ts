@@ -415,6 +415,9 @@ export interface SurfaceSessionExternalPr {
 	readonly headBranch?: string | null;
 	readonly baseBranch?: string | null;
 	readonly title?: string | null;
+	readonly headSha?: string | null;
+	readonly draft?: boolean | null;
+	readonly checksStatus?: SurfaceChecksStatus | null;
 	readonly updatedAt?: string | null;
 }
 
@@ -1218,6 +1221,15 @@ export function parseSurfaceSessionExternalPr(value: unknown, label = "externalP
 	const baseBranch =
 		raw.baseBranch === undefined ? undefined : parseOptionalText(raw.baseBranch, `${label}.baseBranch`, 200);
 	const title = raw.title === undefined ? undefined : parseOptionalText(raw.title, `${label}.title`, 240);
+	const headSha = raw.headSha === undefined ? undefined : parseOptionalText(raw.headSha, `${label}.headSha`, 64);
+	const draft =
+		raw.draft === undefined ? undefined : raw.draft === null ? null : parseOptionalFlag(raw.draft, `${label}.draft`);
+	const checksStatus =
+		raw.checksStatus === undefined
+			? undefined
+			: raw.checksStatus === null
+				? null
+				: parseEnum(raw.checksStatus, SURFACE_CHECKS_STATUSES, `${label}.checksStatus`);
 	const updatedAt =
 		raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
 	return {
@@ -1229,6 +1241,9 @@ export function parseSurfaceSessionExternalPr(value: unknown, label = "externalP
 		...(headBranch !== undefined ? { headBranch } : {}),
 		...(baseBranch !== undefined ? { baseBranch } : {}),
 		...(title !== undefined ? { title } : {}),
+		...(headSha !== undefined ? { headSha } : {}),
+		...(draft !== undefined ? { draft } : {}),
+		...(checksStatus !== undefined ? { checksStatus } : {}),
 		...(updatedAt !== undefined ? { updatedAt } : {}),
 	};
 }

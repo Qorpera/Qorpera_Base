@@ -167,6 +167,48 @@ describe("which calls are reviewed", () => {
 			"internal",
 		],
 		["manage_code", { action: "status", owner: "acme", name: "shop" }, "read"],
+		["manage_code", { action: "log", owner: "acme", name: "shop" }, "read"],
+		["manage_code", { action: "diff", owner: "acme", name: "shop", base: "main", head: "HEAD" }, "read"],
+		["manage_code", { action: "show", owner: "acme", name: "shop", path: "README.md" }, "read"],
+		["manage_code", { action: "branches", owner: "acme", name: "shop" }, "read"],
+		["manage_code", { action: "merge_preview", owner: "acme", name: "shop", head: "worker:w1" }, "read"],
+		["manage_code", { action: "history", owner: "acme", name: "shop" }, "read"],
+		[
+			"manage_code",
+			{ action: "sync", operationKey: "k", owner: "acme", name: "shop", github: "acme/shop" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{ action: "pull", operationKey: "k", owner: "acme", name: "shop", github: "acme/shop" },
+			"internal",
+		],
+		[
+			"manage_code",
+			{
+				action: "push",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				remoteBranch: "feat/a",
+			},
+			"external",
+		],
+		[
+			"manage_code",
+			{
+				action: "create_pr",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				head: "feat/a",
+				base: "main",
+				title: "Add billing",
+			},
+			"external",
+		],
 		["computer_browser", { action: { kind: "browser", action: "snapshot" } }, "read"],
 		["computer_browser", { action: { kind: "browser", action: "click", role: "button", name: "Send" } }, "external"],
 		[
@@ -815,6 +857,71 @@ describe("what the card shows", () => {
 			title: "Comment on a GitHub issue",
 			target: "acme/shop#42",
 			details: { body: "Fixed in the latest release." },
+		});
+		expect(
+			describeCloudAction(tool("github_create_pull_request", "connector"), {
+				idempotencyKey: "k",
+				input: {
+					owner: "acme",
+					repository: "shop",
+					title: "Billing redesign",
+					head: "feat/billing",
+					base: "main",
+					draft: true,
+				},
+			}),
+		).toEqual({
+			title: "Open a GitHub pull request",
+			target: "acme/shop",
+			details: { title: "Billing redesign", head: "feat/billing", base: "main", draft: "yes" },
+		});
+		expect(
+			describeCloudAction(tool("github_update_pull_request", "connector"), {
+				idempotencyKey: "k",
+				input: { owner: "acme", repository: "shop", number: 12, title: "Updated PR", state: "closed" },
+			}),
+		).toEqual({
+			title: "Update a GitHub pull request",
+			target: "acme/shop#12",
+			details: { title: "Updated PR", state: "closed" },
+		});
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "push",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				remoteBranch: "feat/billing",
+				ref: "main",
+			}),
+		).toEqual({
+			title: "Push a branch to GitHub",
+			target: "acme/shop feat/billing",
+			details: { repository: "acme/shop", github: "acme/shop", branch: "feat/billing", "local ref": "main" },
+		});
+		expect(
+			describeCloudAction(tool("manage_code"), {
+				action: "create_pr",
+				operationKey: "k",
+				owner: "acme",
+				name: "shop",
+				github: "acme/shop",
+				head: "feat/billing",
+				base: "main",
+				title: "Billing redesign",
+				draft: false,
+			}),
+		).toEqual({
+			title: "Open a GitHub pull request",
+			target: "acme/shop feat/billing",
+			details: {
+				repository: "acme/shop",
+				github: "acme/shop",
+				branch: "feat/billing",
+				base: "main",
+				title: "Billing redesign",
+			},
 		});
 	});
 
