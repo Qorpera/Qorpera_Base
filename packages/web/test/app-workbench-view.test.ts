@@ -5,10 +5,11 @@ import type {
 	SurfaceSession,
 	SurfaceSessionArtifact,
 } from "@qorpera/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isAppWorkbenchSurface } from "../src/app/surface-kinds.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
+import { PAGE_CONTENT, PAGE_FRAME_URL, PAGE_READY } from "../src/ui/page-frame.ts";
 import {
 	CHANGES,
 	COMPANY,
@@ -101,9 +102,24 @@ function planArtifact(overrides: Partial<SurfaceSessionArtifact> = {}): SurfaceS
 }
 
 describe("AppWorkbenchView", () => {
+	const { showModal: originalShowModal, show: originalShow, close: originalClose } = HTMLDialogElement.prototype;
+
+	beforeEach(() => {
+		HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+			this.setAttribute("open", "");
+		};
+		HTMLDialogElement.prototype.show = HTMLDialogElement.prototype.showModal;
+		HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+			this.removeAttribute("open");
+		};
+	});
+
 	afterEach(() => {
 		document.body.replaceChildren();
 		localStorage.clear();
+		HTMLDialogElement.prototype.showModal = originalShowModal;
+		HTMLDialogElement.prototype.show = originalShow;
+		HTMLDialogElement.prototype.close = originalClose;
 		vi.restoreAllMocks();
 	});
 
@@ -275,6 +291,8 @@ describe("AppWorkbenchView", () => {
 		expect(view.el.querySelector<HTMLAnchorElement>(".workbench-pr-link")?.href).toBe(
 			"https://github.com/qorpera/qorpera-base/pull/42",
 		);
+		expect(view.el.querySelectorAll('[data-act="stop-turn"]').length).toBe(1);
+		expect(view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")?.rows).toBe(1);
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="stop-turn"]')!.click();
 		await flush();
@@ -365,7 +383,7 @@ describe("AppWorkbenchView", () => {
 			id === ARTIFACT_MOCKUP
 				? mockupArtifact({
 						contentText:
-							"<!doctype html><!-- <head> --><html><head></head><body><h1>Mockup Hero</h1><script>alert(1)</script></body></html>",
+							'<!doctype html><html><head><link rel="preconnect" href="https://evil.example"><style>h1{color:#111}</style></head><body><h1>Mockup Hero</h1><noscript>nope</noscript></body></html>',
 					})
 				: planArtifact({ contentText: "## Rollout\n\n- Step one\n- Step two" }),
 		);
@@ -432,15 +450,34 @@ describe("AppWorkbenchView", () => {
 		expect(getSurfaceSessionArtifact).toHaveBeenCalledWith(ARTIFACT_MOCKUP, expect.any(AbortSignal));
 		const mockupFrame = view.el.querySelector<HTMLIFrameElement>(".workbench-artifact-iframe")!;
 		expect(mockupFrame).not.toBeNull();
-		expect(mockupFrame.getAttribute("sandbox")).toBe("");
+		expect(mockupFrame.getAttribute("sandbox")).toBe("allow-scripts");
 		expect(mockupFrame.getAttribute("referrerpolicy")).toBe("no-referrer");
-		expect(mockupFrame.srcdoc).toContain("Content-Security-Policy");
-		expect(mockupFrame.srcdoc).toContain("default-src 'none'");
-		expect(mockupFrame.srcdoc.indexOf("<!doctype html>")).toBe(0);
-		expect(mockupFrame.srcdoc.indexOf("Content-Security-Policy")).toBeLessThan(
-			mockupFrame.srcdoc.indexOf("<!-- <head> -->"),
+		expect(mockupFrame.getAttribute("src")).toBe(PAGE_FRAME_URL);
+		const postMessage = vi.fn();
+		const fakeWin = { postMessage } as unknown as Window;
+		Object.defineProperty(mockupFrame, "contentWindow", { configurable: true, value: fakeWin });
+		mockupFrame.dispatchEvent(new Event("load"));
+		const readyEvent = new MessageEvent("message", { data: { type: PAGE_READY } });
+		Object.defineProperty(readyEvent, "source", { value: fakeWin });
+		window.dispatchEvent(readyEvent);
+		expect(postMessage).toHaveBeenCalledTimes(1);
+		const handed = postMessage.mock.calls[0]?.[0] as { type: string; html: string };
+		expect(handed.type).toBe(PAGE_CONTENT);
+		expect(handed.html).toContain("Mockup Hero");
+		expect(handed.html).toContain("h1{color:#111}");
+		expect(handed.html).not.toContain("preconnect");
+		expect(handed.html).not.toContain("noscript");
+
+		view.el
+			.querySelector<HTMLButtonElement>(`[data-act="expand-artifact"][data-artifact="${ARTIFACT_MOCKUP}"]`)!
+			.click();
+		const expandedDialog = document.body.querySelector<HTMLDialogElement>("dialog.page-preview-dialog");
+		expect(expandedDialog).not.toBeNull();
+		expect(expandedDialog?.querySelector<HTMLIFrameElement>(".page-preview-frame")?.getAttribute("src")).toBe(
+			PAGE_FRAME_URL,
 		);
-		expect(mockupFrame.srcdoc).toContain("Mockup Hero");
+		expandedDialog?.querySelector<HTMLButtonElement>(".surface-close")?.click();
+		expect(document.body.querySelector("dialog.page-preview-dialog")).toBeNull();
 
 		view.el.querySelector<HTMLButtonElement>(`[data-act="open-artifact"][data-artifact="${ARTIFACT_PLAN}"]`)!.click();
 		await flush();
@@ -858,7 +895,22 @@ describe("AppWorkbenchView", () => {
 		const panel = view.el.querySelector<HTMLElement>(".workbench-panel")!;
 		Object.defineProperty(body, "clientWidth", { configurable: true, value: 1000 });
 		view.update();
-		expect(Number.parseInt(panel.style.width, 10)).toBeLessThanOrEqual(1000 - 236 - 380);
+		expect(Number.parseInt(panel.style.width, 10)).toBeLessThanOrEqual(1000 - 236 - 340);
+
+		const resizer = view.el.querySelector<HTMLElement>(".workbench-panel-resizer")!;
+		resizer.dispatchEvent(new MouseEvent("pointerdown", { button: 0, clientX: 500, bubbles: true }));
+		window.dispatchEvent(new MouseEvent("pointermove", { clientX: 580, bubbles: true }));
+		window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+		expect(Number.parseInt(panel.style.width, 10)).toBe(344);
+		resizer.dispatchEvent(new MouseEvent("pointerdown", { button: 0, clientX: 580, bubbles: true }));
+		window.dispatchEvent(new MouseEvent("pointermove", { clientX: 530, bubbles: true }));
+		window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+		expect(Number.parseInt(panel.style.width, 10)).toBe(394);
+
+		Object.defineProperty(body, "clientWidth", { configurable: true, value: 680 });
+		view.update();
+		expect(tracksRail.hidden).toBe(true);
+		expect(panel.hidden).toBe(false);
 
 		body.style.flexDirection = "column";
 		Object.defineProperty(body, "clientWidth", { configurable: true, value: 420 });
