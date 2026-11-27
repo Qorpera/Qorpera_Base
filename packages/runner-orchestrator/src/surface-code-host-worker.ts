@@ -2292,7 +2292,11 @@ export class SurfaceCodeHostWorker {
 			if (plan.kind === "app") {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
-						const treeData = await this.#readTree(preparedJob, { repository, tree: compositeTreeSha, ...subpathArg });
+						const treeData = await this.#readTree(preparedJob, {
+							repository,
+							tree: compositeTreeSha,
+							...subpathArg,
+						});
 						const sharedAssets = await readSharedIdentityAssets(
 							preparedJob,
 							preparedJob.signal,
@@ -2836,7 +2840,11 @@ export class SurfaceCodeHostWorker {
 			if (plan.kind === "app") {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
-						const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
+						const treeData = await this.#readTree(preparedJob, {
+							repository,
+							tree: resolved.treeSha,
+							...pubSubpathArg,
+						});
 						const sharedAssets = await readSharedIdentityAssets(
 							preparedJob,
 							preparedJob.signal,
