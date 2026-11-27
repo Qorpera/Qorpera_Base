@@ -11,9 +11,13 @@ import {
 	type StudioBinaryRef,
 	type StudioPatchOp,
 	SURFACE_IDENTITY_CSS_MOUNT_PATH,
+	SURFACE_KINDS,
 	SURFACE_SHARED_DIR,
 	type SurfaceArchetype,
+	type SurfaceKind,
 	type SurfaceSourceKind,
+	surfaceLookKind,
+	surfaceStarterKind,
 } from "@qorpera/contracts";
 import type { GeminiTtsModel, GeminiTtsSpeechResult, GeminiTtsVoice } from "./cloud-gemini-tts.ts";
 import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
@@ -231,6 +235,55 @@ export interface CompanyInterfacesContext {
 	readonly interfaces: readonly CompanyInterfaceSummary[];
 	readonly strategySummary?: string | null;
 	readonly identitySummary?: string | null;
+	readonly analyticsSummary?: { readonly folderRoot: string; readonly text: string } | null;
+}
+
+const MAX_ANALYTICS_NUMBERS = 16;
+const MAX_ANALYTICS_SUMMARY_CHARS = 1500;
+
+function isAnalyticsInterface(item: CompanyInterfaceSummary): boolean {
+	if (item.archetype !== "studio" || item.sourceKind !== "folder") return false;
+	const kind = (SURFACE_KINDS as readonly string[]).includes(item.kind) ? (item.kind as SurfaceKind) : "custom";
+	return (
+		surfaceStarterKind({
+			lookKind: surfaceLookKind({ slug: item.slug, icon: "", archetype: "studio", kind }),
+			slug: item.slug,
+			isGlobal: item.isGlobal,
+			paths: [],
+			hasModel: false,
+		}) === "analytics"
+	);
+}
+
+export function extractAnalyticsNumbersSummary(metricsJsonText: string | null | undefined): string | null {
+	if (!metricsJsonText?.trim()) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(metricsJsonText);
+	} catch {
+		return null;
+	}
+	const metrics =
+		parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>).metrics
+			: undefined;
+	if (!Array.isArray(metrics)) return null;
+	const text = (value: unknown, max: number) =>
+		typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
+	const lines: string[] = [];
+	for (const raw of metrics) {
+		if (lines.length >= MAX_ANALYTICS_NUMBERS) break;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+		const metric = raw as Record<string, unknown>;
+		const name = text(metric.name, 60);
+		if (!name) continue;
+		const counts = text(metric.counts, 160);
+		const question = text(metric.question, 80);
+		const unit = text(metric.unit, 16);
+		const about = [question ? `question ${question}` : "", unit].filter(Boolean).join(", ");
+		lines.push(`- ${name}${counts ? `: ${counts}` : ""}${about ? ` (${about})` : ""}`);
+	}
+	return lines.length > 0 ? lines.join("\n").slice(0, MAX_ANALYTICS_SUMMARY_CHARS) : null;
 }
 
 export function parseCompanyInterfacesResponse(raw: unknown): CompanyInterfaceSummary[] {
@@ -326,6 +379,7 @@ export async function loadCompanyInterfacesContext(
 	if (interfaces.length === 0) return null;
 	const strategyInterface = interfaces.find((item) => item.slug === "strategy" || item.kind === "strategy");
 	const identityInterface = interfaces.find((item) => item.slug === "identity" || item.kind === "identity");
+	const analyticsRoot = interfaces.find(isAnalyticsInterface)?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 	const strategyRoot = strategyInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 	const identityRoot = identityInterface?.folderRoot?.replace(/^\/+|\/+$/g, "") || null;
 	const folderRoots = [
@@ -336,7 +390,7 @@ export async function loadCompanyInterfacesContext(
 				.filter(Boolean),
 		),
 	].slice(0, MAX_INTERFACE_FOLDER_PROBES);
-	if (!strategyRoot && !identityRoot && folderRoots.length === 0) {
+	if (!strategyRoot && !identityRoot && !analyticsRoot && folderRoots.length === 0) {
 		return { interfaces, strategySummary: null, identitySummary: null };
 	}
 	let folderClient: CompanyInterfacesFolderReader;
@@ -366,10 +420,11 @@ export async function loadCompanyInterfacesContext(
 			return undefined;
 		}
 	};
-	const [strategyPlays, strategyBrief, identityBrief, existenceResults] = await Promise.all([
+	const [strategyPlays, strategyBrief, identityBrief, analyticsMetrics, existenceResults] = await Promise.all([
 		strategyRoot ? readOptionalText(`${strategyRoot}/plays.json`, 16_384) : Promise.resolve(null),
 		strategyRoot ? readOptionalText(`${strategyRoot}/brief.md`, 12_288) : Promise.resolve(null),
 		identityRoot ? readOptionalText(`${identityRoot}/brief.md`, 12_288) : Promise.resolve(null),
+		analyticsRoot ? readOptionalText(`${analyticsRoot}/metrics.json`, 32_768) : Promise.resolve(null),
 		Promise.all(folderRoots.map(async (root) => [root, await checkFolderExists(root)] as const)),
 	]);
 	const existsByRoot = new Map<string, boolean>();
@@ -386,6 +441,10 @@ export async function loadCompanyInterfacesContext(
 		interfaces: annotatedInterfaces,
 		strategySummary: extractStrategyInterfaceSummary(strategyPlays, strategyBrief),
 		identitySummary: identityBrief,
+		analyticsSummary: (() => {
+			const text = extractAnalyticsNumbersSummary(analyticsMetrics);
+			return analyticsRoot && text ? { folderRoot: analyticsRoot, text } : null;
+		})(),
 	};
 }
 
@@ -443,6 +502,15 @@ export function buildCompanyInterfacesSection(
 	}
 	if (identitySummary) {
 		lines.push("", "### Active Identity Summary (`/company/identity`)", identitySummary.slice(0, 1200));
+	}
+	const current = ctx.interfaces.find((item) => item.slug === options.currentSlug);
+	if (ctx.analyticsSummary && current && (current.slug === "strategy" || current.kind === "strategy")) {
+		lines.push(
+			"",
+			`### Analytics Numbers (\`/company/${ctx.analyticsSummary.folderRoot}/metrics.json\`)`,
+			"Take real figures from these; read each with data_query by its question before you use it.",
+			ctx.analyticsSummary.text,
+		);
 	}
 	return lines.join("\n");
 }

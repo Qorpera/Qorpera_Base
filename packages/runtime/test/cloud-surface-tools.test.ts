@@ -154,6 +154,8 @@ describe("cloud surface runtime tools", () => {
 		const surfaceId = randomUUID();
 		const proposeSurface = vi.fn().mockResolvedValue({ id: surfaceId, slug: "website", status: "active" as const });
 		const tool = createProposeSurfaceTool({ proposeSurface });
+		expect(tool.description).toContain('Analytics (live business numbers, kind "dashboard")');
+		expect(JSON.stringify(tool.inputSchema)).toContain("Analytics: studio, kind dashboard.");
 
 		const parsed = tool.parseArguments({
 			slug: "website",
@@ -1551,6 +1553,98 @@ describe("cloud surface runtime tools", () => {
 				text: "# Legacy report",
 			});
 			expect(JSON.parse(String(legacyWrite.value)).state).toBe("applied");
+		} finally {
+			f.run.close();
+		}
+	});
+
+	it("lets an Analytics session save a named question directly in an existing database, and nothing else under data/", async () => {
+		const f = await folderWriterFixture({
+			folders: ["data", "data/shop", "data/shop/queries", "data/crm", "surfaces", "surfaces/numbers"],
+			files: {
+				"data/shop/database.toml": 'format = "qorpera.database/v1"\n',
+				"data/shop/tables/001-orders.sql": "create table orders (id int);\n",
+				"data/crm/database.toml": 'format = "qorpera.database/v1"\n',
+			},
+		});
+		try {
+			const callerFor = (savesQuestions: boolean) => {
+				const tools = cloudFolderFileTools({
+					folder: f.folder,
+					operations: f.operations(),
+					identity: f.identity,
+					surfaceFilePolicy: {
+						mode: "surface_worker",
+						writableRoots: ["QorperaOS/surfaces/numbers/notes"],
+						stagedRoots: ["surfaces/numbers"],
+						savesQuestions,
+					},
+				});
+				const getTool = (name: string) => tools.find((candidate) => candidate.name === name) as CloudNativeTool;
+				return (name: string, args: JsonValue) =>
+					getTool(name).execute(getTool(name).parseArguments(args), f.context);
+			};
+			const analytics = callerFor(true);
+			const question =
+				"-- Bookings each week.\nselect date_trunc('week', at) as week, count(*) as bookings from bookings group by 1;\n";
+			const saved = await analytics("company_write", {
+				path: "data/shop/queries/bookings-weeks.sql",
+				operationKey: "save-question",
+				expectedVersion: null,
+				text: question,
+			});
+			expect(JSON.parse(String(saved.value)).state).toBe("applied");
+			const folderMade = await analytics("company_mkdir", {
+				path: "data/crm/queries",
+				operationKey: "make-queries",
+				expectedVersion: null,
+			});
+			expect(JSON.parse(String(folderMade.value)).state).toBe("applied");
+			const refusedUnderData = (error: unknown) =>
+				error instanceof CloudToolRefusal &&
+				error.message.includes("SURFACE_FILE_POLICY_REFUSED: nothing was written;") &&
+				error.message.includes("saves only a named question, data/<database>/queries/<name>.sql");
+			for (const [path, key] of [
+				["data/shop/tables/002-bookings.sql", "step"],
+				["data/shop/actions/add.sql", "action"],
+				["data/shop/queries/Bookings.sql", "capital"],
+				["data/shop/queries/bookings_weeks.sql", "underscore"],
+				["data/shop/queries/notes.md", "not-sql"],
+				["data/shop/queries/deep/one.sql", "nested"],
+				["data/shop/database.toml", "toml"],
+			]) {
+				await expect(
+					analytics("company_write", { path, operationKey: `refuse-${key}`, expectedVersion: null, text: "x" }),
+				).rejects.toSatisfy(refusedUnderData);
+			}
+			await expect(
+				analytics("company_write", {
+					path: "data/nowhere/queries/count.sql",
+					operationKey: "refuse-missing-db",
+					expectedVersion: null,
+					text: question,
+				}),
+			).rejects.toSatisfy(
+				(error: unknown) =>
+					error instanceof CloudToolRefusal && error.message.includes("there is no database data/nowhere/"),
+			);
+			expect(await f.folder.read("data/nowhere/queries/count.sql", new AbortController().signal)).toMatchObject({
+				entry: null,
+			});
+
+			const other = callerFor(false);
+			await expect(
+				other("company_write", {
+					path: "data/shop/queries/other.sql",
+					operationKey: "other-session",
+					expectedVersion: null,
+					text: question,
+				}),
+			).rejects.toSatisfy(
+				(error: unknown) =>
+					error instanceof CloudToolRefusal &&
+					error.message.includes("is outside this Surface worker's writable roots"),
+			);
 		} finally {
 			f.run.close();
 		}

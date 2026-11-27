@@ -579,7 +579,15 @@ export type SurfaceFilePolicy =
 			readonly mode: "surface_worker";
 			readonly writableRoots: readonly string[];
 			readonly stagedRoots: readonly string[];
+			readonly savesQuestions?: boolean;
 	  };
+
+const QUESTION_FILE = /^data\/([a-z][a-z0-9_]{0,39})\/queries\/(?=[a-z0-9-]{1,60}\.sql$)[a-z0-9]+(?:-[a-z0-9]+)*\.sql$/;
+const QUESTIONS_FOLDER = /^data\/([a-z][a-z0-9_]{0,39})\/queries$/;
+const QUESTION_ONLY =
+	"under data/ this session saves only a named question, data/<database>/queries/<name>.sql (a lower-case name of a-z, 0-9 and single hyphens, at most 60), in a database that already exists";
+
+type PolicyTarget = "file" | "folder" | "other";
 
 const COFOUNDER_DOC_SPRAWL_ROOTS = new Set([
 	"strategy",
@@ -600,24 +608,37 @@ function normalizePolicyPath(targetPath: string): string {
 	return companyPathKey(targetPath).replace(/^\/+|\/+$/g, "");
 }
 
-function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetPath: string): void {
-	if (!policy) return;
+function enforceSurfaceFilePolicy(
+	policy: SurfaceFilePolicy | undefined,
+	targetPath: string,
+	target: PolicyTarget = "other",
+): string | null {
+	if (!policy) return null;
 	const normalized = normalizePolicyPath(targetPath);
 	const root = normalized.split("/")[0] ?? "";
+	if (policy.mode === "surface_worker" && policy.savesQuestions === true && root === "data") {
+		const exact = targetPath.replace(/^\/+|\/+$/g, "");
+		const question =
+			target === "file" ? QUESTION_FILE.exec(exact) : target === "folder" ? QUESTIONS_FOLDER.exec(exact) : null;
+		if (question?.[1]) return question[1];
+		throw new CloudToolRefusal(
+			`SURFACE_FILE_POLICY_REFUSED: nothing was written; "${targetPath}": ${QUESTION_ONLY}.`,
+		);
+	}
 	if ((policy.mode === "cofounder" || policy.mode === "worker") && root === APPS_FOLDER) {
 		throw new CloudToolRefusal(
 			'SURFACE_FILE_POLICY_REFUSED: legacy "apps/" interfaces are retired in Surface-First mode. Use the Strategy surface (surfaces/strategy) or propose a Custom Studio Surface via propose_surface (archetype: "studio", sourceKind: "folder") and stage work via start_surface_session instead.',
 		);
 	}
-	if (policy.mode === "worker") return;
+	if (policy.mode === "worker") return null;
 	if (policy.mode === "cofounder") {
-		if (policy.allowExplicitMemberDoc) return;
+		if (policy.allowExplicitMemberDoc) return null;
 		if (COFOUNDER_DOC_SPRAWL_ROOTS.has(root)) {
 			throw new CloudToolRefusal(
 				`SURFACE_FILE_POLICY_REFUSED: writing under "${root}/" is blocked in Surface-First mode to prevent doc sprawl. Stage strategic or planning work in the Strategy surface (or a Custom Studio Surface) via start_surface_session, or place a concise Note under QorperaOS/surfaces/<slug>/notes/.`,
 			);
 		}
-		return;
+		return null;
 	}
 	const roots = (paths: readonly string[]) =>
 		paths
@@ -625,7 +646,7 @@ function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetP
 			.filter((root) => root.key.length > 0);
 	const within = (root: { readonly key: string }) => normalized === root.key || normalized.startsWith(`${root.key}/`);
 	const writable = roots(policy.writableRoots);
-	if (writable.some(within)) return;
+	if (writable.some(within)) return null;
 	const notes = writable.map((root) => `${root.shown}/`).join(", ") || "none";
 	const staged = roots(policy.stagedRoots).find(within);
 	if (staged !== undefined) {
@@ -636,6 +657,24 @@ function enforceSurfaceFilePolicy(policy: SurfaceFilePolicy | undefined, targetP
 	throw new CloudToolRefusal(
 		`SURFACE_FILE_POLICY_REFUSED: path "${targetPath}" is outside this Surface worker's writable roots (${notes}). Change Studio files with stage_surface_patch and write directly only notes under ${notes}.`,
 	);
+}
+
+async function requireQuestionDatabase(
+	folder: CloudCompanyFolderClient,
+	database: string | null,
+	signal: AbortSignal,
+): Promise<void> {
+	if (database === null) return;
+	let found: CloudCompanyFolderEntry | null;
+	try {
+		found = (await folder.read(`data/${database}/database.toml`, signal)).entry;
+	} catch (error) {
+		return unavailable(error, "written");
+	}
+	if (found?.kind !== "file")
+		throw new CloudToolRefusal(
+			`SURFACE_FILE_POLICY_REFUSED: nothing was written; there is no database data/${database}/ (it has no database.toml), and ${QUESTION_ONLY}.`,
+		);
 }
 
 /** The five tools for a folder-v2 run. `operations` takes the receipts of its changes. */
@@ -1932,7 +1971,11 @@ export function cloudFolderFileTools(options: {
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string; expectedVersion: string | null; text: string };
 				context.observation?.update({ inputBytes: Buffer.byteLength(input.text) });
-				enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
+				await requireQuestionDatabase(
+					folder,
+					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path, "file"),
+					context.signal,
+				);
 				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				// A change of a file keeps its media type and executable bit (a script stays runnable). Read before the receipt
 				// and changing nothing: a file at another version makes the commit a conflict anyway.
@@ -2043,7 +2086,11 @@ export function cloudFolderFileTools(options: {
 					newTextSha256: createHash("sha256").update(input.newText, "utf8").digest("hex"),
 				};
 				if (surfaceFilePolicy?.mode === "surface_worker") {
-					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
+					await requireQuestionDatabase(
+						folder,
+						enforceSurfaceFilePolicy(surfaceFilePolicy, input.path, "file"),
+						context.signal,
+					);
 				}
 				await refuseRetiredPath(folder, input.path, context.signal, "edited");
 				// The edit is made on the file's text at the version the model read. Another version (this call's own saved
@@ -2220,7 +2267,11 @@ export function cloudFolderFileTools(options: {
 			refused: cloudFolderRefusal,
 			async execute(value, context) {
 				const input = value as { path: string; operationKey: string };
-				enforceSurfaceFilePolicy(surfaceFilePolicy, input.path);
+				await requireQuestionDatabase(
+					folder,
+					enforceSurfaceFilePolicy(surfaceFilePolicy, input.path, "folder"),
+					context.signal,
+				);
 				await refuseRetiredPath(folder, input.path, context.signal, "written");
 				return change("company_mkdir", input, { path: input.path }, [{ op: "mkdir", path: input.path }], context);
 			},

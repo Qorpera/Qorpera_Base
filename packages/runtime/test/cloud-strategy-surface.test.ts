@@ -10,6 +10,7 @@ import { createNarrateExplainerTool } from "../src/cloud-surface-narrate-tool.ts
 import { runSurfaceSessionTurn } from "../src/cloud-surface-session-runner.ts";
 import {
 	buildCompanyInterfacesSection,
+	extractAnalyticsNumbersSummary,
 	extractStrategyInterfaceSummary,
 	loadCompanyInterfacesContext,
 } from "../src/cloud-surface-turn-context.ts";
@@ -231,6 +232,79 @@ describe("strategy surface and custom studio runtime integration", () => {
 				abortController.signal,
 			),
 		).rejects.toThrow("aborted");
+	});
+
+	it("gives a Strategy session Analytics' numbers (name, what it counts, question, unit), and no other session", async () => {
+		const studio = (slug: string, kind: string) => ({
+			slug,
+			title: slug,
+			kind,
+			archetype: "studio",
+			sourceKind: "folder",
+			folderRoot: `surfaces/${slug}`,
+			repositoryKey: null,
+			briefSummary: null,
+			isGlobal: false,
+		});
+		const metrics = {
+			metrics: [
+				{
+					name: "Money in",
+					counts: "Card payments that went through",
+					leaves_out: "Refunds, VAT",
+					question: "qorpera/orders-days",
+					unit: "kr.",
+				},
+				{ name: "Visits", counts: "Visits to the shop", question: "qorpera/site-days" },
+				{ counts: "a number with no name is left out" },
+				...Array.from({ length: 20 }, (_, index) => ({ name: `Extra ${index}` })),
+			],
+		};
+		const read: string[] = [];
+		const folder = {
+			readText: vi.fn(async (path: string) => {
+				read.push(path);
+				return path === "surfaces/numbers/metrics.json" ? { text: JSON.stringify(metrics) } : null;
+			}),
+		};
+		const loaded = await loadCompanyInterfacesContext(
+			{
+				schema: "qorpera.company-interfaces/v1",
+				interfaces: [
+					studio("strategy", "strategy"),
+					studio("numbers", "dashboard"),
+					studio("field-notes", "custom"),
+				],
+			},
+			() => folder,
+			new AbortController().signal,
+		);
+		expect(read).toContain("surfaces/numbers/metrics.json");
+		expect(loaded?.analyticsSummary?.folderRoot).toBe("surfaces/numbers");
+		const strategy = buildCompanyInterfacesSection(loaded, { currentSlug: "strategy" }) ?? "";
+		expect(strategy).toContain("### Analytics Numbers (`/company/surfaces/numbers/metrics.json`)");
+		expect(strategy).toContain("read each with data_query by its question");
+		expect(strategy).toContain("- Money in: Card payments that went through (question qorpera/orders-days, kr.)");
+		expect(strategy).toContain("- Visits: Visits to the shop (question qorpera/site-days)");
+		expect(strategy).not.toContain("a number with no name");
+		expect(strategy).toContain("- Extra 13");
+		expect(strategy).not.toContain("- Extra 14");
+		expect(buildCompanyInterfacesSection(loaded, { currentSlug: "field-notes" })).not.toContain("Analytics Numbers");
+		expect(buildCompanyInterfacesSection(loaded)).not.toContain("Analytics Numbers");
+		expect(extractAnalyticsNumbersSummary("{")).toBeNull();
+		const byName = await loadCompanyInterfacesContext(
+			{
+				schema: "qorpera.company-interfaces/v1",
+				interfaces: [
+					studio("strategy", "strategy"),
+					{ ...studio("business-numbers", "custom"), folderRoot: "surfaces/numbers" },
+				],
+			},
+			() => folder,
+			new AbortController().signal,
+		);
+		expect(byName?.analyticsSummary?.folderRoot).toBe("surfaces/numbers");
+		expect(extractAnalyticsNumbersSummary('{"metrics":{}}')).toBeNull();
 	});
 
 	it("extractStrategyInterfaceSummary parses contract-shaped plays.json (summary, verdict, play.name, play.thesis) and falls back to brief.md", () => {

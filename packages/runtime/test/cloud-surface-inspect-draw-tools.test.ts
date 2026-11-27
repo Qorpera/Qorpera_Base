@@ -432,6 +432,44 @@ describe("Studio visual inspect & draw tools", () => {
 		).rejects.toBeInstanceOf(CloudToolArgumentRefusal);
 	});
 
+	it("compose_surface_layout keeps the layout's colours on every compose and changes them only with set_colors", async () => {
+		let staged = "";
+		let current: string | null = null;
+		const tool = createComposeSurfaceLayoutTool({
+			sessionId: "44444444-4444-4444-8444-444444444444",
+			starter: "analytics",
+			readCurrentLayoutText: async () => current,
+			surfacePatch: {
+				async stageSurfacePatch(_sessionId, req) {
+					const op = req.ops[0];
+					if (op?.op === "write_text") staged = op.content;
+					return { changeId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", seq: 1, openChangeCount: 1 };
+				},
+			},
+		});
+		const compose = async (operations: JsonValue[]) => {
+			await tool.execute({ operations }, CONTEXT);
+			current = staged;
+			return parseSurfaceLayout(JSON.parse(staged));
+		};
+		expect((await compose([{ op: "rename_tab", tabId: "now", title: "Today" }])).colors).toEqual({
+			preset: "company",
+		});
+		expect((await compose([{ op: "set_colors", colors: { preset: "bright", down: "#b5543c" } }])).colors).toEqual({
+			preset: "bright",
+			down: "#b5543c",
+		});
+		expect((await compose([{ op: "remove_tab", tabId: "visitors" }])).colors).toEqual({
+			preset: "bright",
+			down: "#b5543c",
+		});
+		expect(await compose([{ op: "set_colors", colors: null }])).not.toHaveProperty("colors");
+		await expect(
+			tool.execute({ operations: [{ op: "set_colors", colors: { preset: "loud" } }] }, CONTEXT),
+		).rejects.toThrow("operations[0].colors.preset must be one of company, one-colour, calm, bright");
+		expect(tool.description).toContain("set_colors {op,colors} replaces them");
+	});
+
 	it("stage_surface_artifact validates paths, reads PNG from coding machine, stages binary, and returns inline image", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-art-test-"));
 		try {

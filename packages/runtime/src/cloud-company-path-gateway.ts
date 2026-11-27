@@ -95,6 +95,7 @@ export type CloudCompanyPathRpc =
 	// a member's yes to a step that destroys data (slice 7, 20260930764000).
 	| "qorpera_run_data_pass"
 	| "qorpera_run_data_pass_approved"
+	| "qorpera_run_company_numbers"
 	// Staging a folder-v2 file's bytes (core C1d).
 	| "qorpera_folder_open_upload"
 	| "qorpera_folder_seal_upload"

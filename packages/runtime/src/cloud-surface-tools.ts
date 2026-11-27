@@ -1105,7 +1105,7 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 		name: "propose_surface",
 		source: "runtime",
 		description:
-			'Create or propose a primary Surface for the company sidebar. Use archetype "studio" + sourceKind "folder" for Strategy, Identity, Product Studio, or Custom Studio workspaces (planning rooms, economics labs, GTM boards, sketching spaces), and archetype "live_build" + sourceKind "code_repo" for customer-facing websites and software products. New surfaces start in proposed state until a founder approves them unless activateImmediately is true for Day-0 founding.',
+			'Create or propose a primary Surface for the company sidebar. Use archetype "studio" + sourceKind "folder" for Strategy, Identity, Product Studio, Analytics (live business numbers, kind "dashboard"), or Custom Studio workspaces (planning rooms, economics labs, GTM boards, sketching spaces), and archetype "live_build" + sourceKind "code_repo" for customer-facing websites and software products. New surfaces start in proposed state until a founder approves them unless activateImmediately is true for Day-0 founding.',
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -1119,7 +1119,7 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					type: "string",
 					enum: [...SURFACE_KINDS],
 					description:
-						"Semantic kind of surface (identity, strategy, custom, website, web_app, mobile_app, desktop_app, product, report, etc.).",
+						"Semantic kind of surface (identity, strategy, custom, website, web_app, mobile_app, desktop_app, product, report, etc.). Analytics: studio, kind dashboard.",
 				},
 				figure: {
 					type: "string",

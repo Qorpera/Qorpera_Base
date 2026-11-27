@@ -60,6 +60,7 @@ const FOLDER_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_code_import",
 	"qorpera_run_data_pass",
 	"qorpera_run_data_pass_approved",
+	"qorpera_run_company_numbers",
 ]);
 
 const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
@@ -153,6 +154,7 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_code_import",
 	"qorpera_run_data_pass",
 	"qorpera_run_data_pass_approved",
+	"qorpera_run_company_numbers",
 	"qorpera_folder_note_interface_changes",
 	"qorpera_folder_emit_data_change_wakes",
 	"qorpera_list_agent_event_hooks",

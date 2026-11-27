@@ -215,6 +215,7 @@ export interface SurfaceFolderOrOpsTurnRequest {
 	readonly sharedAssets?: SurfaceSharedAssetsContext | null;
 	readonly writableRoots: readonly string[];
 	readonly stagedRoots: readonly string[];
+	readonly savesQuestions?: boolean;
 	readonly signal: AbortSignal;
 }
 
@@ -705,7 +706,7 @@ function describeStudioPage(
 
 function describeStudioSkill(view: SurfaceStudioPageView, skill: CloudStudioSkill | null): string {
 	if (view.page === "unknown")
-		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.strategy} for Strategy, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
+		return `\n\n## Skill\nWhich kind of page this is, is not known for this turn. Once you know, read its skill with read_skill before you shape or fill the page: ${SURFACE_STARTER_SKILLS.product} for a product, ${SURFACE_STARTER_SKILLS.identity} for the company's Identity, ${SURFACE_STARTER_SKILLS.strategy} for Strategy, ${SURFACE_STARTER_SKILLS.analytics} for Analytics, ${SURFACE_STARTER_SKILLS.custom} for any other page.`;
 	if (!skill) return "";
 	const source = skill.path
 		? `The company's own ${skill.name} skill (${skill.path}), used in place of the platform's`
@@ -1194,15 +1195,16 @@ export async function runSurfaceSessionTurn(
 					reqSignal,
 				);
 			};
-			const folderTools = ports.folderToolsContext
-				? cloudFolderFileTools({
-						folder: ports.folderToolsContext.folder,
-						operations: ports.folderToolsContext.operations,
-						identity: ports.folderToolsContext.identity,
-						surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots },
-						...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
-					})
-				: [];
+			const folderToolsFor = (savesQuestions: boolean) =>
+				ports.folderToolsContext
+					? cloudFolderFileTools({
+							folder: ports.folderToolsContext.folder,
+							operations: ports.folderToolsContext.operations,
+							identity: ports.folderToolsContext.identity,
+							surfaceFilePolicy: { mode: "surface_worker", writableRoots, stagedRoots, savesQuestions },
+							...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
+						})
+					: [];
 			const layoutStaging: SurfaceLayoutStaging | undefined = baseReaderForPatch
 				? {
 						folderRoot,
@@ -1256,20 +1258,6 @@ export async function runSurfaceSessionTurn(
 							}),
 						]
 					: [];
-			const tools: CloudNativeTool[] = [
-				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
-					deferSessionCompletion: true,
-					allowMultipleDeliverables: isInternalReconciliation,
-					openChanges: sessionOpenChanges,
-					replyChangeId,
-					isInternalReconciliation,
-					tracker: patchTracker,
-				}),
-				...narrateTool,
-				...pictureTool,
-				...folderTools,
-				...(ports.extraTools ?? []),
-			];
 			const readStudioFiles =
 				ports.readStudioFiles ??
 				(ports.folderToolsContext ? cloudStudioFileReader(ports.folderToolsContext.folder) : undefined);
@@ -1292,6 +1280,21 @@ export async function runSurfaceSessionTurn(
 			}
 			signal.throwIfAborted();
 			const view = surfaceStudioPageView(input, folderRoot, contents);
+			const savesQuestions = !isInternalReconciliation && view.page === "layout" && view.starter === "analytics";
+			const tools: CloudNativeTool[] = [
+				createStageSurfacePatchTool(input.sessionId, trackedSurfacePatch, layoutStaging, {
+					deferSessionCompletion: true,
+					allowMultipleDeliverables: isInternalReconciliation,
+					openChanges: sessionOpenChanges,
+					replyChangeId,
+					isInternalReconciliation,
+					tracker: patchTracker,
+				}),
+				...narrateTool,
+				...pictureTool,
+				...folderToolsFor(savesQuestions),
+				...(ports.extraTools ?? []),
+			];
 			const readSkill: CloudStudioSkillReader | undefined = folderReader
 				? (path, maxBytes, readSignal) => folderText(folderReader, path, maxBytes, readSignal)
 				: undefined;
@@ -1313,6 +1316,7 @@ export async function runSurfaceSessionTurn(
 				sharedAssets,
 				writableRoots,
 				stagedRoots,
+				savesQuestions,
 				signal,
 			});
 		} else if (input.sourceKind === "native_ops") {

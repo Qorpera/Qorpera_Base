@@ -2,7 +2,8 @@ import {
 	parseSurfaceBinding,
 	resolveSurfaceSource,
 	type StudioBinaryRef,
-	type SurfaceSource,
+	type SurfaceAskSource,
+	type SurfaceLiveSource,
 	type SurfaceSourceChoice,
 	type SurfaceSummary,
 	surfaceCompanyPath,
@@ -51,7 +52,7 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 	readonly signal: AbortSignal;
 	readonly renderSignal?: AbortSignal;
 	readonly words: (text: string) => string;
-	readonly read: (source: SurfaceSource | undefined) => SurfaceBlockRead;
+	readonly read: (source: SurfaceLiveSource | undefined) => SurfaceBlockRead;
 	readonly companyPath: (bindingPath: string) => string | undefined;
 	readonly text: (path: string) => { readonly value: string | undefined; readonly base: string | undefined };
 	readonly binary: (path: string) => {
@@ -185,11 +186,11 @@ export function homeEmpty(line: string): HTMLElement {
 	return h("p", { class: "studio-home-empty" }, line);
 }
 
-function isChoiceList(source: SurfaceSource): source is readonly SurfaceSourceChoice[] {
+function isChoiceList(source: SurfaceLiveSource): source is readonly SurfaceSourceChoice[] {
 	return Array.isArray(source);
 }
 
-function sourceChoices(source: SurfaceSource): readonly SurfaceSourceChoice[] {
+function sourceChoices(source: SurfaceLiveSource): readonly (SurfaceSourceChoice | SurfaceAskSource)[] {
 	return isChoiceList(source) ? source : [source];
 }
 

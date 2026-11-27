@@ -1,7 +1,11 @@
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { type JsonValue, parseRecord } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
-import type { CloudCompanyDataPass, CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import type {
+	CloudCompanyDataPass,
+	CloudCompanyFolderClient,
+	CloudCompanyNumbersParam,
+} from "./cloud-company-folder-client.ts";
 import { CloudCompanyPathNotText } from "./cloud-company-path-gateway.ts";
 import {
 	type CloudNativeTool,
@@ -85,14 +89,131 @@ const ANSWER_BYTES = 4 * 1024 * 1024;
 /** Printable ASCII and Latin-1 letters: what a refusal may carry to the model (the boundary drops anything else). */
 const PLAIN = /[^ -~À-ÿ]/g;
 
+export const QORPERA_DATABASE = "qorpera";
+
+export interface QorperaQuestion {
+	readonly question: string;
+	readonly params: readonly string[];
+	readonly columns: readonly string[];
+	readonly words: string;
+}
+
+export const QORPERA_QUESTIONS: readonly QorperaQuestion[] = [
+	{
+		question: "money-now",
+		params: [],
+		columns: ["state", "bank", "balance", "available", "reserved", "as_of", "paused_since"],
+		words: "One row: the bank connection's state (none, waiting, current, paused) and its balance now, in kroner.",
+	},
+	{
+		question: "money-balance",
+		params: ["from", "to"],
+		columns: ["day", "balance"],
+		words: "The balance at the end of each day, by default the 90 days to today, at most 366.",
+	},
+	{ question: "money-expected", params: [], columns: ["day", "balance"], words: "The bank's forecast, an estimate." },
+	{
+		question: "money-months",
+		params: [],
+		columns: ["month", "money_in", "money_out"],
+		words: "Money in and out each of twelve months.",
+	},
+	{
+		question: "money-kinds",
+		params: ["month"],
+		columns: ["direction", "kind", "amount", "count"],
+		words: "This month's money out by kind (salaries, taxes, rent, utilities, subscriptions, fees, other) and money in as all.",
+	},
+	{ question: "sites", params: [], columns: ["site", "title", "url", "live"], words: "The company's sites." },
+	{
+		question: "site-now",
+		params: ["site"],
+		columns: ["site", "here_now", "views_today", "visits_today"],
+		words: "Visitors here now and today, one row a site.",
+	},
+	{
+		question: "site-hours",
+		params: ["site", "from", "to"],
+		columns: ["site", "hour", "hour_local", "views", "visits"],
+		words: "Views and visits each hour, by default the 48 hours to this one, at most 7 days.",
+	},
+	{
+		question: "site-days",
+		params: ["site", "from", "to"],
+		columns: ["site", "day", "views", "visits"],
+		words: "Views and visits each day, by default the 30 days to today, at most 400.",
+	},
+	{
+		question: "site-pages",
+		params: ["site", "from", "to", "limit"],
+		columns: ["site", "path", "views", "visits"],
+		words: "The most viewed pages from :from to :to (by default the 30 days to today), 10 a site or :limit up to 50.",
+	},
+	{
+		question: "orders-now",
+		params: ["currency", "test"],
+		columns: [
+			"stripe",
+			"orders_today",
+			"sales_today",
+			"to_pack",
+			"on_the_way",
+			"refunds_30d",
+			"disputes_open",
+			"last_order_at",
+		],
+		words: "One row: orders and sales today, waiting to be packed, on the way, refunds in 30 days, open disputes.",
+	},
+	{
+		question: "orders-hours",
+		params: ["currency", "test", "from", "to"],
+		columns: ["hour", "hour_local", "orders", "sales"],
+		words: "Orders and sales each hour, by default the 48 hours to this one, at most 7 days.",
+	},
+	{
+		question: "orders-days",
+		params: ["currency", "test", "from", "to"],
+		columns: ["day", "orders", "sales", "refunds"],
+		words: "Orders, sales and refunds each day, by default the 30 days to today, at most 400.",
+	},
+	{
+		question: "orders-months",
+		params: ["currency", "test"],
+		columns: ["month", "orders", "sales", "refunds"],
+		words: "Orders, sales and refunds this month and the 11 before.",
+	},
+	{
+		question: "orders-states",
+		params: ["currency", "test", "from", "to"],
+		columns: ["state", "orders", "amount"],
+		words: "Orders by state (paid, packed, on_the_way, delivered, cancelled, failed) from :from to :to.",
+	},
+	{
+		question: "orders-sources",
+		params: ["currency", "test", "from", "to"],
+		columns: ["source", "orders", "sales", "refunds"],
+		words: "Orders, sales and refunds from Stripe and added by hand, from :from to :to.",
+	},
+];
+
+const QORPERA_DESCRIBED = {
+	database: QORPERA_DATABASE,
+	words: "The platform's own numbers of the company, always there: ask them by question with data_query, never with sql. Days are YYYY-MM-DD in the company's time zone; test: true asks test orders; currency is three letters, by default the one most orders use.",
+	questions: QORPERA_QUESTIONS,
+};
+
+const QORPERA_NO_SQL =
+	"The platform's own numbers (qorpera) are asked by question only, never with sql: data_describe on qorpera lists them";
+const NO_DOOR = "Only the platform's own numbers (database qorpera) can be asked from here";
+
 export const DATA_DESCRIBE_DESCRIPTION =
-	"Show the company's databases: for each, its tables and views (columns with nullability and defaults, constraints, indexes, view definitions), custom enums and extensions, its steps (applied, waiting, changed after they were applied, or missing) and its questions with their words, and how much room the company's data takes. Name database to see one; without it you see every database you may read.";
+	"Show the company's databases: for each, its tables and views (columns with nullability and defaults, constraints, indexes, view definitions), custom enums and extensions, its steps (applied, waiting, changed after they were applied, or missing) and its questions with their words, and how much room the company's data takes. Name database to see one; without it you see every database you may read. Database qorpera is the platform's own numbers of the company (orders, sites, money): its questions and params.";
 export const DATA_APPLY_DESCRIPTION =
 	"Apply a database's waiting steps now, in number order, and see how each went: applied, failed with PostgreSQL's words, or held. A held step would destroy data (drop a table or column, delete or empty rows): it waits for a member to say yes, and nothing changes until then. Its answer carries allow: call data_apply again with that allow to ask a member on a card, and on their yes the step is applied. Write the files first with the file tools: data/<database>/database.toml and tables/NNN-<name>.sql.";
 export const DATA_CHANGE_DESCRIPTION =
 	"Write rows through a database's named change: data/<database>/actions/<change>.sql, one insert, update, delete or merge with :name for each value and -- lines at the top that say what it does, written with the file tools. Give its values in params; params.viewer is the member a change that names :viewer acts for, else the member who asked you. You get changed, the rows it wrote, and what it returns (returning), at most 200 rows and 24 KiB. A change that fails changes nothing.";
 export const DATA_QUERY_DESCRIPTION =
-	"Read a database: a question by name (data/<database>/queries/<question>.sql) with its params, or one read of your own in sql (one select; :name in it takes params.name). params.viewer is the member a question that names :viewer asks for; without it, the member who asked you. You get columns and rows, at most 200 rows and 24 KiB; more: true means there was more, so narrow the read or page it.";
+	"Read a database: a question by name (data/<database>/queries/<question>.sql) with its params, or one read of your own in sql (one select; :name in it takes params.name). params.viewer is the member a question that names :viewer asks for; without it, the member who asked you. You get columns and rows, at most 200 rows and 24 KiB; more: true means there was more, so narrow the read or page it. Database qorpera answers the platform's own numbers by question (qorpera/orders-days and the rest data_describe lists), never sql.";
 
 interface DescribeRequest {
 	database?: string;
@@ -196,6 +317,7 @@ function parseQuery(value: JsonValue): QueryRequest {
 	const hasQuestion = input.question !== undefined && input.question !== null;
 	const hasSql = input.sql !== undefined && input.sql !== null;
 	if (hasQuestion === hasSql) throw new CloudToolArgumentRefusal("Give question or sql, one of them");
+	if (hasSql && request.database === QORPERA_DATABASE) throw new CloudToolArgumentRefusal(QORPERA_NO_SQL);
 	if (hasQuestion) {
 		if (typeof input.question !== "string" || !QUESTION.test(input.question) || input.question.length > 60)
 			throw new CloudToolArgumentRefusal(
@@ -317,8 +439,9 @@ function inferDataChangeMeta(
 /** The tools, for one run. `apply`: whether the run may write a database, that is apply its steps and run its
  * changes (a worker only reads). */
 export function cloudDataTools(options: {
-	folder: Pick<CloudCompanyFolderClient, "dataPass" | "readText">;
-	door: CloudCompanyDataDoor;
+	folder: Pick<CloudCompanyFolderClient, "dataPass" | "readText"> &
+		Partial<Pick<CloudCompanyFolderClient, "companyNumbers">>;
+	door: CloudCompanyDataDoor | undefined;
 	apply: boolean;
 	onDataChanged?: (event: CloudDataChangeWakeEvent, signal: AbortSignal) => Promise<void>;
 }): readonly CloudNativeTool[] {
@@ -333,6 +456,7 @@ export function cloudDataTools(options: {
 		signal: AbortSignal,
 		reviewId?: string,
 	): Promise<unknown> => {
+		if (!door) throw new CloudToolRefusal(NO_DOOR);
 		let texts: Record<string, string> | null = null;
 		// An apply that only checks a held step applies nothing: when it ends without an answer, nothing may have run.
 		const unknown = body.check === undefined ? UNKNOWN[verb] : undefined;
@@ -408,6 +532,31 @@ export function cloudDataTools(options: {
 		throw new CloudToolRefusal("The database's files kept changing while they were read: try again");
 	};
 
+	const askQorpera = async (request: QueryRequest, signal: AbortSignal): Promise<CloudToolContent> => {
+		const question = request.question ?? "";
+		const params: Record<string, CloudCompanyNumbersParam> = {};
+		for (const [name, item] of Object.entries(request.params ?? {})) {
+			if (item !== null && typeof item === "object")
+				throw new CloudToolRefusal(
+					`qorpera/${question} takes plain values: :${name} is text, a number, true or false`,
+				);
+			params[name] = item;
+		}
+		if (!folder.companyNumbers) throw new CloudToolRefusal("The platform's own numbers cannot be asked from here");
+		const answer = await folder.companyNumbers(question, params, signal);
+		if (answer.state !== "answer") throw new CloudToolRefusal(plain(answer.words));
+		const page = (count: number) => ({
+			columns: answer.columns,
+			rows: answer.rows.slice(0, count),
+			more: answer.more || count < answer.rows.length,
+			asOf: answer.asOf,
+		});
+		const forms: (() => unknown)[] = [() => page(answer.rows.length)];
+		for (let count = answer.rows.length >> 1; count > 0; count >>= 1) forms.push(() => page(count));
+		forms.push(() => page(0));
+		return shown(forms);
+	};
+
 	const describe: CloudNativeTool = {
 		name: "data_describe" satisfies CloudRuntimeToolOperation,
 		source: "runtime",
@@ -421,6 +570,8 @@ export function cloudDataTools(options: {
 		parseArguments: (value) => parseDescribe(value) as unknown as JsonValue,
 		async execute(value, context) {
 			const request = value as unknown as DescribeRequest;
+			if (request.database === QORPERA_DATABASE || (!door && request.database === undefined))
+				return shown([() => QORPERA_DESCRIBED]);
 			const answer = answerOf(
 				await ask(
 					"describe",
@@ -432,56 +583,68 @@ export function cloudDataTools(options: {
 			const databases = Array.isArray(answer.databases) ? (answer.databases as Record<string, unknown>[]) : null;
 			if (!databases) refusal(502, answer);
 			const room = { companyBytes: answer.companyBytes, limitBytes: answer.limitBytes };
+			const all = request.database === undefined;
+			const withPlatform = (entries: unknown[], platform: unknown) => (all ? [...entries, platform] : entries);
+			const platformNames = { database: QORPERA_DATABASE, questions: QORPERA_QUESTIONS.map((one) => one.question) };
 			return shown([
-				() => answer,
+				() => ({ ...answer, databases: withPlatform(databases, QORPERA_DESCRIBED) }),
 				() => ({
-					databases: databases.map((one) => {
-						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
-						return {
-							...rest,
-							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
-								name: table.name,
-								kind: table.kind,
-								key: table.key,
-								...(table.rows !== undefined ? { rows: table.rows } : {}),
-								...(table.rowsAbout !== undefined ? { rowsAbout: table.rowsAbout } : {}),
-								columns: (Array.isArray(table.columns) ? table.columns : []).map(
-									(column: Record<string, unknown>) => ({
-										name: column.name,
-										type: column.type,
-										settable: column.settable,
-										...(column.nullable !== undefined ? { nullable: column.nullable } : {}),
-									}),
-								),
-							})),
-						};
-					}),
+					databases: withPlatform(
+						databases.map((one) => {
+							const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+							return {
+								...rest,
+								tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+									name: table.name,
+									kind: table.kind,
+									key: table.key,
+									...(table.rows !== undefined ? { rows: table.rows } : {}),
+									...(table.rowsAbout !== undefined ? { rowsAbout: table.rowsAbout } : {}),
+									columns: (Array.isArray(table.columns) ? table.columns : []).map(
+										(column: Record<string, unknown>) => ({
+											name: column.name,
+											type: column.type,
+											settable: column.settable,
+											...(column.nullable !== undefined ? { nullable: column.nullable } : {}),
+										}),
+									),
+								})),
+							};
+						}),
+						QORPERA_DESCRIBED,
+					),
 					...room,
 					note: "Cut short: name one database to see constraints, indexes, view definitions, enums and extensions",
 				}),
 				// Shorter: each table's columns without their types, each question by name.
 				() => ({
-					databases: databases.map((one) => {
-						const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
-						return {
-							...rest,
-							tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
-								name: table.name,
-								rows: table.rows,
-								columns: (Array.isArray(table.columns) ? table.columns : []).map(
-									(column: Record<string, unknown>) => column.name,
+					databases: withPlatform(
+						databases.map((one) => {
+							const { enums: _enums, extensions: _extensions, ddlTruncated: _ddlTruncated, ...rest } = one;
+							return {
+								...rest,
+								tables: (Array.isArray(one.tables) ? one.tables : []).map((table: Record<string, unknown>) => ({
+									name: table.name,
+									rows: table.rows,
+									columns: (Array.isArray(table.columns) ? table.columns : []).map(
+										(column: Record<string, unknown>) => column.name,
+									),
+								})),
+								questions: (Array.isArray(one.questions) ? one.questions : []).map(
+									(question: Record<string, unknown>) => question.name,
 								),
-							})),
-							questions: (Array.isArray(one.questions) ? one.questions : []).map(
-								(question: Record<string, unknown>) => question.name,
-							),
-						};
-					}),
+							};
+						}),
+						platformNames,
+					),
 					...room,
 					note: "Cut short: name one database to see its column types and its questions' words",
 				}),
 				() => ({
-					databases: databases.map((one) => one.database),
+					databases: withPlatform(
+						databases.map((one) => one.database),
+						QORPERA_DATABASE,
+					),
 					...room,
 					note: "Too many to show: name one database",
 				}),
@@ -617,6 +780,7 @@ export function cloudDataTools(options: {
 		parseArguments: (value) => parseQuery(value) as unknown as JsonValue,
 		async execute(value, context) {
 			const request = value as unknown as QueryRequest;
+			if (request.database === QORPERA_DATABASE) return askQorpera(request, context.signal);
 			const body: Record<string, JsonValue> = {
 				database: request.database,
 				...(request.question !== undefined ? { question: request.question } : { sql: request.sql ?? "" }),
@@ -724,7 +888,7 @@ export function cloudDataTools(options: {
 		},
 	};
 
-	return options.apply ? [describe, apply, query, change] : [describe, query];
+	return options.apply && door ? [describe, apply, query, change] : [describe, query];
 }
 
 /** The run door over HTTPS: the CA pinned (the store's kit signs the gateway's certificate), the node's private token

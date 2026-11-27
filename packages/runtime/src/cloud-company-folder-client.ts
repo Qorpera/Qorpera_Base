@@ -695,6 +695,18 @@ export type CloudCompanyDataPass =
 	| { readonly state: "pass"; readonly pass: string; readonly files: number }
 	| { readonly state: "no_database" | "too_many_files" | "too_many_folders" | "not_approved" };
 
+export type CloudCompanyNumbersParam = string | number | boolean | null;
+
+export type CloudCompanyNumbersAnswer =
+	| {
+			readonly state: "answer";
+			readonly columns: readonly string[];
+			readonly rows: readonly (readonly unknown[])[];
+			readonly more: boolean;
+			readonly asOf: string;
+	  }
+	| { readonly state: "refused" | "invalid" | "not_counted"; readonly words: string };
+
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
 	readonly asOfSeq: number;
@@ -1659,6 +1671,43 @@ export class CloudCompanyFolderClient {
 		)
 			invalid();
 		return { state: "pass", pass: input.pass, files: input.files as number };
+	}
+
+	async companyNumbers(
+		question: string,
+		params: Readonly<Record<string, CloudCompanyNumbersParam>>,
+		signal: AbortSignal,
+	): Promise<CloudCompanyNumbersAnswer> {
+		if (!/^(?=.{1,60}$)[a-z0-9]+(?:-[a-z0-9]+)*$/.test(question)) throw new Error("Invalid company numbers question");
+		let value: unknown;
+		try {
+			value = await this.#call("qorpera_run_company_numbers", { p_question: question, p_params: params }, signal);
+		} catch (error) {
+			if (error instanceof CloudCompanyFolderRpcError) {
+				const words = error.detail.slice(0, 300);
+				if (error.code === "P0002") return { state: "refused", words };
+				if (error.code === "22023") return { state: "invalid", words };
+				if (error.code === "0A000") return { state: "not_counted", words };
+			}
+			throw cloudCompanyFolderFailure(error);
+		}
+		const input = folderRecord(value, ["columns", "rows", "more", "asOf"], ["etag"]);
+		if (
+			!Array.isArray(input.columns) ||
+			!input.columns.every((column) => typeof column === "string") ||
+			!Array.isArray(input.rows) ||
+			!input.rows.every((row) => Array.isArray(row) && row.length === (input.columns as unknown[]).length) ||
+			typeof input.more !== "boolean" ||
+			typeof input.asOf !== "string"
+		)
+			invalid();
+		return {
+			state: "answer",
+			columns: input.columns as string[],
+			rows: input.rows as unknown[][],
+			more: input.more as boolean,
+			asOf: input.asOf as string,
+		};
 	}
 
 	/** Whether this run has a receipt under the operations layer's logical key (`<tool>:<key>`), read only

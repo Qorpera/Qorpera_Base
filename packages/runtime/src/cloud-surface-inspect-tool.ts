@@ -4,6 +4,7 @@ import {
 	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandReceipt,
 	IDENTITY_TOKENS_CSS_PATH,
+	isSurfaceAskSource,
 	isUuid,
 	type JsonValue,
 	parseCloudCodingCommandRead,
@@ -16,8 +17,11 @@ import {
 	readSurfaceLayout,
 	resolveSurfaceSource,
 	SURFACE_LAYOUT_PATH,
+	type SurfaceAskSource,
+	type SurfaceAskUse,
 	type SurfaceChartDocument,
 	type SurfaceLayoutRead,
+	type SurfaceLiveSource,
 	type SurfaceReadBlock,
 	type SurfaceReadNode,
 	type SurfaceSource,
@@ -325,7 +329,58 @@ export interface StudioInspectSnapshot {
 	readonly files: Readonly<Record<string, string>>;
 	readonly binaries: Readonly<Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }>>;
 	readonly knownBinaries?: Readonly<Record<string, StudioInspectBinaryMeta>>;
+	readonly answers?: ReadonlyMap<string, StudioInspectAskAnswer>;
 	readonly localAssetPaths?: Readonly<Record<string, StudioInspectLocalAsset>>;
+}
+
+export type StudioInspectAskAnswer =
+	| { readonly state: "answered"; readonly columns: readonly string[]; readonly rows: readonly (readonly unknown[])[] }
+	| { readonly state: "refused" | "unavailable"; readonly words: string };
+
+export interface StudioInspectAskReport {
+	readonly block: string;
+	readonly ask: string;
+	readonly state: "answered" | "refused" | "unavailable";
+	readonly rows?: number;
+	readonly value?: string;
+	readonly words?: string;
+	readonly missing?: readonly string[];
+	readonly columns?: readonly string[];
+}
+
+export type StudioInspectAsker = (ask: SurfaceAskSource, context: CloudToolContext) => Promise<StudioInspectAskAnswer>;
+
+export const MAX_INSPECT_ASKS = 24;
+
+export function studioInspectAskKey(ask: SurfaceAskSource): string {
+	return JSON.stringify([ask.ask, ask.params ?? {}]);
+}
+
+export function studioInspectAsker(dataTools: readonly CloudNativeTool[]): StudioInspectAsker {
+	const query = dataTools.find((tool) => tool.name === "data_query");
+	return async (ask, context) => {
+		const [database, question] = ask.ask.split("/") as [string, string];
+		if (!query) return { state: "unavailable", words: "No company data here to ask" };
+		try {
+			const args = query.parseArguments({ database, question, ...(ask.params ? { params: ask.params } : {}) });
+			const result = await query.execute(args, context);
+			const answer = JSON.parse(result.kind === "text" ? result.value : "{}") as {
+				columns?: unknown;
+				rows?: unknown;
+			};
+			if (!Array.isArray(answer.columns) || !Array.isArray(answer.rows))
+				return { state: "unavailable", words: "The answer had no rows" };
+			return {
+				state: "answered",
+				columns: answer.columns.map(String),
+				rows: answer.rows.filter((row): row is unknown[] => Array.isArray(row)),
+			};
+		} catch (error) {
+			if (context.signal.aborted) throw error;
+			const words = error instanceof Error ? error.message.replace(/^REFUSED: /, "").slice(0, 300) : "";
+			return { state: / that you may read$/.test(words) ? "refused" : "unavailable", words };
+		}
+	};
 }
 
 export interface InspectSurfaceToolOptions {
@@ -334,6 +389,7 @@ export interface InspectSurfaceToolOptions {
 		signal: AbortSignal,
 		options?: { readonly changeId?: string },
 	) => Promise<StudioInspectSnapshot>;
+	readonly ask?: StudioInspectAsker;
 	readonly pollMs?: number;
 }
 
@@ -343,6 +399,7 @@ export interface RenderedStudioPreview {
 	readonly tabs: readonly { readonly id: string; readonly title: string }[];
 	readonly renderedBlocks: readonly { readonly type: string; readonly heading: string; readonly filled: boolean }[];
 	readonly warnings: readonly string[];
+	readonly asks: readonly StudioInspectAskReport[];
 }
 
 function escapeHtml(text: string): string {
@@ -371,7 +428,55 @@ function resolveCompanyPath(folderRoot: string, bindingPath: string): string | u
 	}
 }
 
-function createSnapshotReader(snapshot: StudioInspectSnapshot) {
+function askRows(answer: { readonly columns: readonly string[]; readonly rows: readonly (readonly unknown[])[] }) {
+	return answer.rows.map((row) => Object.fromEntries(answer.columns.map((column, at) => [column, row[at]])));
+}
+
+export function studioAskChart(
+	ask: SurfaceAskSource,
+	rows: readonly Record<string, unknown>[],
+): SurfaceChartDocument | null {
+	const x = ask.x ?? "";
+	const ys = Array.isArray(ask.y) ? ask.y : ask.y === undefined ? [] : [ask.y as string];
+	const kind = ask.kind ?? "line";
+	const categories = [...new Set(rows.map((row) => String(row[x] ?? "")))];
+	const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+	const series =
+		kind === "pie" || kind === "funnel"
+			? [
+					{
+						name: ys[0] ?? "",
+						data: rows.map((row) => ({ name: String(row[x] ?? ""), value: number(row[ys[0] ?? ""]) })),
+					},
+				]
+			: ask.series !== undefined
+				? [...new Set(rows.map((row) => String(row[ask.series as string] ?? "")))].map((name) => ({
+						name,
+						data: categories.map((category) =>
+							number(
+								rows.find(
+									(row) =>
+										String(row[x] ?? "") === category && String(row[ask.series as string] ?? "") === name,
+								)?.[ys[0] ?? ""],
+							),
+						),
+					}))
+				: ys.map((column) => ({
+						name: column,
+						data: categories.map((category) =>
+							number(rows.find((row) => String(row[x] ?? "") === category)?.[column]),
+						),
+					}));
+	return parseSurfaceChartDocument({
+		kind,
+		...(kind === "pie" || kind === "funnel" ? {} : { categories }),
+		...(ask.stacked ? { stacked: true } : {}),
+		...(ask.unit ? { unit: ask.unit } : {}),
+		series,
+	});
+}
+
+function createSnapshotReader(snapshot: StudioInspectSnapshot, asks: StudioInspectAskReport[]) {
 	const parsed = new Map<string, unknown>();
 	const readJson = (bindingPath: string): unknown => {
 		const path = resolveCompanyPath(snapshot.folderRoot, bindingPath);
@@ -391,9 +496,61 @@ function createSnapshotReader(snapshot: StudioInspectSnapshot) {
 		return parsed.get(path);
 	};
 	return {
-		readSource(source: SurfaceSource | undefined): { readonly found: boolean; readonly value: unknown } {
+		readSource(source: SurfaceLiveSource | undefined): { readonly found: boolean; readonly value: unknown } {
 			if (source === undefined) return { found: false, value: undefined };
 			return resolveSurfaceSource(source, readJson);
+		},
+		readLive(
+			source: SurfaceLiveSource | undefined,
+			use: SurfaceAskUse,
+			block: string,
+		): { readonly found: boolean; readonly value: unknown; readonly asked?: boolean } {
+			if (!isSurfaceAskSource(source)) return this.readSource(source);
+			const answer = snapshot.answers?.get(studioInspectAskKey(source)) ?? {
+				state: "unavailable",
+				words: "Not asked in this preview",
+			};
+			if (answer.state !== "answered") {
+				asks.push({ block, ask: source.ask, state: answer.state, words: answer.words });
+				return { found: false, value: undefined, asked: true };
+			}
+			const named = [
+				source.pick,
+				source.x,
+				source.series,
+				...(Array.isArray(source.y) ? source.y : [source.y as string | undefined]),
+			].filter((column): column is string => column !== undefined);
+			const missing = [...new Set(named.filter((column) => !answer.columns.includes(column)))];
+			if (missing.length > 0) {
+				asks.push({
+					block,
+					ask: source.ask,
+					state: "answered",
+					rows: answer.rows.length,
+					missing,
+					columns: answer.columns,
+				});
+				return { found: false, value: undefined, asked: true };
+			}
+			const rows = askRows(answer);
+			const last = rows.at(-1);
+			const value =
+				use === "figure"
+					? last?.[source.pick ?? ""]
+					: use === "row"
+						? last
+						: use === "rows"
+							? rows
+							: studioAskChart(source, rows);
+			const shown = use === "figure" && value !== undefined && value !== null ? String(value) : undefined;
+			asks.push({
+				block,
+				ask: source.ask,
+				state: "answered",
+				rows: rows.length,
+				...(shown !== undefined ? { value: shown.slice(0, 60) } : {}),
+			});
+			return { found: value !== undefined && value !== null, value, asked: true };
 		},
 		fileText(bindingPath: string): string | undefined {
 			const path = resolveCompanyPath(snapshot.folderRoot, bindingPath);
@@ -981,14 +1138,14 @@ function renderBlockHtml(
 			const items: { label: string; value: string }[] = [];
 			if ("items" in block) {
 				for (const item of block.items) {
-					const got = reader.readSource(item.from);
+					const got = reader.readLive(item.from, "figure", `${heading}: ${item.label}`);
 					items.push({
 						label: item.label,
 						value: got.found && got.value !== null && got.value !== undefined ? String(got.value) : "?",
 					});
 				}
 			} else {
-				const got = reader.readSource(block.from);
+				const got = reader.readLive(block.from, "row", heading);
 				if (isPlainRecord(got.value)) {
 					for (const [k, v] of Object.entries(got.value)) {
 						if (block.skip.includes(k) || items.length >= block.take) continue;
@@ -1014,11 +1171,15 @@ function renderBlockHtml(
 					})();
 		}
 		case "chart": {
-			const read = reader.readSource(block.from);
-			const doc = read.found ? parseSurfaceChartDocument(read.value) : null;
+			const read = reader.readLive(block.from, "chart", heading);
+			const doc = read.found
+				? read.asked
+					? (read.value as SurfaceChartDocument)
+					: parseSurfaceChartDocument(read.value)
+				: null;
 			const title = block.heading ?? doc?.title ?? "Chart";
 			if (!doc) {
-				warnings.push(`Chart block "${title}" has no valid chart data.`);
+				if (!read.asked) warnings.push(`Chart block "${title}" has no valid chart data.`);
 				return wrap(title, `<div class="pv-empty">No chart data yet</div>`, false);
 			}
 			const caption = block.caption ?? doc.note;
@@ -1200,7 +1361,7 @@ function renderBlockHtml(
 			return wrap(title, `<div class="pv-marks">${grounds}</div>`, true);
 		}
 		case "table": {
-			const read = reader.readSource(block.from);
+			const read = reader.readLive(block.from, "rows", heading);
 			const rows = Array.isArray(read.value) ? read.value.filter(isPlainRecord) : [];
 			const title = block.heading ?? "Table";
 			if (rows.length === 0) return wrap(title, `<div class="pv-empty">No rows yet</div>`, false);
@@ -1550,6 +1711,62 @@ function renderBlockHtml(
 	}
 }
 
+function previewTab(snapshot: StudioInspectSnapshot, tabId: string | undefined) {
+	const layoutPath = snapshot.folderRoot ? `${snapshot.folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
+	const layoutText = snapshot.files[layoutPath];
+	const read = layoutText === undefined ? undefined : readSurfaceLayout(layoutText);
+	const layout: SurfaceLayoutRead = read && "layout" in read ? read.layout : starterSurfaceLayout(snapshot.starter);
+	const tabs = layout.tabs.map((tab) => ({ id: tab.id, title: tab.title }));
+	let activeTab: SurfaceTab<SurfaceReadNode> | undefined;
+	if (tabId) {
+		activeTab = layout.tabs.find((tab) => tab.id === tabId);
+		if (!activeTab) {
+			throw new CloudToolArgumentRefusal(
+				`Tab "${tabId}" was not found. Available tabs: ${tabs.map((t) => t.id).join(", ")}`,
+			);
+		}
+	} else {
+		activeTab = layout.tabs[0]!;
+	}
+	return { read, tabs, activeTab };
+}
+
+export function studioPreviewAsks(snapshot: StudioInspectSnapshot, tabId?: string): SurfaceAskSource[] {
+	const found = new Map<string, SurfaceAskSource>();
+	for (const node of previewTab(snapshot, tabId).activeTab.blocks) {
+		for (const block of node.type === "row" ? node.blocks : [node]) {
+			const sources = [
+				"from" in block ? block.from : undefined,
+				...(block.type === "facts" && "items" in block ? block.items.map((item) => item.from) : []),
+			];
+			for (const source of sources) {
+				if (isSurfaceAskSource(source) && found.size < MAX_INSPECT_ASKS)
+					found.set(studioInspectAskKey(source), source);
+			}
+		}
+	}
+	return [...found.values()];
+}
+
+export async function askStudioPreview(
+	snapshot: StudioInspectSnapshot,
+	tabId: string | undefined,
+	ask: StudioInspectAsker | undefined,
+	context: CloudToolContext,
+): Promise<StudioInspectSnapshot> {
+	const asks = studioPreviewAsks(snapshot, tabId);
+	if (asks.length === 0) return snapshot;
+	const answers = await Promise.all(
+		asks.map(
+			async (one): Promise<[string, StudioInspectAskAnswer]> => [
+				studioInspectAskKey(one),
+				ask ? await ask(one, context) : { state: "unavailable", words: "No company data here to ask" },
+			],
+		),
+	);
+	return { ...snapshot, answers: new Map(answers) };
+}
+
 export function renderStudioPreviewHtml(options: {
 	readonly snapshot: StudioInspectSnapshot;
 	readonly tabId?: string;
@@ -1557,25 +1774,11 @@ export function renderStudioPreviewHtml(options: {
 	readonly assetUrls?: Readonly<Record<string, string>>;
 }): RenderedStudioPreview {
 	const { snapshot, theme } = options;
-	const layoutPath = snapshot.folderRoot ? `${snapshot.folderRoot}/${SURFACE_LAYOUT_PATH}` : SURFACE_LAYOUT_PATH;
-	const layoutText = snapshot.files[layoutPath];
-	const read = layoutText === undefined ? undefined : readSurfaceLayout(layoutText);
-	const layout: SurfaceLayoutRead = read && "layout" in read ? read.layout : starterSurfaceLayout(snapshot.starter);
-	const tabs = layout.tabs.map((tab) => ({ id: tab.id, title: tab.title }));
-	let activeTab: SurfaceTab<SurfaceReadNode> | undefined;
-	if (options.tabId) {
-		activeTab = layout.tabs.find((tab) => tab.id === options.tabId);
-		if (!activeTab) {
-			throw new CloudToolArgumentRefusal(
-				`Tab "${options.tabId}" was not found. Available tabs: ${tabs.map((t) => t.id).join(", ")}`,
-			);
-		}
-	} else {
-		activeTab = layout.tabs[0]!;
-	}
+	const { read, tabs, activeTab } = previewTab(snapshot, options.tabId);
 
 	const dark = theme === "dark";
-	const reader = createSnapshotReader(snapshot);
+	const asks: StudioInspectAskReport[] = [];
+	const reader = createSnapshotReader(snapshot, asks);
 	const renderedBlocks: { readonly type: string; readonly heading: string; readonly filled: boolean }[] = [];
 	const warnings: string[] = [];
 	const inlineBudget = { imageUsed: 0, svgUsed: 0, moduleUsed: 0 };
@@ -1613,6 +1816,12 @@ export function renderStudioPreviewHtml(options: {
 		})
 		.join("\n");
 
+	for (const one of asks) {
+		if (one.missing)
+			warnings.push(
+				`${one.block} asks ${one.ask} for ${one.missing.join(", ")}, which its answer has no column for; its columns are ${(one.columns ?? []).join(", ")}.`,
+			);
+	}
 	const tokensCss = snapshot.files[IDENTITY_TOKENS_CSS_PATH];
 	const tabBar =
 		tabs.length > 1
@@ -1710,6 +1919,7 @@ ${previewCtx.needsGlbScript ? GLB_PREVIEW_SCRIPT : ""}
 		tabs,
 		renderedBlocks,
 		warnings,
+		asks,
 	};
 }
 
@@ -2117,9 +2327,11 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 		},
 		async execute(rawArgs, context: CloudToolContext) {
 			const args = parseArgs(rawArgs);
-			const snapshot = await options.loadSnapshot(
-				context.signal,
-				args.changeId ? { changeId: args.changeId } : undefined,
+			const snapshot = await askStudioPreview(
+				await options.loadSnapshot(context.signal, args.changeId ? { changeId: args.changeId } : undefined),
+				args.tab,
+				options.ask,
+				context,
 			);
 			const prepared = await prepareInspectAssets(snapshot, args.tab, context.signal);
 			const rendered = renderStudioPreviewHtml({
@@ -2296,6 +2508,19 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 					filled: b.filled,
 				})),
 				warnings: [...rendered.warnings, ...runtimeWarnings],
+				...(rendered.asks.length > 0
+					? {
+							asks: rendered.asks.map((one) => ({
+								block: one.block,
+								ask: one.ask,
+								state: one.state,
+								...(one.rows !== undefined ? { rows: one.rows } : {}),
+								...(one.value !== undefined ? { value: one.value } : {}),
+								...(one.words !== undefined ? { words: one.words } : {}),
+								...(one.missing !== undefined ? { missing: [...one.missing] } : {}),
+							})),
+						}
+					: {}),
 			};
 			return {
 				kind: "json",

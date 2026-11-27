@@ -511,6 +511,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Code-backed website and app interfaces now serve previews directly from the edge up to 10,000 files and 512 MB (100 MB per file), with warm incremental preview builders that keep dependencies and build caches hot between commits and pre-build staged changes in the background. Bundled apps no longer need to commit built output folders into git: have coding sessions declare a preview build command and output folder in their checks configuration so Qorpera builds and serves previews automatically.",
 	},
 	{
+		id: "analytics-interfaces-live-numbers",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Analytics interfaces with live numbers",
+		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers (propose it as a Studio interface on a folder, of kind dashboard), and take real figures from its numbers when you plan.",
+	},
+	{
 		id: "product-studio-3d-and-visuals",
 		kind: "capability",
 		date: "2026-11-26",

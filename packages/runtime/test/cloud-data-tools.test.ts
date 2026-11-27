@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
@@ -17,6 +18,7 @@ import {
 	DATA_DESCRIBE_DESCRIPTION,
 	DATA_QUERY_DESCRIPTION,
 	httpsCompanyDataDoor,
+	QORPERA_QUESTIONS,
 } from "@qorpera/runtime/cloud-data-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -91,6 +93,7 @@ async function fixture(
 		/** The automatic review, when the run has one: its approval's id reaches the tool. */
 		review?: CloudNativeActionReview;
 		onDataChanged?: Parameters<typeof cloudDataTools>[0]["onDataChanged"];
+		noDoor?: boolean;
 	} = {},
 ) {
 	const { binding, authority } = nativeToolAuthorityFixture();
@@ -137,7 +140,7 @@ async function fixture(
 	};
 	const tools = cloudDataTools({
 		folder,
-		door: stand,
+		door: options.noDoor ? undefined : stand,
 		apply: options.apply ?? true,
 		...(options.onDataChanged ? { onDataChanged: options.onDataChanged } : {}),
 	});
@@ -161,6 +164,178 @@ async function fixture(
 }
 
 const ok = (value: unknown) => ({ status: 200, value });
+
+const NUMBERS = "qorpera_run_company_numbers";
+
+describe("the platform's own numbers (database qorpera)", () => {
+	const numbers =
+		(answer: (args: Record<string, unknown>) => unknown) =>
+		(method: CloudCompanyPathRpc, args: Record<string, unknown>) => {
+			if (method !== NUMBERS) throw new Error(`Unexpected ${method}`);
+			return answer(args);
+		};
+
+	it("asks qorpera_run_company_numbers as the run, never the data pass or the gateway, and shows the answer", async () => {
+		const f = await fixture(() => ok({}), {
+			platform: numbers(() => ({
+				columns: ["day", "orders", "sales", "refunds"],
+				rows: [
+					["2026-11-25", 3, 1200, 0],
+					["2026-11-26", 5, 2100, 150],
+				],
+				more: false,
+				asOf: "2026-11-26T11:00:00.000Z",
+				etag: "0123456789abcdef0123456789abcdef",
+			})),
+		});
+		const answer = await f.invoke("data_query", {
+			database: "qorpera",
+			question: "orders-days",
+			params: { from: "2026-11-25", test: false },
+		});
+		expect(answer).toMatchObject({ success: true, status: "ok" });
+		expect(JSON.parse(answer.text)).toEqual({
+			columns: ["day", "orders", "sales", "refunds"],
+			rows: [
+				["2026-11-25", 3, 1200, 0],
+				["2026-11-26", 5, 2100, 150],
+			],
+			more: false,
+			asOf: "2026-11-26T11:00:00.000Z",
+		});
+		expect(f.doorCalls).toEqual([]);
+		expect(f.platformCalls).toEqual([
+			{
+				method: NUMBERS,
+				args: {
+					p_environment_id: f.run.identity.environmentId,
+					p_actor: expect.objectContaining({ kind: "run", runId: f.run.identity.runId }),
+					p_question: "orders-days",
+					p_params: { from: "2026-11-25", test: false },
+				},
+			},
+		]);
+	});
+
+	it("says the platform's own words for a question it may not read, a wrong param and one not counted yet", async () => {
+		const errors: Record<string, CloudCompanyFolderRpcError> = {
+			"money-now": new CloudCompanyFolderRpcError("P0002", "No question qorpera/money-now that you may read"),
+			"orders-days": new CloudCompanyFolderRpcError("22023", "The question takes no :limit"),
+			"site-days": new CloudCompanyFolderRpcError("0A000", "qorpera/site-days is not counted yet"),
+		};
+		const f = await fixture(() => ok({}), {
+			platform: numbers((args) => {
+				throw errors[args.p_question as string];
+			}),
+		});
+		for (const [question, error] of Object.entries(errors)) {
+			const answer = await f.invoke("data_query", { database: "qorpera", question });
+			expect(answer, question).toMatchObject({
+				success: false,
+				text: `REFUSED: ${error.detail}`,
+			});
+		}
+	});
+
+	it("refuses sql and nested params before anything is asked", async () => {
+		const f = await fixture(() => ok({}), { platform: numbers(() => ({})) });
+		const sql = await f.invoke("data_query", { database: "qorpera", sql: "select 1" });
+		expect(sql.success).toBe(false);
+		expect(sql.text).toContain("The platform's own numbers (qorpera) are asked by question only, never with sql");
+		const nested = await f.invoke("data_query", {
+			database: "qorpera",
+			question: "orders-days",
+			params: { from: [1] },
+		});
+		expect(nested.success).toBe(false);
+		expect(nested.text).toContain("takes plain values");
+		expect(f.platformCalls).toEqual([]);
+	});
+
+	it("describes its questions from the migrations, with no call at all", async () => {
+		const f = await fixture(() => ok({}), { platform: numbers(() => ({})) });
+		const answer = await f.invoke("data_describe", { database: "qorpera" });
+		const described = JSON.parse(answer.text) as {
+			database: string;
+			words: string;
+			questions: typeof QORPERA_QUESTIONS;
+		};
+		expect(described.database).toBe("qorpera");
+		expect(described.words).toContain("never with sql");
+		expect(described.questions.map((one) => one.question)).toEqual([
+			"money-now",
+			"money-balance",
+			"money-expected",
+			"money-months",
+			"money-kinds",
+			"sites",
+			"site-now",
+			"site-hours",
+			"site-days",
+			"site-pages",
+			"orders-now",
+			"orders-hours",
+			"orders-days",
+			"orders-months",
+			"orders-states",
+			"orders-sources",
+		]);
+		expect(described.questions.find((one) => one.question === "orders-days")).toMatchObject({
+			params: ["currency", "test", "from", "to"],
+			columns: ["day", "orders", "sales", "refunds"],
+		});
+		expect(f.platformCalls).toEqual([]);
+		expect(f.doorCalls).toEqual([]);
+		expect(DATA_QUERY_DESCRIPTION).toContain("Database qorpera answers the platform's own numbers by question");
+		expect(DATA_DESCRIBE_DESCRIPTION).toContain("Database qorpera is the platform's own numbers");
+	});
+
+	it("lists every qorpera question with the params and columns its migration gives it", () => {
+		const folder = new URL("../../../supabase/migrations/", import.meta.url);
+		const files = readdirSync(folder).filter((name) =>
+			/_company_numbers_(money|site|orders|order_changes)\.sql$/.test(name),
+		);
+		expect(files).toHaveLength(4);
+		const columns: Record<string, string[]> = {};
+		const params: Record<string, string[]> = {};
+		const names = (list: string) => [...list.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1] as string);
+		for (const file of files) {
+			const text = readFileSync(new URL(file, folder), "utf8");
+			const whens = [...text.matchAll(/when '([a-z][a-z-]*)' then/g)];
+			whens.forEach((when, at) => {
+				const question = when[1] as string;
+				if (!/^(money-|site-|sites$|orders-)/.test(question)) return;
+				const part = text.slice(when.index, whens[at + 1]?.index ?? text.length);
+				const takes = /^when '[a-z-]+' then (?:array\[([^\]]*)\]|'\{\}'::text\[\])/.exec(part);
+				if (takes) params[question] = takes[1] ? names(takes[1]) : [];
+				const made = /v_columns := array\[([^\]]*)\]/.exec(part);
+				if (made && !takes) columns[question] = names(made[1] as string);
+			});
+		}
+		expect(Object.keys(params).sort()).toEqual(QORPERA_QUESTIONS.map((one) => one.question).sort());
+		expect(Object.keys(columns).sort()).toEqual(Object.keys(params).sort());
+		for (const one of QORPERA_QUESTIONS) {
+			expect(one.params, one.question).toEqual(params[one.question]);
+			expect(one.columns, one.question).toEqual(columns[one.question]);
+		}
+	});
+
+	it("works without the data gateway's door, which then answers only qorpera and offers only the two reads", async () => {
+		const f = await fixture(() => ok({}), {
+			noDoor: true,
+			platform: numbers(() => ({ columns: ["balance"], rows: [[10]], more: false, asOf: "2026-11-26T11:00:00Z" })),
+		});
+		expect(f.tools.map((tool) => tool.name)).toEqual(["data_describe", "data_query"]);
+		expect((await f.invoke("data_query", { database: "qorpera", question: "money-now" })).success).toBe(true);
+		expect(JSON.parse((await f.invoke("data_describe", {})).text)).toMatchObject({ database: "qorpera" });
+		const shop = await f.invoke("data_query", { database: "shop", question: "count" });
+		expect(shop).toMatchObject({
+			success: false,
+			text: "REFUSED: Only the platform's own numbers (database qorpera) can be asked from here",
+		});
+		expect(f.platformCalls.map((call) => call.method)).toEqual([NUMBERS]);
+	});
+});
 
 describe("the company data tools", () => {
 	it("are four runtime tools, described briefly, and a worker's run is offered neither data_apply nor data_change", async () => {
@@ -225,7 +400,9 @@ describe("the company data tools", () => {
 		await f.invoke("data_query", { database: "shop", sql: "select :n::int as n", params: { n: 2 } });
 		expect(f.doorCalls[1]?.body).toMatchObject({ database: "shop", sql: "select :n::int as n", params: { n: 2 } });
 		const described = await fixture(() => ok({ databases: [], companyBytes: 0, limitBytes: 1024 }));
-		await described.invoke("data_describe", {});
+		const every = JSON.parse((await described.invoke("data_describe", {})).text);
+		expect(every.databases.map((one: { database: string }) => one.database)).toEqual(["qorpera"]);
+		expect(every.databases[0].questions).toEqual(QORPERA_QUESTIONS);
 		expect(described.platformCalls[0]?.args.p_database).toBeNull();
 		expect(described.doorCalls[0]?.body).not.toHaveProperty("database");
 	});
@@ -878,6 +1055,8 @@ describe("the company data tools", () => {
 			nullable: false,
 		});
 		expect(parsedCompact.databases[0].tables[1].viewDefinition).toBeUndefined();
+		expect(parsedCompact.databases.at(-1)).toMatchObject({ database: "qorpera" });
+		expect(JSON.parse(shownRich.text).databases.map((one: { database: string }) => one.database)).toEqual(["shop"]);
 	});
 });
 

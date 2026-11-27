@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	describeSurfaceBlocks,
+	isSurfaceAskSource,
 	parseSurfaceBinding,
 	parseSurfaceLayout,
 	parseSurfaceLayoutText,
@@ -915,6 +916,7 @@ function nodesOf(layout: SurfaceLayout): SurfaceLayoutNode[] {
 }
 
 function sourcesOf(value: unknown, key = ""): string[] {
+	if (isSurfaceAskSource(value)) return [];
 	if (typeof value === "string") return ["from", "model", "tint", "name", "line"].includes(key) ? [value] : [];
 	if (Array.isArray(value)) return value.flatMap((item) => sourcesOf(item, key));
 	if (value !== null && typeof value === "object") {
@@ -935,7 +937,7 @@ describe("starter layouts", () => {
 		}
 	});
 
-	it("bind Product and Custom inside their folder and Identity to the canonical identity files", () => {
+	it("bind Product, Strategy, Analytics and Custom inside their folder (asks aside) and Identity to the canonical identity files", () => {
 		for (const kind of SURFACE_STARTER_KINDS) {
 			for (const source of sourcesOf(SURFACE_STARTER_LAYOUTS[kind])) {
 				const { path } = parseSurfaceBinding(source);

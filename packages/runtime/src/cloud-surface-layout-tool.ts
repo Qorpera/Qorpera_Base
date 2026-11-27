@@ -3,6 +3,7 @@ import {
 	isUuid,
 	type JsonValue,
 	parseSurfaceLayout,
+	parseSurfaceLayoutColors,
 	readSurfaceLayout,
 	SURFACE_LAYOUT_PATH,
 	SURFACE_LAYOUT_SCHEMA,
@@ -10,6 +11,7 @@ import {
 	SURFACE_MAX_CHANGE_TITLE_CHARS,
 	SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 	type SurfaceLayout,
+	type SurfaceLayoutColors,
 	type SurfaceLayoutNode,
 	type SurfaceStarterKind,
 	type SurfaceTab,
@@ -57,7 +59,8 @@ type LayoutOperation =
 			readonly block: Record<string, unknown>;
 	  }
 	| { readonly op: "remove_block"; readonly tabId: string; readonly blockId?: string; readonly index?: number }
-	| { readonly op: "reorder_blocks"; readonly tabId: string; readonly order: readonly number[] };
+	| { readonly op: "reorder_blocks"; readonly tabId: string; readonly order: readonly number[] }
+	| { readonly op: "set_colors"; readonly colors: SurfaceLayoutColors | null };
 
 interface ComposeLayoutArgs {
 	readonly operations: readonly LayoutOperation[];
@@ -177,9 +180,17 @@ function parseOperation(raw: unknown, at: number): LayoutOperation {
 				order: [...raw.order],
 			};
 		}
+		case "set_colors": {
+			if (raw.colors === null) return { op: "set_colors", colors: null };
+			try {
+				return { op: "set_colors", colors: parseSurfaceLayoutColors(raw.colors, `${prefix}.colors`) };
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : String(error));
+			}
+		}
 		default:
 			throw new CloudToolArgumentRefusal(
-				`${prefix}.op must be one of add_tab, rename_tab, remove_tab, reorder_tabs, add_block, update_block, remove_block, reorder_blocks`,
+				`${prefix}.op must be one of add_tab, rename_tab, remove_tab, reorder_tabs, add_block, update_block, remove_block, reorder_blocks, set_colors`,
 			);
 	}
 }
@@ -210,9 +221,13 @@ function findTab(tabs: MutableTab[], tabId: string): MutableTab {
 
 function applyOperations(baseLayout: SurfaceLayout, operations: readonly LayoutOperation[]): SurfaceLayout {
 	const tabs = cloneToMutableTabs(baseLayout);
+	let colors = baseLayout.colors;
 
 	for (const op of operations) {
 		switch (op.op) {
+			case "set_colors":
+				colors = op.colors ?? undefined;
+				break;
 			case "add_tab": {
 				const rawTab = op.tab;
 				const id = requireNonEmptyString(rawTab.id, "add_tab.tab.id");
@@ -360,7 +375,7 @@ function applyOperations(baseLayout: SurfaceLayout, operations: readonly LayoutO
 	}
 
 	try {
-		return parseSurfaceLayout({ schema: SURFACE_LAYOUT_SCHEMA, tabs });
+		return parseSurfaceLayout({ schema: SURFACE_LAYOUT_SCHEMA, ...(colors && { colors }), tabs });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new CloudToolArgumentRefusal(`Resulting layout.json is invalid: ${message}`);
@@ -488,7 +503,8 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		source: "runtime",
 		description: [
 			"Surgically compose or reshape this Studio surface's layout (tabs, rows, and blocks including chart, artifacts, explainer, report, plays, economics, hypotheses, landscape, facts, table, cards, and module) without hand-editing the full layout JSON.",
-			"Applies an ordered list of operations (add_tab, rename_tab, remove_tab, reorder_tabs, add_block, update_block, remove_block, reorder_blocks), validates strictly against the Studio layout contract, and stages the resulting layout.json in Preview.",
+			"Applies an ordered list of operations (add_tab, rename_tab, remove_tab, reorder_tabs, add_block, update_block, remove_block, reorder_blocks, set_colors), validates strictly against the Studio layout contract, and stages the resulting layout.json in Preview.",
+			"The layout's page colours are kept on every compose; set_colors {op,colors} replaces them (the layout's colors value) and colors null removes them.",
 		].join("\n"),
 		inputSchema: {
 			type: "object",
@@ -500,7 +516,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 					minItems: 1,
 					maxItems: MAX_OPERATIONS,
 					description:
-						"Ordered mutations: add_tab {op,tab,index?}, rename_tab {op,tabId,title}, remove_tab {op,tabId}, reorder_tabs {op,tabIds}, add_block {op,tabId,block,index?}, update_block {op,tabId,blockId?,index?,block}, remove_block {op,tabId,blockId?,index?}, reorder_blocks {op,tabId,order}.",
+						"Ordered mutations: add_tab {op,tab,index?}, rename_tab {op,tabId,title}, remove_tab {op,tabId}, reorder_tabs {op,tabIds}, add_block {op,tabId,block,index?}, update_block {op,tabId,blockId?,index?,block}, remove_block {op,tabId,blockId?,index?}, reorder_blocks {op,tabId,order}, set_colors {op,colors}.",
 					items: { type: "object" },
 				},
 				title: {
