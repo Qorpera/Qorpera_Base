@@ -65,6 +65,7 @@ export interface HostedConnectorSignIn {
 	serviceOrigin: string;
 	browserProof: string;
 	startedAt: number;
+	target?: "mailbox";
 }
 
 export interface HostedConnectorReturn {
@@ -94,7 +95,8 @@ function readSignIn(): HostedConnectorSignIn | undefined {
 			typeof value.serviceOrigin !== "string" ||
 			typeof value.browserProof !== "string" ||
 			!/^[A-Za-z0-9_-]{43}$/.test(value.browserProof) ||
-			typeof value.startedAt !== "number"
+			typeof value.startedAt !== "number" ||
+			(value.target !== undefined && value.target !== "mailbox")
 		)
 			return undefined;
 		const origin = new URL(value.serviceOrigin);
@@ -392,6 +394,7 @@ export interface WebConnectors {
 		/** The bank the member picked: required for the bank, and only for it. */
 		bank?: WebBankChoice,
 	): Promise<string>;
+	beginMailboxSignIn(signal?: AbortSignal, mailboxId?: string): Promise<string>;
 	/** Finishes a sign-in this tab started: the broker seals the account only
 	 * for the browser that holds the proof. Resolves to the account label. */
 	finishSignIn(outcome: HostedConnectorReturn, signal?: AbortSignal): Promise<string | null>;
@@ -429,6 +432,53 @@ export function createWebConnectors(
 			existingSecretId,
 		});
 	}
+	async function start(
+		connectorId: SignInConnectorId,
+		issued: HostedConnectorCaptureTicket,
+		returnTo: string,
+		signal: AbortSignal | undefined,
+		bank?: WebBankChoice,
+		target?: "mailbox",
+	): Promise<string> {
+		const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+		const answer = await capture.call(
+			`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
+			{
+				schema: "qorpera.cloud-connector-oauth-start/v2",
+				captureCapability: issued.captureCapability,
+				returnTo,
+				browserProofSha256: await sha256Hex(browserProof),
+				...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
+			},
+			signal,
+		);
+		if (answer.status !== 200) {
+			const failed = isRecord(answer.value) ? answer.value : undefined;
+			const reason =
+				failed?.schema === "qorpera.cloud-connector-oauth-failed/v1" && typeof failed.reason === "string"
+					? failed.reason
+					: undefined;
+			throw Object.assign(new Error("The connection could not be started. Try again."), reason ? { reason } : {});
+		}
+		const started = connectorRecord(answer.value, "sign-in start");
+		const url = new URL(text(started.authorizationUrl, "sign-in URL"));
+		if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
+		const signIn: HostedConnectorSignIn = {
+			ticketId: issued.ticketId,
+			connectorId,
+			companyId: company,
+			serviceOrigin: issued.serviceOrigin,
+			browserProof,
+			startedAt: Date.now(),
+			...(target ? { target } : {}),
+		};
+		try {
+			sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
+		} catch {
+			throw new Error("This browser does not allow the sign-in to be finished here.");
+		}
+		return url.href;
+	}
 	return {
 		async list(signal) {
 			signal?.throwIfAborted();
@@ -441,49 +491,23 @@ export function createWebConnectors(
 		},
 		async beginSignIn(connectorId, existingSecretId, signal, bank) {
 			if ((connectorId === "bank") !== (bank !== undefined)) throw new Error("Invalid bank sign-in.");
-			// The page the sign-in was started on, read now: the member may move on while the ticket is issued.
 			const returnTo = `${location.origin}/${location.hash}`;
-			const issued = await ticket(connectorId, existingSecretId);
-			// This tab's proof: only its hash goes to the broker now; the proof
-			// itself only with the confirmation after the provider sends us back.
-			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
-			const answer = await capture.call(
-				`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
-				{
-					schema: "qorpera.cloud-connector-oauth-start/v2",
-					captureCapability: issued.captureCapability,
-					// The broker returns only to the app's root page; the route is in the hash.
-					returnTo,
-					browserProofSha256: await sha256Hex(browserProof),
-					...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
-				},
-				signal,
-			);
-			if (answer.status !== 200) {
-				const failed = isRecord(answer.value) ? answer.value : undefined;
-				const reason =
-					failed?.schema === "qorpera.cloud-connector-oauth-failed/v1" && typeof failed.reason === "string"
-						? failed.reason
-						: undefined;
-				throw Object.assign(new Error("The connection could not be started. Try again."), reason ? { reason } : {});
-			}
-			const started = connectorRecord(answer.value, "sign-in start");
-			const url = new URL(text(started.authorizationUrl, "sign-in URL"));
-			if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
-			const signIn: HostedConnectorSignIn = {
-				ticketId: issued.ticketId,
-				connectorId,
-				companyId: company,
-				serviceOrigin: issued.serviceOrigin,
-				browserProof,
-				startedAt: Date.now(),
+			return start(connectorId, await ticket(connectorId, existingSecretId), returnTo, signal, bank);
+		},
+		async beginMailboxSignIn(signal, mailboxId) {
+			signal?.throwIfAborted();
+			if (mailboxId !== undefined && !UUID_PATTERN.test(mailboxId)) throw new Error("Invalid mailbox.");
+			const returnTo = `${location.origin}/${location.hash}`;
+			const args = {
+				p_environment_id: profile.environmentId,
+				...(mailboxId === undefined ? {} : { p_mailbox_id: mailboxId }),
 			};
-			try {
-				sessionStorage.setItem(SIGN_IN_KEY, JSON.stringify(signIn));
-			} catch {
-				throw new Error("This browser does not allow the sign-in to be finished here.");
-			}
-			return url.href;
+			const issued = parseTicket(
+				await (signal
+					? cloud.rpc("qorpera_begin_google_mailbox", args, signal)
+					: cloud.rpc("qorpera_begin_google_mailbox", args)),
+			);
+			return start("gmail", issued, returnTo, signal, undefined, "mailbox");
 		},
 		async finishSignIn(outcome, signal) {
 			const signIn = outcome.signIn;
@@ -507,7 +531,8 @@ export function createWebConnectors(
 				answer.value && typeof answer.value === "object" ? (answer.value as Record<string, unknown>) : {};
 			if (answer.status !== 200 || value.schema !== "qorpera.cloud-connector-oauth-confirmed/v1") {
 				const reason = typeof value.reason === "string" ? value.reason : "provider_error";
-				throw Object.assign(new Error("The sign-in could not be finished."), { reason });
+				const address = typeof value.address === "string" && value.address ? { address: value.address } : {};
+				throw Object.assign(new Error("The sign-in could not be finished."), { reason, ...address });
 			}
 			return typeof value.accountLabel === "string" ? value.accountLabel : null;
 		},

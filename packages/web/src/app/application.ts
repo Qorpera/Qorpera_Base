@@ -17,6 +17,7 @@ import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
 import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
+import { connectExistingGoogleMailbox, pauseGoogleMailbox, reusableGoogleMailAccounts } from "../cloud/mail.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -1823,6 +1824,15 @@ export function mountApplication(
 					const loadedOps = lazyOpsModule.get();
 					if (loadedOps) loadedOps.bank.noteBankReturn(bankReturn);
 					else void lazyOpsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
+				} else if (connectorReturn?.signIn.target === "mailbox") {
+					const mailboxReturn = connectorReturn;
+					const loadedOps = lazyOpsModule.get();
+					if (loadedOps) loadedOps.mailbox.noteGoogleMailReturn(mailboxReturn);
+					else
+						void lazyOpsModule.load().then(({ mailbox: { noteGoogleMailReturn } }) => {
+							noteGoogleMailReturn(mailboxReturn);
+							if (!disposed && company === controller) render();
+						});
 				} else if (connectorReturn) {
 					const serviceReturn = connectorReturn;
 					const openReturnedSettings = () => {
@@ -3097,6 +3107,7 @@ export function mountApplication(
 					environmentId: controller.profile.environmentId,
 				};
 				const keys = createDigitalPostKeys(cloud, environment);
+				const connectors = createWebConnectors(cloud, controller.profile);
 				const accounts = createWebNativeSubscription(
 					cloud,
 					controller.profile.profileId,
@@ -3117,6 +3128,15 @@ export function mountApplication(
 						memberFolder(companyCurrent, t("Company access changed.")),
 					),
 					accounts: (signal) => accounts.listConnections(signal),
+					google: {
+						begin: (signal, mailboxId) => connectors.beginMailboxSignIn(signal, mailboxId),
+						finish: (outcome, signal) => connectors.finishSignIn(outcome, signal),
+						pause: (mailboxId, paused, signal) => pauseGoogleMailbox(cloud, mailboxId, paused, signal),
+						existing: async (signal) => reusableGoogleMailAccounts(await connectors.list(signal)),
+						connectExisting: (secretId, signal) =>
+							connectExistingGoogleMailbox(cloud, environment.environmentId, secretId, signal),
+						go: (url) => location.assign(url),
+					},
 				};
 			},
 			bankConnection: () => createWebConnectors(cloud, controller.profile),

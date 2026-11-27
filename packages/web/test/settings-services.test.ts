@@ -417,4 +417,35 @@ describe("services", () => {
 		expect(buttons(card(0)).map((button) => button.textContent)).toEqual(["Connect"]);
 		expect(card(0).textContent).not.toContain("anna@example.com");
 	});
+
+	it("keeps mailbox-owned Gmail secrets and mailbox OAuth returns out of Company connections", async () => {
+		sessionStorage.setItem(
+			"qorpera.connector-sign-in.v1",
+			JSON.stringify({
+				ticketId: id(20),
+				connectorId: "gmail",
+				companyId: id(10),
+				serviceOrigin: "https://company41-node-01.tailbb15c7.ts.net:10000",
+				browserProof: "p".repeat(43),
+				startedAt: Date.now(),
+				target: "mailbox",
+			}),
+		);
+		history.replaceState(null, "", `#/?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`);
+		noteConnectorReturn(takeConnectorReturn());
+		const { client } = setup([
+			{
+				...gmail,
+				secretId: id(96),
+				secretName: "mailbox-0a1b2c3d4e",
+				purpose: "Google mail in the Mailbox",
+				availableToAllAgents: false,
+				activeGrantCount: 0,
+			},
+		]);
+		await settle();
+		expect(client.finishSignIn).not.toHaveBeenCalled();
+		expect(buttons(card(0)).map((button) => button.textContent)).toEqual(["Connect"]);
+		expect(card(0).textContent).not.toContain("anna@example.com");
+	});
 });

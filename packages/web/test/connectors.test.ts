@@ -138,6 +138,69 @@ describe("connector client", () => {
 		expect(location.hash).toBe(`#/c/${id(10)}/i/bank`);
 	});
 
+	it("starts the Mailbox's Google sign-in with the Mailbox's own ticket and target marker", async () => {
+		history.replaceState(null, "", `#/c/${id(10)}/i/mailbox`);
+		const cloud = cloudWith(() => ticket);
+		const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({
+				schema: "qorpera.cloud-connector-oauth-started/v1",
+				connectorId: "gmail",
+				authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${id(10)}.abc`,
+				expiresAt: timestamp,
+			}),
+		);
+		const connectors = createWebConnectors(cloud, profile, fetch);
+		const url = await connectors.beginMailboxSignIn();
+		expect(url).toBe(`https://accounts.google.com/o/oauth2/v2/auth?state=${id(10)}.abc`);
+		expect(cloud.rpc).toHaveBeenCalledTimes(1);
+		expect(cloud.rpc).toHaveBeenCalledWith("qorpera_begin_google_mailbox", { p_environment_id: id(11) });
+		await connectors.beginMailboxSignIn(undefined, id(950));
+		expect(cloud.rpc).toHaveBeenLastCalledWith("qorpera_begin_google_mailbox", {
+			p_environment_id: id(11),
+			p_mailbox_id: id(950),
+		});
+		await expect(connectors.beginMailboxSignIn(undefined, "not-a-mailbox")).rejects.toThrow("Invalid mailbox.");
+		expect(cloud.rpc).toHaveBeenCalledTimes(2);
+		const live = new AbortController();
+		await connectors.beginMailboxSignIn(live.signal, id(951));
+		expect(cloud.rpc).toHaveBeenLastCalledWith(
+			"qorpera_begin_google_mailbox",
+			{ p_environment_id: id(11), p_mailbox_id: id(951) },
+			live.signal,
+		);
+		const stopped = new AbortController();
+		stopped.abort();
+		await expect(connectors.beginMailboxSignIn(stopped.signal)).rejects.toThrow();
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
+		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/oauth/${id(20)}/start?company=${id(10)}`);
+		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+		expect(body).toMatchObject({
+			schema: "qorpera.cloud-connector-oauth-start/v2",
+			captureCapability: "c".repeat(43),
+			returnTo: `${location.origin}/#/c/${id(10)}/i/mailbox`,
+		});
+		expect(body).not.toHaveProperty("bank");
+		const kept = JSON.parse(sessionStorage.getItem("qorpera.connector-sign-in.v1") ?? "{}") as Record<string, string>;
+		expect(kept).toMatchObject({
+			ticketId: id(20),
+			connectorId: "gmail",
+			companyId: id(10),
+			serviceOrigin: origin,
+			target: "mailbox",
+		});
+		history.replaceState(
+			null,
+			"",
+			`#/c/${id(10)}/i/mailbox?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`,
+		);
+		expect(takeConnectorReturn()).toMatchObject({
+			connector: "gmail",
+			connection: "confirm",
+			signIn: expect.objectContaining({ target: "mailbox" }),
+		});
+		expect(location.hash).toBe(`#/c/${id(10)}/i/mailbox`);
+	});
+
 	it("returns to the page the sign-in was started on, even when the member moved on meanwhile", async () => {
 		history.replaceState(null, "", `#/c/${id(10)}/i/bank`);
 		const cloud = cloudWith(() => {
@@ -201,6 +264,31 @@ describe("connector client", () => {
 				refused,
 			).finishSignIn(outcome!),
 		).rejects.toMatchObject({ reason: "browser_mismatch" });
+		startedHere("gmail");
+		history.replaceState(
+			null,
+			"",
+			`#/c/${id(10)}/i/mailbox?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`,
+		);
+		const mailboxReturn = takeConnectorReturn();
+		const wrongAccount = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json(
+				{
+					schema: "qorpera.cloud-connector-oauth-failed/v1",
+					reason: "wrong_account",
+					address: "hello@saml-bands.example",
+					message: "Sign in with hello@saml-bands.example.",
+				},
+				{ status: 403 },
+			),
+		);
+		await expect(
+			createWebConnectors(
+				cloudWith(() => null),
+				profile,
+				wrongAccount,
+			).finishSignIn(mailboxReturn!),
+		).rejects.toMatchObject({ reason: "wrong_account", address: "hello@saml-bands.example" });
 		// Another company's page never finishes this company's sign-in.
 		await expect(
 			createWebConnectors(

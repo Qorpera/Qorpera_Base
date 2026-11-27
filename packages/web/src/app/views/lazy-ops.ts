@@ -5,6 +5,7 @@ export * as companyFolderChoose from "./company-folder-choose.ts";
 export * as concepts from "./concepts.ts";
 export * as interfaceView from "./interface.ts";
 export { _bootHub } from "./lazy-boot-hub.ts";
+export * as mailbox from "./mailbox.ts";
 export * as newProgram from "./program-add.ts";
 export * as programPage from "./program-page.ts";
 export * as siteView from "./site-view.ts";
