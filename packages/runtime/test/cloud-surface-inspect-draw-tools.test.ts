@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1760,6 +1760,175 @@ describe("Studio visual inspect & draw tools", () => {
 			expect(siblingHtml).toContain("SIBLING_MERGED_TAGLINE");
 			expect(siblingHtml).toContain("42 g");
 			expect(siblingHtml).not.toContain("NON_OPT_OLD_TAGLINE");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("inspect_surface accounts for base64+gzip expansion and keeps 8 incompressible staged PNGs plus local Blender renders within upload chunk bounds", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-budget-"));
+		try {
+			const fakeChrome = writeFakeChromium(dir, 1200);
+			const makeIncompressiblePng = (): Buffer => {
+				const buf = randomBytes(23_500);
+				VALID_PNG.copy(buf, 0);
+				return buf;
+			};
+			const binaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
+			const localAssetPaths: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
+			for (let i = 0; i < 8; i += 1) {
+				binaries[`surfaces/thetabands/pictures/shot-${i}.png`] = {
+					bytes: makeIncompressiblePng(),
+					mediaType: "image/png",
+				};
+			}
+			for (let i = 0; i < 2; i += 1) {
+				const bytes = makeIncompressiblePng();
+				const file = `render-${i}.png`;
+				writeFileSync(join(dir, file), bytes);
+				const full = `surfaces/thetabands/renders/${file}`;
+				binaries[full] = { bytes, mediaType: "image/png" };
+				localAssetPaths[full] = {
+					sourcePath: file,
+					sha256: createHash("sha256").update(bytes).digest("hex"),
+				};
+			}
+			const bigGlb = Buffer.concat([VALID_GLB, Buffer.alloc(500_000, 0)]);
+			bigGlb.writeUInt32LE(bigGlb.byteLength, 8);
+			writeFileSync(join(dir, "thetaband.glb"), bigGlb);
+			localAssetPaths["surfaces/thetabands/thetaband.glb"] = {
+				sourcePath: "thetaband.glb",
+				sha256: createHash("sha256").update(bigGlb).digest("hex"),
+			};
+
+			const commands: string[] = [];
+			const tool = createInspectSurfaceTool({
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, commands),
+				loadSnapshot: async () => ({
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "thetaband.glb",
+							parts: [{ node: "Band" }],
+						}),
+						"surfaces/thetabands/specs.json": JSON.stringify({
+							overview: { tagline: "Soft knit meditation headband.", weight: "44 g" },
+						}),
+					},
+					binaries,
+					localAssetPaths,
+					knownBinaries: {},
+				}),
+				pollMs: 10,
+			});
+
+			const res = await tool.execute({ tab: "overview", viewport: "desktop" }, CONTEXT);
+			expect(res.kind).toBe("json");
+			const stagedChunks = commands.filter((cmd) => cmd.includes("staged.json.gz.b64"));
+			expect(stagedChunks.length).toBeGreaterThan(16);
+			expect(stagedChunks.length).toBeLessThanOrEqual(34);
+			const stagedJson = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						stagedChunks.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(Object.keys(stagedJson.files).filter((k) => k.startsWith("pictures/"))).toHaveLength(8);
+			expect(stagedJson.local["thetaband.glb"]?.src).toBe("thetaband.glb");
+			expect(stagedJson.local["renders/render-0.png"]?.src).toBe("render-0.png");
+
+			const tightBinaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
+			const tightLocal: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
+			for (let i = 0; i < 4; i += 1) {
+				tightBinaries[`surfaces/thetabands/pictures/pic-${i}.png`] = {
+					bytes: makeIncompressiblePng(),
+					mediaType: "image/png",
+				};
+			}
+			const fallbackGlb = Buffer.concat([VALID_GLB, randomBytes(130_000)]);
+			fallbackGlb.writeUInt32LE(fallbackGlb.byteLength, 8);
+			writeFileSync(join(dir, "fallback.glb"), fallbackGlb);
+			tightBinaries["surfaces/thetabands/fallback.glb"] = {
+				bytes: fallbackGlb,
+				mediaType: "model/gltf-binary",
+			};
+			tightLocal["surfaces/thetabands/fallback.glb"] = {
+				sourcePath: "fallback.glb",
+				sha256: createHash("sha256").update(fallbackGlb).digest("hex"),
+			};
+			const smallRender = makeIncompressiblePng();
+			writeFileSync(join(dir, "detail.png"), smallRender);
+			tightBinaries["surfaces/thetabands/renders/detail.png"] = {
+				bytes: smallRender,
+				mediaType: "image/png",
+			};
+			tightLocal["surfaces/thetabands/renders/detail.png"] = {
+				sourcePath: "detail.png",
+				sha256: createHash("sha256").update(smallRender).digest("hex"),
+			};
+			const moduleHtml = `<!doctype html><html><body>${"m".repeat(60_000)}</body></html>`;
+			const tightCommands: string[] = [];
+			const tightTool = createInspectSurfaceTool({
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, tightCommands),
+				loadSnapshot: async () => ({
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/layout.json": JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [
+								{
+									id: "overview",
+									title: "Overview",
+									blocks: [
+										{ type: "stage_3d", model: "object.json" },
+										{ type: "module", id: "fit", from: "modules/fit", heading: "Fit" },
+										{ type: "artifacts", heading: "Visuals" },
+									],
+								},
+							],
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "fallback.glb",
+							parts: [{ node: "Band" }],
+						}),
+						"surfaces/thetabands/modules/fit/index.html": moduleHtml,
+					},
+					binaries: tightBinaries,
+					localAssetPaths: tightLocal,
+					knownBinaries: {},
+				}),
+				pollMs: 10,
+			});
+
+			const tightRes = await tightTool.execute({ tab: "overview", viewport: "desktop" }, CONTEXT);
+			expect(tightRes.kind).toBe("json");
+			const tightStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						tightCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string; text?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(tightStaged.files["modules/fit/index.html"]?.text).toBe(moduleHtml);
+			expect(tightStaged.files["renders/detail.png"]?.b64).toBeTruthy();
+			expect(tightStaged.files["fallback.glb"]).toBeUndefined();
+			expect(tightStaged.local["fallback.glb"]?.src).toBe("fallback.glb");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

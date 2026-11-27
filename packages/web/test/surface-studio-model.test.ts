@@ -10,6 +10,7 @@ import {
 	pickStudioModel,
 	sameStudioModel,
 	shortestTurn,
+	stageCameraDistance,
 	studioColorHex,
 	tintedMaterials,
 } from "../src/app/views/surface-studio-model.ts";
@@ -145,6 +146,23 @@ describe("taking a model apart", () => {
 		expect(shortestTurn(0, Math.PI / 2)).toBeCloseTo(Math.PI / 2);
 		expect(shortestTurn(Math.PI * 1.9, 0.1)).toBeCloseTo(Math.PI * 2 + 0.1);
 		expect(shortestTurn(0.1, Math.PI * 1.9)).toBeCloseTo(-Math.PI * 0.1);
+	});
+
+	it("frames flat wide models closer than tall cubes and pulls back on narrow or steep views", () => {
+		const pitch = (14 * Math.PI) / 180;
+		const steep = (45 * Math.PI) / 180;
+		const headband = { x: 0.95, y: 0.25, z: 0.95 };
+		const cube = { x: 0.95, y: 0.95, z: 0.95 };
+		const wideBand = stageCameraDistance(headband, 16 / 9, pitch, 24);
+		const wideCube = stageCameraDistance(cube, 16 / 9, pitch, 24);
+		const narrowBand = stageCameraDistance(headband, 1.1, pitch, 24);
+		const steepBand = stageCameraDistance(headband, 16 / 9, steep, 24);
+		expect(wideBand).toBeGreaterThan(2.8);
+		expect(wideBand).toBeLessThan(4.0);
+		expect(wideCube).toBeGreaterThan(wideBand + 1.5);
+		expect(narrowBand).toBeGreaterThan(wideBand);
+		expect(steepBand).toBeGreaterThan(wideBand);
+		expect(Number.isFinite(stageCameraDistance({ x: 0, y: 0, z: 0 }, 0, Number.NaN, 0))).toBe(true);
 	});
 });
 
