@@ -1296,4 +1296,22 @@ describe("coding_run_command preflightLand dry-run check", () => {
 			f.boundary.close();
 		}
 	});
+
+	it("rejects reserved studio-inspect operation keys", async () => {
+		const f = fixture();
+		try {
+			for (const args of [
+				{ operationKey: "studio-inspect:x", command: "git status" },
+				{ operationKey: "studio-inspect:x", runChecks: true },
+				{ operationKey: "studio-inspect:x", inspectImage: "a.png" },
+				{ operationKey: "studio-inspect:x", preflightLand: true },
+			]) {
+				const res = await f.boundary.invoke("reserved-op", "qorpera", "coding_run_command", args);
+				expect(res.success).toBe(false);
+			}
+			expect(f.gateway.start).not.toHaveBeenCalled();
+		} finally {
+			f.boundary.close();
+		}
+	});
 });

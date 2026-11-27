@@ -3970,7 +3970,7 @@ export class ConversationView {
 				item.erased
 					? [h("div", { class: "text" }, t("(erased)"))]
 					: item.kind === "agent"
-						? markdownBubbles(item.text, (href) => this.#linkedSite(href))
+						? markdownBubbles(item.text, (href) => this.#linkedSite(href), { stripGroundingCitations: true })
 						: item.text || !item.attachmentCount
 							? this.#memberParts(item.text, item.quotes)
 							: []

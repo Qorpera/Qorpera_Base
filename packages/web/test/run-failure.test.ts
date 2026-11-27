@@ -173,7 +173,17 @@ describe("why a run stopped, in the member's words", () => {
 			"failed",
 			/out of computer hours/,
 		],
+		[
+			"Coding session ended before calling coding_finish. [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+			"failed",
+			/coding session ended without finishing its work/i,
+		],
 		[undefined, "cancelled", /stopped before it finished/],
+		[
+			"Coding session ended before calling coding_finish. [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+			"cancelled",
+			/stopped before it finished/,
+		],
 		["something nobody has seen before", "failed", /internal error/],
 	] as const)("%s", (error, status, expected) => {
 		const reason = runFailureReason(error, status);
@@ -182,6 +192,21 @@ describe("why a run stopped, in the member's words", () => {
 		expect(reason).not.toMatch(/\d{3}|runner|provider|bridge|lease|dispatch/i);
 		// Try again appears only when the cloud allows it, so the words never ask for it.
 		expect(reason).not.toMatch(/try again/i);
+	});
+
+	it("marks coding no_submission runs as interrupted so retry remains available", () => {
+		expect(
+			runFailureInterrupted(
+				"Coding session ended before calling coding_finish. [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+				"failed",
+			),
+		).toBe(true);
+		expect(
+			runFailureInterrupted(
+				"Coding session ended before calling coding_finish. [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+				"cancelled",
+			),
+		).toBe(true);
 	});
 
 	it("takes the cloud's word on a usage limit, and never reads a rate limit as one", () => {
