@@ -1995,6 +1995,12 @@ describe("unified agents, the retired Members surface, and Thetaband orchestrati
 				"mobile-app",
 			);
 			document.body.append(view.el);
+			for (let turn = 0; turn < 2; turn++) {
+				await flush();
+				view.update();
+			}
+			expect(view.el.classList.contains("is-workbench")).toBe(true);
+			view.el.querySelector<HTMLButtonElement>('[data-act="full-preview"]')!.click();
 			const viewport = view.el.querySelector<HTMLElement>(".surface-viewport")!;
 			vi.spyOn(viewport, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1200, 900));
 			const bar = view.el.querySelector<HTMLElement>(".surface-bar")!;

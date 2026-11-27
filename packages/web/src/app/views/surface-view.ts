@@ -16,7 +16,7 @@ import { t } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import { type SurfaceSkeletonKind, surfaceSkeleton } from "../../ui/skeleton.ts";
 import { afterPaint } from "../../ui/time-slice.ts";
-import { opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
+import { isAppWorkbenchSurface, opsComposerPlaceholder, supportsViewportSplit } from "../surface-kinds.ts";
 import {
 	askedToPublish,
 	clampSurfaceZoom,
@@ -38,6 +38,7 @@ import {
 	surfaceBySlug,
 	surfaceHasDeliverables,
 } from "../surfaces-store.ts";
+import { AppWorkbenchView } from "./app-workbench-view.ts";
 import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import type { SurfaceLiveHosts } from "./surface-blocks/live.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
@@ -346,6 +347,20 @@ export class SurfaceView {
 	readonly #primaryDoor: SurfaceDoorStage;
 	readonly #address: SurfaceAddress;
 	readonly #compareDoors = new Map<string, CompareColumn>();
+	readonly #backToWorkbench = h(
+		"button",
+		{
+			type: "button",
+			class: "btn btn-small workbench-return-btn",
+			"data-act": "back-to-workbench",
+			hidden: true,
+		},
+		icon("back"),
+		h("span", null, t("Back to workbench")),
+	);
+	#workbench: AppWorkbenchView | undefined;
+	#workbenchMode = false;
+	#workbenchFullPreview = false;
 	#framesMode: "none" | "primary" | "compare" = "none";
 	#pointing = false;
 	#pointVisible = false;
@@ -493,7 +508,7 @@ export class SurfaceView {
 			signal: lifetimeSignal,
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);
-		this.el.append(this.#stage, this.#panelToggle);
+		this.el.append(this.#stage, this.#panelToggle, this.#backToWorkbench);
 		this.#notchBar.addEventListener("scroll", () => this.#markNotchCut(), { passive: true, signal: lifetimeSignal });
 		this.#bar.addEventListener(
 			"focusout",
@@ -818,6 +833,10 @@ export class SurfaceView {
 	}
 
 	focus(): void {
+		if (this.#workbenchMode && this.#workbench) {
+			this.#workbench.focus();
+			return;
+		}
 		if (!this.#input.disabled) this.#input.focus({ preventScroll: true });
 	}
 
@@ -828,6 +847,7 @@ export class SurfaceView {
 		this.#needsRevive = true;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
+		this.#workbench?.park();
 		this.#address.close();
 		if (this.#pointing) this.#setPointing(false);
 		this.#clearLocalLoadTimer();
@@ -869,6 +889,7 @@ export class SurfaceView {
 		this.#primaryDoor.resetRetryState();
 		for (const entry of this.#compareDoors.values()) entry.stage.resetRetryState();
 		this.#framesShown = "";
+		this.#workbench?.activate();
 		void this.#host.store.openSurface(this.slug);
 		this.update();
 	}
@@ -880,6 +901,7 @@ export class SurfaceView {
 		this.#mountParked = false;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
+		this.#workbench?.deactivate();
 		this.#address.close();
 		this.#clearLocalLoadTimer();
 		this.#viewportResizeObserver?.disconnect();
@@ -902,6 +924,8 @@ export class SurfaceView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.deactivate();
+		this.#workbench?.dispose();
+		this.#workbench = undefined;
 		this.#clearCompare();
 		this.#primaryDoor.dispose();
 		this.#attachedReport?.dispose();
@@ -961,7 +985,12 @@ export class SurfaceView {
 			this.#barShown = "";
 			this.#chromeShown = "";
 			this.#toastShown = "";
-			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
+			this.#workbenchMode = false;
+			this.#workbenchFullPreview = false;
+			this.#backToWorkbench.hidden = true;
+			this.#stage.hidden = false;
+			if (this.#workbench) this.#workbench.el.hidden = true;
+			this.el.classList.remove("has-drawer", "has-banner", "is-pointing", "is-workbench");
 			if (this.#panelsHidden) {
 				this.#panelsHidden = false;
 				this.#paintNotch();
@@ -979,10 +1008,50 @@ export class SurfaceView {
 			}
 			return;
 		}
+		if (this.#lastSurfaceId !== surface.id) this.#workbenchFullPreview = false;
 		this.#lastSurfaceId = surface.id;
 		store.setActiveSurface(surface.id);
-		this.#composer.hidden = false;
 		const look = store.lookOf(surface);
+		const isWorkbenchCapable = isAppWorkbenchSurface(surface, look);
+		const useWorkbench = isWorkbenchCapable && !this.#workbenchFullPreview;
+		if (useWorkbench) {
+			this.#workbenchMode = true;
+			this.el.classList.add("is-workbench");
+			this.el.classList.remove("has-drawer", "has-banner", "is-pointing");
+			this.#stage.hidden = true;
+			this.#bar.hidden = true;
+			this.#panelToggle.hidden = true;
+			this.#composer.hidden = true;
+			this.#backToWorkbench.hidden = true;
+			this.#address.close();
+			this.#clearFrames();
+			this.#disposeMount();
+			this.#disposeAttachedReport();
+			this.#drawer.update(undefined);
+			if (!this.#workbench) {
+				this.#workbench = new AppWorkbenchView(this.#host, this.#lifetime.signal, {
+					onFullPreview: () => {
+						this.#workbenchFullPreview = true;
+						this.update();
+					},
+				});
+				this.el.append(this.#workbench.el);
+			}
+			this.#workbench.el.hidden = false;
+			this.#workbench.update(surface);
+			return;
+		}
+		if (this.#workbenchMode) {
+			this.#workbenchMode = false;
+			this.el.classList.remove("is-workbench");
+			this.#stage.hidden = false;
+			if (this.#workbench) {
+				this.#workbench.park();
+				this.#workbench.el.hidden = true;
+			}
+		}
+		this.#backToWorkbench.hidden = !(isWorkbenchCapable && this.#workbenchFullPreview);
+		this.#composer.hidden = false;
 		const workspace = state.workspaces[surface.id];
 		const preview = workspace?.previewState;
 		const reportMode = state.mode === "report" && look.kind !== "report" && surfaceHasDeliverables(state, surface.id);
@@ -2269,6 +2338,7 @@ export class SurfaceView {
 	}
 
 	#keydown(event: KeyboardEvent): void {
+		if (this.#workbenchMode) return;
 		if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
 		if (event.key === "Escape" && this.#pointing) {
 			event.preventDefault();
@@ -2422,13 +2492,25 @@ export class SurfaceView {
 	}
 
 	#click(event: MouseEvent): void {
+		if (this.#workbenchMode) return;
 		const target = (event.target as Element).closest<HTMLElement>("[data-act]");
-		if (!target || this.#drawer.el.contains(target) || !this.el.contains(target)) return;
+		if (
+			!target ||
+			this.#drawer.el.contains(target) ||
+			this.#workbench?.el.contains(target) ||
+			!this.el.contains(target)
+		)
+			return;
 		const store = this.#host.store;
 		const surface = this.surface;
 		if (!surface) return;
 		const { act } = target.dataset;
 		switch (act) {
+			case "back-to-workbench":
+				this.#workbenchFullPreview = false;
+				this.#workbench?.activate();
+				this.update();
+				return;
 			case "mode": {
 				const next = target.dataset.mode as SurfacePreviewMode;
 				if (next !== "preview" && this.#pointing) this.#setPointing(false);

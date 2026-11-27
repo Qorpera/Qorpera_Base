@@ -121,6 +121,17 @@ export function isOpsKind(kind: SurfaceKind): boolean {
 	return kind === "inbox" || kind === "money" || kind === "data" || kind === "files";
 }
 
+export function isAppWorkbenchSurface(
+	surface: Pick<SurfaceSummary, "id" | "sourceKind">,
+	look: Pick<SurfaceLook, "kind">,
+): boolean {
+	return (
+		!surface.id.startsWith("local-") &&
+		surface.sourceKind === "code_repo" &&
+		(look.kind === "web_app" || look.kind === "mobile_app" || look.kind === "desktop_app")
+	);
+}
+
 export function supportsViewportSplit(
 	surface: Pick<SurfaceSummary, "archetype">,
 	look: Pick<SurfaceLook, "kind">,

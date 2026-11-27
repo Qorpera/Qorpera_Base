@@ -31,12 +31,14 @@ import {
 	type SurfaceAppRuntimeConfig,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
+	type SurfaceCombineTracksResult,
 	type SurfaceExplorationSet,
 	type SurfaceImageRef,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfaceReconciliation,
 	type SurfaceSession,
+	type SurfaceSessionArtifact,
 	type SurfaceSessionImages,
 	type SurfaceSummary,
 	type SurfaceUnseenNote,
@@ -46,6 +48,7 @@ import { phrase, t } from "../ui/preferences.ts";
 import { type SurfaceFigureId, surfaceFigureIcon } from "../ui/surface-figure.ts";
 import { Store } from "./state.ts";
 import {
+	isAppWorkbenchSurface,
 	isOpsKind,
 	isThetabandCompany,
 	type SurfaceKind,
@@ -200,6 +203,11 @@ export type SurfacesClient = Pick<
 			| "declineSurfacePublishAsk"
 			| "withdrawSurfacePublishAsk"
 			| "ensureSurfaceReconciliation"
+			| "selectSurfaceTrackPreview"
+			| "shipSurfaceTrack"
+			| "combineSurfaceTracks"
+			| "cancelSurfaceSessionTurn"
+			| "getSurfaceSessionArtifact"
 		>
 	>;
 
@@ -424,6 +432,9 @@ export interface SurfacesState {
 	readonly unseenNotes: Readonly<Record<string, SurfaceUnseenNote>>;
 	readonly reconciliationRequests: Readonly<Record<string, "pending" | "failed">>;
 	readonly previewSyncing: Readonly<Record<string, true>>;
+	readonly selectedTrackId: Readonly<Record<string, string | null>>;
+	readonly sessionArtifacts: Readonly<Record<string, SurfaceSessionArtifact>>;
+	readonly loadingArtifacts: Readonly<Record<string, true>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -1616,6 +1627,7 @@ export class SurfacesStore {
 	#noteSeq = 0;
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
+	readonly #artifactReads = new Map<string, Promise<SurfaceSessionArtifact | undefined>>();
 	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	readonly #reconciliationRequested = new Set<string>();
 	#loaded: Promise<void> | undefined;
@@ -1656,6 +1668,9 @@ export class SurfacesStore {
 			unseenNotes: {},
 			reconciliationRequests: {},
 			previewSyncing: {},
+			selectedTrackId: {},
+			sessionArtifacts: {},
+			loadingArtifacts: {},
 			busy: {},
 		});
 		if (options.signal.aborted) this.#visitAbort.abort();
@@ -3150,7 +3165,8 @@ export class SurfacesStore {
 			isLocalSurfaceId(surfaceId) ||
 			!this.#options.client ||
 			stored.surface.archetype !== "live_build" ||
-			stored.surface.sourceKind !== "code_repo"
+			stored.surface.sourceKind !== "code_repo" ||
+			this.isWorkbenchSurface(stored.surface)
 		) {
 			return;
 		}
@@ -4248,13 +4264,17 @@ export class SurfacesStore {
 			this.#stageLocalSession(surface, id, text);
 			return local;
 		}
+		const targetSurface = this.state.surfaces.find((item) => item.id === surfaceId);
+		const isWorkbench = Boolean(targetSurface && this.isWorkbenchSurface(targetSurface));
 		const resolvedOptions: StartSurfaceSessionOptions =
-			options.previewBaseChangeIds === undefined && this.state.mode !== "live"
-				? (() => {
-						const previewBaseChangeIds = this.visiblePreviewChangeIds(surfaceId);
-						return previewBaseChangeIds.length > 0 ? { ...options, previewBaseChangeIds } : options;
-					})()
-				: options;
+			options.previewBaseChangeIds === undefined && isWorkbench
+				? { ...options, previewBaseChangeIds: [] }
+				: options.previewBaseChangeIds === undefined && this.state.mode !== "live"
+					? (() => {
+							const previewBaseChangeIds = this.visiblePreviewChangeIds(surfaceId);
+							return previewBaseChangeIds.length > 0 ? { ...options, previewBaseChangeIds } : options;
+						})()
+					: options;
 		const session = await this.#run(`start:${surfaceId}:${text}`, async (client) => {
 			const attached = await this.#uploadImages(client, surfaceId, files);
 			return client.startSurfaceSession(
@@ -4266,6 +4286,11 @@ export class SurfacesStore {
 		if (!session) return undefined;
 		const workspace = this.workspace(surfaceId);
 		if (workspace) this.#putWorkspace({ ...workspace, activeSessions: [...workspace.activeSessions, session] });
+		if (isWorkbench) {
+			this.store.set((state) => ({
+				selectedTrackId: { ...state.selectedTrackId, [surfaceId]: session.id },
+			}));
+		}
 		void this.refreshWorkspace(surfaceId);
 		return session;
 	}
@@ -4349,6 +4374,8 @@ export class SurfacesStore {
 				delete loadingCloudFiles[surfaceId];
 				const updatingCloudFiles = { ...state.updatingCloudFiles };
 				delete updatingCloudFiles[surfaceId];
+				const selectedTrackId = { ...state.selectedTrackId };
+				delete selectedTrackId[surfaceId];
 				return {
 					surfaces: state.surfaces.filter((surface) => surface.id !== surfaceId),
 					workspaces,
@@ -4359,6 +4386,7 @@ export class SurfacesStore {
 					pendingStudioPatches,
 					loadingCloudFiles,
 					updatingCloudFiles,
+					selectedTrackId,
 					...(state.drawer?.surfaceId === surfaceId ? { drawer: undefined } : {}),
 					...(state.highlight?.surfaceId === surfaceId ? { highlight: undefined } : {}),
 				};
@@ -5876,6 +5904,23 @@ export class SurfacesStore {
 			await this.ensureReconciliation(surfaceId, primary.toggledChangeIds, [], true);
 			return;
 		}
+		if (workspace && this.isWorkbenchSurface(workspace.surface)) {
+			const preview = workspace.previewState;
+			const activeRoute = preview.primary.activeRoute || "/";
+			if (preview.previewScope === "explicit" && preview.primary.toggledChangeIds.length > 0) {
+				const toggled = new Set(preview.primary.toggledChangeIds);
+				const combineSessionIds = workspace.activeSessions
+					.filter((session) => session.changes.some((change) => toggled.has(change.id)))
+					.map((session) => session.id);
+				if (combineSessionIds.length >= 2) {
+					await this.selectTrackPreview(surfaceId, { combineSessionIds, activeRoute });
+					return;
+				}
+			}
+			const sessionId = preview.selectedSessionId ?? this.selectedTrackOf(surfaceId);
+			await this.selectTrackPreview(surfaceId, { sessionId, activeRoute });
+			return;
+		}
 		const timer = this.#previewSyncDebounceTimers.get(surfaceId);
 		if (timer) {
 			clearTimeout(timer);
@@ -6092,9 +6137,186 @@ export class SurfacesStore {
 		this.#previewSyncRetryTimers.set(surfaceId, timer);
 	}
 
+	isWorkbenchSurface(surface: SurfaceSummary): boolean {
+		return isAppWorkbenchSurface(surface, this.lookOf(surface));
+	}
+
+	selectedTrackOf(surfaceId: string): string | null {
+		const workspace = this.workspace(surfaceId);
+		const explicit = this.state.selectedTrackId[surfaceId];
+		if (explicit === null) return null;
+		const sessions = [...(workspace?.activeSessions ?? []), ...(workspace?.recentHistory ?? [])];
+		if (explicit && sessions.some((session) => session.id === explicit)) return explicit;
+		const previewSelected = workspace?.previewState.selectedSessionId;
+		if (previewSelected && sessions.some((session) => session.id === previewSelected)) return previewSelected;
+		return workspace?.activeSessions[0]?.id ?? null;
+	}
+
+	selectTrack(surfaceId: string, sessionId: string | null): void {
+		const current = this.state.selectedTrackId[surfaceId];
+		if (current !== sessionId || (sessionId !== null && this.state.highlight?.sessionId === sessionId)) {
+			this.store.set((state) => ({
+				selectedTrackId: { ...state.selectedTrackId, [surfaceId]: sessionId },
+				...(sessionId !== null && state.highlight?.sessionId === sessionId ? { highlight: undefined } : {}),
+			}));
+		}
+		if (sessionId) {
+			const session = this.session(sessionId);
+			if (session) this.ensureSessionImages(session);
+			if (this.state.unseenNotes[sessionId]) this.seeNotes(sessionId);
+		}
+	}
+
+	async selectTrackPreview(
+		surfaceId: string,
+		options: {
+			readonly sessionId?: string | null;
+			readonly combineSessionIds?: readonly string[] | null;
+			readonly activeRoute?: string;
+		} = {},
+	): Promise<SurfacePreviewCompositionState | undefined> {
+		if (isLocalSurfaceId(surfaceId)) return undefined;
+		const previewState = await this.#run(`track-preview:${surfaceId}`, async (client) => {
+			if (!client.selectSurfaceTrackPreview) throw new Error(this.#options.unavailableMessage);
+			return await client.selectSurfaceTrackPreview(surfaceId, options);
+		});
+		if (!previewState) return undefined;
+		const workspace = this.workspace(surfaceId);
+		if (workspace) {
+			this.#putWorkspace({ ...workspace, previewState }, true, { fromPreviewSync: true });
+		}
+		if (options.sessionId) {
+			this.store.set((state) => ({
+				selectedTrackId: { ...state.selectedTrackId, [surfaceId]: options.sessionId! },
+			}));
+		}
+		return previewState;
+	}
+
+	async shipTrack(sessionId: string, publish = false): Promise<SurfaceSession | undefined> {
+		const existing = this.session(sessionId);
+		const updated = await this.#run(`ship-track:${sessionId}`, async (client) => {
+			if (!client.shipSurfaceTrack) throw new Error(this.#options.unavailableMessage);
+			return await client.shipSurfaceTrack(sessionId, publish);
+		});
+		if (!updated) return undefined;
+		const verb = this.#undoVerbFor(updated.surfaceId);
+		const prevStatus = new Map((existing?.changes ?? []).map((change) => [change.id, change.status]));
+		const newlyMerging = updated.changes
+			.filter((change) => change.status === "merging" && prevStatus.get(change.id) !== "merging")
+			.map((change) => change.id);
+		const newlyMerged = updated.changes
+			.filter((change) => change.status === "merged" && prevStatus.get(change.id) !== "merged")
+			.map((change) => change.id);
+		const outcome: ApprovalOutcome =
+			updated.state === "completed" || updated.state === "discarded" ? "history" : "open";
+		this.#applySession(updated, outcome);
+		if (newlyMerging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, newlyMerging, verb);
+		else if (newlyMerged.length > 0) this.#offerUndo(updated.title, newlyMerged, verb);
+		void this.refreshWorkspace(updated.surfaceId);
+		void this.refreshSurfaces();
+		return updated;
+	}
+
+	async combineTracks(
+		surfaceId: string,
+		sessionIds: readonly string[],
+		land = false,
+	): Promise<SurfaceCombineTracksResult | undefined> {
+		const ids = [...new Set(sessionIds.filter(Boolean))];
+		if (ids.length < 2 || isLocalSurfaceId(surfaceId)) return undefined;
+		const result = await this.#run(`combine-tracks:${surfaceId}`, async (client) => {
+			if (!client.combineSurfaceTracks) throw new Error(this.#options.unavailableMessage);
+			return await client.combineSurfaceTracks(surfaceId, ids, land);
+		});
+		if (!result) return undefined;
+		if (result.mode === "preview") {
+			const workspace = this.workspace(surfaceId);
+			if (workspace) {
+				this.#putWorkspace({ ...workspace, previewState: result.previewState }, true, { fromPreviewSync: true });
+			}
+		} else {
+			if (result.changeIds.length > 0) {
+				const verb = this.#undoVerbFor(surfaceId);
+				const label = t("{count} combined tracks", { count: result.sessionIds.length });
+				if (result.jobId) this.#offerPendingMerge(surfaceId, label, result.changeIds, verb);
+				else this.#offerUndo(label, result.changeIds, verb);
+			}
+			void this.refreshWorkspace(surfaceId);
+			void this.refreshSurfaces();
+		}
+		return result;
+	}
+
+	async stopSessionTurn(sessionId: string): Promise<SurfaceSession | undefined> {
+		const updated = await this.#run(`stop-turn:${sessionId}`, async (client) => {
+			if (!client.cancelSurfaceSessionTurn) throw new Error(this.#options.unavailableMessage);
+			return await client.cancelSurfaceSessionTurn(sessionId);
+		});
+		if (!updated) return undefined;
+		this.#applySession(updated, "open");
+		void this.refreshSurfaces();
+		return updated;
+	}
+
+	async loadSessionArtifact(
+		artifactId: string,
+		expectedRevision?: number,
+	): Promise<SurfaceSessionArtifact | undefined> {
+		const cached = this.state.sessionArtifacts[artifactId];
+		if (
+			cached &&
+			(cached.contentText !== null || cached.contentFormat === "image_ref") &&
+			(expectedRevision === undefined || cached.revision >= expectedRevision)
+		) {
+			return cached;
+		}
+		const client = this.#options.client;
+		if (!client?.getSurfaceSessionArtifact) return cached;
+		const key = `${artifactId}:${expectedRevision ?? ""}`;
+		const inFlight = this.#artifactReads.get(key);
+		if (inFlight) return inFlight;
+		this.store.set((state) => ({
+			loadingArtifacts: { ...state.loadingArtifacts, [artifactId]: true },
+		}));
+		const promise = (async (): Promise<SurfaceSessionArtifact | undefined> => {
+			try {
+				const loaded = await client.getSurfaceSessionArtifact!(artifactId, this.#options.signal);
+				if (this.#options.signal.aborted) return undefined;
+				this.store.set((state) => {
+					const loadingArtifacts = { ...state.loadingArtifacts };
+					delete loadingArtifacts[artifactId];
+					return {
+						sessionArtifacts: { ...state.sessionArtifacts, [artifactId]: loaded },
+						loadingArtifacts,
+					};
+				});
+				return loaded;
+			} catch (error) {
+				if (!this.#options.signal.aborted) {
+					this.store.set((state) => {
+						const loadingArtifacts = { ...state.loadingArtifacts };
+						delete loadingArtifacts[artifactId];
+						return {
+							loadingArtifacts,
+							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
+						};
+					});
+				}
+				return undefined;
+			} finally {
+				this.#artifactReads.delete(key);
+			}
+		})();
+		this.#artifactReads.set(key, promise);
+		return promise;
+	}
+
 	async #syncPreview(surfaceId: string, options?: { background?: boolean; debounceMs?: number }): Promise<void> {
 		const client = this.#options.client;
 		if (isLocalSurfaceId(surfaceId) || !client) return;
+		const currentWs = this.workspace(surfaceId);
+		if (currentWs && this.isWorkbenchSurface(currentWs.surface)) return;
 		const foreground = !options?.background;
 		const debounceMs = options?.debounceMs ?? 0;
 		const busyKey = `preview:${surfaceId}`;

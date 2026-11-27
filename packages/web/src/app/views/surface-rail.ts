@@ -33,7 +33,14 @@ import {
 } from "../../ui/surface-figure.ts";
 import type { SiteAnswer } from "../company.ts";
 import { surfaceHash } from "../router.ts";
-import { type SurfaceLook, surfaceFigureOf, surfaceLookOf, surfaceSubtitleOf, surfaceTint } from "../surface-kinds.ts";
+import {
+	isAppWorkbenchSurface,
+	type SurfaceLook,
+	surfaceFigureOf,
+	surfaceLookOf,
+	surfaceSubtitleOf,
+	surfaceTint,
+} from "../surface-kinds.ts";
 import {
 	askedToPublish,
 	isOpenVariant,
@@ -739,9 +746,10 @@ export class SurfaceRail {
 		const seenProposed = new Set<string>();
 		const item = (listed: SurfaceSummary): HTMLElement => {
 			const asksMe = askedToPublish(listed, this.#store.userId);
-			const surface = { ...listed, needsAttentionCount: asksMe ? 1 : 0 };
+			const look = surfaceLookOf(listed, looks);
+			const workbenchAttention = isAppWorkbenchSurface(listed, look) ? listed.needsAttentionCount : 0;
+			const surface = { ...listed, needsAttentionCount: workbenchAttention + (asksMe ? 1 : 0) };
 			seenActive.add(surface.id);
-			const look = surfaceLookOf(surface, looks);
 			if (surface.activeSessionCount > 0 && !state.workspaces[surface.id]) {
 				this.#store.hydrateWorkspace(surface.id);
 			}
