@@ -580,6 +580,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Inbox cleanup: trash, star, unsubscribe and block senders",
 		text: "Agents and Inbox sessions can now manage email like Gmail without permanent deletion. Use find_mail (with view filters and up to 50 results) and manage_mail to move conversations to Trash or restore them, archive, star or unstar, block or unblock senders (auto-trashing future mail and skipping routine wakes), and unsubscribe via one-click POST or mailto; brought-in Google mailboxes sync two-way with Gmail. Connected Gmail accounts also gain list, batch update (trash, archive, star, read/unread, spam), and reversible sender-block filter actions. For web-only newsletter links, open the URL in a company or coding machine browser instead of asking the member.",
 	},
+	{
+		id: "surface-repo-subpath-and-branch",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Connect apps to real repositories and monorepos",
+		text: "Websites and apps can now connect directly to an existing or imported company repository, including a monorepo subfolder such as packages/web and a target branch, instead of starting in a separate blank folder. After importing an existing codebase with manage_code, propose or bind each website or app interface straight to that repository and subfolder so previews, publishes, and sessions build and update the real codebase directly. Owners and admins can also pick or change the connected repository, subfolder, and branch in the app.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

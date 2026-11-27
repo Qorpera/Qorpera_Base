@@ -1,5 +1,14 @@
 import type { ApplySurfaceMigrationInput } from "@qorpera/cloud-client/surfaces";
-import type { SurfaceAutomationSummary, SurfaceMigrationChecklist } from "@qorpera/contracts";
+import {
+	type CompanyCodeRepositorySummary,
+	isSurfaceDefaultBranch,
+	isSurfaceRepositoryKey,
+	isSurfaceRepositorySubpath,
+	normalizeSurfaceRepositorySubpath,
+	type SurfaceAutomationSummary,
+	type SurfaceMigrationChecklist,
+	type SurfaceSummary,
+} from "@qorpera/contracts";
 import { SurfaceDialog } from "../../ui/dialog.ts";
 import { h, icon } from "../../ui/dom.ts";
 import { phrase, t } from "../../ui/preferences.ts";
@@ -277,12 +286,262 @@ function kindLine(preset: SurfacePreset): string {
 	return preset.line ? t(preset.line) : surfaceKindSubtitle(preset.kind);
 }
 
+const CUSTOM_REPO_VALUE = "__custom__";
+
+interface CodeSourceFields {
+	readonly el: HTMLElement;
+	readonly loadRepositories: () => void;
+	readonly read: () =>
+		| {
+				readonly ok: true;
+				readonly repositoryKey: string;
+				readonly repositorySubpath: string | null;
+				readonly defaultBranch: string;
+		  }
+		| { readonly ok: false; readonly message: string; readonly focusEl: HTMLElement };
+}
+
+function createCodeSourceFields(
+	store: SurfacesStore,
+	initial?: {
+		readonly repositoryKey?: string | null;
+		readonly repositorySubpath?: string | null;
+		readonly defaultBranch?: string | null;
+	},
+	signal?: AbortSignal,
+): CodeSourceFields {
+	const initialRepo = initial?.repositoryKey?.trim() ?? "";
+	let repos: readonly CompanyCodeRepositorySummary[] = [];
+	let loaded = false;
+	let loading = false;
+	let branchEdited = Boolean(initial?.defaultBranch && initial.defaultBranch !== "main");
+	const repoSelect = h("select", {
+		class: "surface-sheet-select surface-source-select",
+		"aria-label": t("Repository"),
+	});
+	const repoInput = h("input", {
+		type: "text",
+		class: "surface-create-input",
+		value: initialRepo,
+		placeholder: t("owner/repository"),
+		"aria-label": t("Repository key"),
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+	});
+	const subpathInput = h("input", {
+		type: "text",
+		class: "surface-create-input",
+		value: initial?.repositorySubpath ?? "",
+		placeholder: t("e.g. packages/web"),
+		"aria-label": t("Subfolder (optional)"),
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+	});
+	const branchInput = h("input", {
+		type: "text",
+		class: "surface-create-input",
+		value: initial?.defaultBranch?.trim() || "main",
+		placeholder: "main",
+		"aria-label": t("Branch"),
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+	});
+	branchInput.addEventListener("input", () => {
+		branchEdited = true;
+	});
+	const customRow = h(
+		"label",
+		{ class: "surface-create-field surface-source-custom" },
+		h("span", null, t("Repository key")),
+		repoInput,
+	);
+	const selectRow = h(
+		"label",
+		{ class: "surface-create-field", hidden: true },
+		h("span", null, t("Repository")),
+		repoSelect,
+	);
+	const syncSelectVisibility = () => {
+		const hasRepos = repos.length > 0;
+		selectRow.hidden = !hasRepos;
+		customRow.hidden = hasRepos && repoSelect.value !== CUSTOM_REPO_VALUE;
+	};
+	const populateRepos = (list: readonly CompanyCodeRepositorySummary[]) => {
+		repos = list;
+		if (list.length === 0) {
+			syncSelectVisibility();
+			return;
+		}
+		const currentKey = repoInput.value.trim().toLowerCase();
+		const matched = list.find((item) => item.repositoryKey.toLowerCase() === currentKey);
+		const options = [
+			...list.map((item) => {
+				const label =
+					item.sourceBranch && item.sourceBranch !== "main"
+						? `${item.repositoryKey} (${item.sourceBranch})`
+						: item.repositoryKey;
+				return h("option", { value: item.repositoryKey }, label);
+			}),
+			h("option", { value: CUSTOM_REPO_VALUE }, t("Other repository…")),
+		];
+		repoSelect.replaceChildren(...options);
+		if (matched) {
+			repoSelect.value = matched.repositoryKey;
+		} else if (currentKey) {
+			repoSelect.value = CUSTOM_REPO_VALUE;
+		} else {
+			repoSelect.value = list[0]!.repositoryKey;
+			if (!branchEdited && list[0]!.sourceBranch) branchInput.value = list[0]!.sourceBranch;
+		}
+		syncSelectVisibility();
+	};
+	repoSelect.addEventListener("change", () => {
+		syncSelectVisibility();
+		if (repoSelect.value === CUSTOM_REPO_VALUE) {
+			repoInput.focus();
+			return;
+		}
+		const picked = repos.find((item) => item.repositoryKey === repoSelect.value);
+		if (picked && !branchEdited && picked.sourceBranch) {
+			branchInput.value = picked.sourceBranch;
+		}
+	});
+	const loadRepositories = () => {
+		if (loaded || loading) return;
+		loading = true;
+		void store
+			.listCodeRepositories(signal)
+			.then((list) => {
+				loaded = true;
+				populateRepos(list);
+			})
+			.catch(() => {
+				loaded = true;
+				syncSelectVisibility();
+			})
+			.finally(() => {
+				loading = false;
+			});
+	};
+	syncSelectVisibility();
+	const el = h(
+		"div",
+		{ class: "surface-source-fields" },
+		selectRow,
+		customRow,
+		h(
+			"div",
+			{ class: "surface-source-row" },
+			h("label", { class: "surface-create-field" }, h("span", null, t("Subfolder (optional)")), subpathInput),
+			h("label", { class: "surface-create-field" }, h("span", null, t("Branch")), branchInput),
+		),
+	);
+	return {
+		el,
+		loadRepositories,
+		read: () => {
+			const rawRepo =
+				repos.length > 0 && repoSelect.value !== CUSTOM_REPO_VALUE ? repoSelect.value : repoInput.value.trim();
+			const repoKey = rawRepo.toLowerCase();
+			if (!isSurfaceRepositoryKey(repoKey)) {
+				return {
+					ok: false,
+					message: t("Enter a repository like owner/name."),
+					focusEl: customRow.hidden ? repoSelect : repoInput,
+				};
+			}
+			const rawSubpath = subpathInput.value.trim();
+			const normalizedSubpath = normalizeSurfaceRepositorySubpath(rawSubpath);
+			if (rawSubpath && normalizedSubpath !== null && !isSurfaceRepositorySubpath(normalizedSubpath)) {
+				return {
+					ok: false,
+					message: t("Use a relative subfolder like packages/web."),
+					focusEl: subpathInput,
+				};
+			}
+			const branch = branchInput.value.trim() || "main";
+			if (!isSurfaceDefaultBranch(branch)) {
+				return {
+					ok: false,
+					message: t("Enter a valid branch name."),
+					focusEl: branchInput,
+				};
+			}
+			return {
+				ok: true,
+				repositoryKey: repoKey,
+				repositorySubpath: normalizedSubpath,
+				defaultBranch: branch,
+			};
+		},
+	};
+}
+
+export function openSurfaceCodeSourceSheet(store: SurfacesStore, surface: SurfaceSummary): void {
+	if (surface.sourceKind !== "code_repo") return;
+	const abort = new AbortController();
+	const dialog = new SurfaceDialog(t("Code source"), "surface-sheet surface-source-sheet", () => abort.abort());
+	const fields = createCodeSourceFields(
+		store,
+		{
+			repositoryKey: surface.repositoryKey,
+			repositorySubpath: surface.repositorySubpath ?? null,
+			defaultBranch: surface.defaultBranch ?? "main",
+		},
+		abort.signal,
+	);
+	fields.loadRepositories();
+	const status = h("p", { class: "surface-sheet-status", role: "status" });
+	const submit = h("button", { type: "submit", class: "btn btn-primary" }, t("Save"));
+	const form = h(
+		"form",
+		{ class: "surface-create-form" },
+		h("h2", null, t("Code source")),
+		h(
+			"p",
+			{ class: "surface-sheet-lead" },
+			t("Connect this surface to an existing repository, subfolder, and default branch."),
+		),
+		fields.el,
+		h("div", { class: "surface-sheet-actions" }, status, submit),
+	);
+	form.addEventListener("submit", async (event) => {
+		event.preventDefault();
+		const parsed = fields.read();
+		if (!parsed.ok) {
+			status.textContent = parsed.message;
+			parsed.focusEl.focus();
+			return;
+		}
+		submit.disabled = true;
+		status.textContent = "";
+		const saved = await store.bindSurfaceRepository(surface.id, {
+			repositoryKey: parsed.repositoryKey,
+			repositorySubpath: parsed.repositorySubpath,
+			defaultBranch: parsed.defaultBranch,
+		});
+		if (saved) {
+			dialog.close(false);
+		} else {
+			submit.disabled = false;
+			status.textContent = store.state.error ?? t("That didn't work. Try again.");
+		}
+	});
+	dialog.content.append(form);
+	dialog.open();
+}
+
 export function openCreateSurfaceSheet(store: SurfacesStore): void {
 	let selected: SurfacePreset = SURFACE_PRESETS[0]!;
 	let figure: SurfaceFigureId = surfaceKindFigure(selected.kind);
 	let figureChosen = false;
 	let customName = false;
-	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => undefined);
+	let sourceMode: "fresh" | "existing" = "fresh";
+	const abort = new AbortController();
+	const dialog = new SurfaceDialog(t("New surface"), "surface-sheet surface-create-sheet", () => abort.abort());
 	const nameInput = h("input", {
 		type: "text",
 		class: "surface-create-name",
@@ -312,6 +571,40 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		"div",
 		{ class: "surface-create-custom", hidden: selected.kind !== "custom" },
 		descriptionInput,
+	);
+	const sourceFields = createCodeSourceFields(store, undefined, abort.signal);
+	sourceFields.el.hidden = true;
+	const freshBtn = h(
+		"button",
+		{ type: "button", class: "surface-create-source-tab is-on", "aria-pressed": "true", "data-source-mode": "fresh" },
+		t("Start fresh"),
+	);
+	const existingBtn = h(
+		"button",
+		{
+			type: "button",
+			class: "surface-create-source-tab",
+			"aria-pressed": "false",
+			"data-source-mode": "existing",
+		},
+		t("Connect existing repository"),
+	);
+	const setSourceMode = (mode: "fresh" | "existing") => {
+		sourceMode = mode;
+		freshBtn.classList.toggle("is-on", mode === "fresh");
+		freshBtn.setAttribute("aria-pressed", String(mode === "fresh"));
+		existingBtn.classList.toggle("is-on", mode === "existing");
+		existingBtn.setAttribute("aria-pressed", String(mode === "existing"));
+		sourceFields.el.hidden = mode !== "existing";
+		if (mode === "existing") sourceFields.loadRepositories();
+	};
+	freshBtn.addEventListener("click", () => setSourceMode("fresh"));
+	existingBtn.addEventListener("click", () => setSourceMode("existing"));
+	const sourcePanel = h(
+		"div",
+		{ class: "surface-create-source", hidden: selected.archetype !== "live_build" },
+		h("div", { class: "surface-create-source-tabs", role: "group", "aria-label": t("Code source") }, freshBtn, existingBtn),
+		sourceFields.el,
 	);
 
 	const heroTile = h("span", { class: "surface-tile is-stage", "aria-hidden": "true" }, surfaceFigure(figure));
@@ -369,6 +662,8 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 		}
 		line.textContent = kindLine(preset);
 		customPanel.hidden = preset.kind !== "custom";
+		sourcePanel.hidden = preset.archetype !== "live_build";
+		if (preset.archetype !== "live_build") setSourceMode("fresh");
 		if (!figureChosen) {
 			figure = surfaceKindFigure(preset.kind);
 			markSurfaceFigure(figures, figure);
@@ -431,6 +726,7 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 				nameInput,
 				line,
 				customPanel,
+				sourcePanel,
 				promptInput,
 				store.isLocalInteractive
 					? h(
@@ -455,7 +751,24 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 			nameInput.focus();
 			return;
 		}
+		let sourceBinding:
+			| { readonly repositoryKey: string; readonly repositorySubpath: string | null; readonly defaultBranch: string }
+			| undefined;
+		if (selected.archetype === "live_build" && sourceMode === "existing") {
+			const parsed = sourceFields.read();
+			if (!parsed.ok) {
+				status.textContent = parsed.message;
+				parsed.focusEl.focus();
+				return;
+			}
+			sourceBinding = {
+				repositoryKey: parsed.repositoryKey,
+				repositorySubpath: parsed.repositorySubpath,
+				defaultBranch: parsed.defaultBranch,
+			};
+		}
 		submit.disabled = true;
+		status.textContent = "";
 		const matchesPresetTitle = title.toLowerCase() === t(selected.title).trim().toLowerCase();
 		const usePresetSlug = selected.kind === "identity" || (!customName && matchesPresetTitle);
 		const created = await store.createSurface({
@@ -467,6 +780,13 @@ export function openCreateSurfaceSheet(store: SurfacesStore): void {
 			folderRoot: selected.kind === "identity" ? selected.folderRoot : undefined,
 			description: selected.kind === "custom" ? descriptionInput.value.trim() || undefined : undefined,
 			initialPrompt: promptInput.value.trim() || undefined,
+			...(sourceBinding
+				? {
+						repositoryKey: sourceBinding.repositoryKey,
+						repositorySubpath: sourceBinding.repositorySubpath,
+						defaultBranch: sourceBinding.defaultBranch,
+					}
+				: {}),
 		});
 		if (created) dialog.close(false);
 		else {

@@ -27,7 +27,7 @@ afterEach(() => {
 function mount(
 	world: Partial<HostingWorld> = {},
 	manage = true,
-	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged"> = {},
+	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged" | "codeSource"> = {},
 	liveUrl = LIVE_URL,
 ) {
 	const container = h("div", { class: "surface-canvas" });
@@ -1156,5 +1156,92 @@ describe("editing the platform subdomain", () => {
 		back();
 		expect(title()).toBeUndefined();
 		expect(document.activeElement).toBe(editButton());
+	});
+
+	it("lets owners and admins switch code source repository, subfolder, and branch from the address sheet", async () => {
+		const saved: { repositoryKey: string; repositorySubpath?: string | null; defaultBranch?: string }[] = [];
+		const listRepositories = vi.fn().mockResolvedValue([
+			{
+				repositoryKey: "qorpera/qorpera_base",
+				owner: "qorpera",
+				name: "qorpera_base",
+				mainSha: "a".repeat(40),
+				sourceBranch: "master",
+				sourceUrl: "https://github.com/Qorpera/Qorpera_Base",
+				boundSurfaceSlugs: [],
+				createdAt: "2026-11-27T00:00:00.000Z",
+				updatedAt: "2026-11-27T00:00:00.000Z",
+			},
+			{
+				repositoryKey: "surfaces/web-app",
+				owner: "surfaces",
+				name: "web-app",
+				mainSha: null,
+				sourceBranch: "main",
+				sourceUrl: null,
+				boundSurfaceSlugs: ["web-app"],
+				createdAt: "2026-11-27T00:00:00.000Z",
+				updatedAt: "2026-11-27T00:00:00.000Z",
+			},
+		]);
+		let current = { repositoryKey: "surfaces/web-app", repositorySubpath: null as string | null, defaultBranch: "main" };
+		const { address } = mount({ entry: { isPublic: true, domains: [] } }, true, {
+			codeSource: () => ({
+				repositoryKey: current.repositoryKey,
+				repositorySubpath: current.repositorySubpath,
+				defaultBranch: current.defaultBranch,
+				listRepositories,
+				save: async (input) => {
+					saved.push(input);
+					current = {
+						repositoryKey: input.repositoryKey,
+						repositorySubpath: input.repositorySubpath ?? null,
+						defaultBranch: input.defaultBranch ?? "main",
+					};
+					return true;
+				},
+			}),
+		});
+		await settle();
+		address.open();
+		await settle();
+
+		const sourceRow = sheet().querySelector<HTMLButtonElement>('[data-key="code-source"]')!;
+		expect(sourceRow.textContent).toContain("Code source");
+		expect(sourceRow.textContent).toContain("surfaces/web-app");
+		sourceRow.click();
+		await settle();
+		expect(title()).toBe("Code source");
+		expect(listRepositories).toHaveBeenCalledTimes(1);
+
+		const select = sheet().querySelector<HTMLSelectElement>('[data-key="source-repo-select"]')!;
+		const subpath = sheet().querySelector<HTMLInputElement>('[data-key="source-subpath"]')!;
+		const branch = sheet().querySelector<HTMLInputElement>('[data-key="source-branch"]')!;
+		select.value = "qorpera/qorpera_base";
+		select.dispatchEvent(new Event("change", { bubbles: true }));
+		expect(branch.value).toBe("master");
+
+		subpath.value = "../bad";
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		expect(problem()).toBe("Use a relative subfolder like packages/web.");
+		expect(saved).toHaveLength(0);
+
+		subpath.value = "/packages/web/";
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+
+		expect(saved).toEqual([
+			{
+				repositoryKey: "qorpera/qorpera_base",
+				repositorySubpath: "packages/web",
+				defaultBranch: "master",
+			},
+		]);
+		expect(title()).toBeUndefined();
+		expect(sheet().querySelector('[data-key="code-source"]')?.textContent).toContain("qorpera/qorpera_base/packages/web");
 	});
 });

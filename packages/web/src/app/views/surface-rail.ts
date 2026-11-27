@@ -43,6 +43,7 @@ import {
 	type SurfaceTeammate,
 } from "../surfaces-store.ts";
 import { CrewFigures } from "./surface-crew.ts";
+import { openSurfaceCodeSourceSheet } from "./surface-migration-sheet.ts";
 
 export function surfaceTile(
 	surface: Pick<SurfaceSummary, "icon">,
@@ -494,6 +495,15 @@ export class SurfaceRail {
 								multiple: true,
 								select: () => void this.#store.setAutoPublish(surface.id, !surface.autoPublish),
 							},
+							...(surface.sourceKind === "code_repo"
+								? [
+										{
+											label: t("Code source"),
+											icon: "code",
+											select: () => openSurfaceCodeSourceSheet(this.#store, surface),
+										},
+									]
+								: []),
 							{ kind: "separator" as const },
 							{
 								label: t("Delete"),

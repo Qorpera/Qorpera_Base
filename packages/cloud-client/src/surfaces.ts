@@ -1,6 +1,8 @@
 import {
+	type CompanyCodeRepositorySummary,
 	type CrossSurfaceHandoffRequest,
 	type PointToChangeTarget,
+	parseCompanyCodeRepositorySummary,
 	parsePointToChangeTarget,
 	parseSurfaceAutomationSummary,
 	parseSurfaceMigrationChecklist,
@@ -51,6 +53,15 @@ export interface CreateSurfaceRpcInput {
 	readonly folderRoot?: string | null;
 	readonly briefSummary?: string | null;
 	readonly isGlobal?: boolean;
+	readonly repositoryKey?: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
+}
+
+export interface BindSurfaceRepositoryInput {
+	readonly repositoryKey: string;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 }
 
 export interface CreateSurfaceAutomationInput {
@@ -225,6 +236,28 @@ export class CloudSurfacesClient {
 			p_folder_root: input.folderRoot ?? null,
 			p_brief_summary: input.briefSummary ?? null,
 			p_is_global: input.isGlobal ?? input.kind === "identity",
+			...(input.repositoryKey !== undefined ? { p_repository_key: input.repositoryKey } : {}),
+			...(input.repositorySubpath !== undefined ? { p_repository_subpath: input.repositorySubpath } : {}),
+			...(input.defaultBranch !== undefined ? { p_default_branch: input.defaultBranch } : {}),
+		});
+		return parseSurfaceSummary(data, "surface");
+	}
+
+	async listCompanyCodeRepositories(
+		companyId: string,
+		signal?: AbortSignal,
+	): Promise<CompanyCodeRepositorySummary[]> {
+		const data = await this.#rpc("qorpera_list_company_code_repositories", { p_company_id: companyId }, signal);
+		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_company_code_repositories payload");
+		return data.map((item, index) => parseCompanyCodeRepositorySummary(item, `codeRepositories[${index}]`));
+	}
+
+	async bindSurfaceRepository(surfaceId: string, input: BindSurfaceRepositoryInput): Promise<SurfaceSummary> {
+		const data = await this.#rpc("qorpera_bind_surface_repository", {
+			p_surface_id: surfaceId,
+			p_repository_key: input.repositoryKey,
+			p_repository_subpath: input.repositorySubpath ?? null,
+			p_default_branch: input.defaultBranch ?? "main",
 		});
 		return parseSurfaceSummary(data, "surface");
 	}
@@ -560,6 +593,7 @@ export class CloudSurfacesClient {
 }
 
 export type {
+	CompanyCodeRepositorySummary,
 	PointToChangeTarget,
 	SurfaceAutomationSummary,
 	SurfaceChangeUnit,

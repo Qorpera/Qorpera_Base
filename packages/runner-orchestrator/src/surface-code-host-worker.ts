@@ -103,10 +103,15 @@ export interface SurfaceNativeEdgeOptions {
 	readonly fetchImpl?: BlobUploadFetch;
 }
 
+export type SurfaceSiteTreeRead = (
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
+) => Promise<{ files: readonly CodeSiteTreeFile[]; manifestSha256: string }>;
+
 export interface SurfaceCodeHostWorkerOptions {
 	readonly control: SurfaceCodeHostControl;
 	readonly hosts: Pick<CodeHostJobs, "run">;
-	readonly readTree?: CodeSiteTreeRead;
+	readonly readTree?: SurfaceSiteTreeRead;
 	readonly readBuiltTree?: CodeSiteTreeRead;
 	readonly readPlan?: SurfacePreviewPlanRead;
 	readonly nativeEdge?: SurfaceNativeEdgeOptions;
@@ -122,7 +127,7 @@ export interface SurfaceCodeHostWorkerOptions {
 
 export type SurfacePreviewPlanRead = (
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ) => Promise<SurfacePreviewPlan>;
 
 type SurfaceBuildAnswer =
@@ -404,7 +409,7 @@ async function resolveMainHeadAndTree(
 	codeHostJob: CodeHostJob,
 	repository: CloudCodingRepository,
 	explicitHeadSha: string | null,
-	options: { readonly readOnly?: boolean } = {},
+	options: { readonly readOnly?: boolean; readonly defaultBranch?: string | null } = {},
 ): Promise<{ readonly headSha: string; readonly treeSha: string }> {
 	const kept = keptRepositoryOf(repository);
 	return await withJob(codeHostJob, kept, async (run) => {
@@ -415,8 +420,19 @@ async function resolveMainHeadAndTree(
 				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
 			}
 		}
-		const targetRef =
+		let targetRef =
 			explicitHeadSha && GIT_SHA.test(explicitHeadSha) ? explicitHeadSha : `refs/heads/${kept.baseBranch}`;
+		const preferredBranch = options.defaultBranch?.trim();
+		if (
+			!(explicitHeadSha && GIT_SHA.test(explicitHeadSha)) &&
+			preferredBranch &&
+			preferredBranch !== kept.baseBranch
+		) {
+			const preferredRef = `refs/heads/${preferredBranch}`;
+			if ((await run.ref(preferredRef)) !== null) {
+				targetRef = preferredRef;
+			}
+		}
 		const lines = (
 			await run.gitOk(
 				run.repo,
@@ -883,7 +899,7 @@ function isUnseededAreaRefusal(error: unknown): boolean {
 export class SurfaceCodeHostWorker {
 	readonly #control: SurfaceCodeHostControl;
 	readonly #hosts: Pick<CodeHostJobs, "run">;
-	readonly #readTree: CodeSiteTreeRead;
+	readonly #readTree: SurfaceSiteTreeRead;
 	readonly #readBuiltTree: CodeSiteTreeRead;
 	readonly #readPlan: SurfacePreviewPlanRead;
 	readonly #nativeEdge: SurfaceNativeEdgeOptions | undefined;
@@ -1187,6 +1203,8 @@ export class SurfaceCodeHostWorker {
 			preview.profileId,
 			environmentId,
 			preview.repositoryKey,
+			preview.repositorySubpath ?? null,
+			preview.defaultBranch ?? null,
 			baseSha,
 			preview.reconciledCommitSha ?? null,
 			preview.exploration
@@ -1728,13 +1746,18 @@ export class SurfaceCodeHostWorker {
 		const planCacheKey = this.#previewPlanKey(preview, environmentId, baseSha);
 		const cachedBuildPlan = this.#getCachedPreviewPlan(planCacheKey);
 		const area = codeAreaPath(repository);
+		const subpathArg = preview.repositorySubpath ? { subpath: preview.repositorySubpath } : {};
 		const readPlanAndTree = async (
 			preparedJob: CodeHostJob,
 			compositeCommitSha: string,
 			compositeTreeSha: string,
 		): Promise<PreparedPreview> => {
 			if (this.#useCombinedPlanAndTree) {
-				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: compositeTreeSha });
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, {
+					repository,
+					tree: compositeTreeSha,
+					...subpathArg,
+				});
 				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
 				if (combined.kind === "build") {
 					return {
@@ -1753,7 +1776,7 @@ export class SurfaceCodeHostWorker {
 					sharedAssets,
 				};
 			}
-			const plan = await this.#readPlan(preparedJob, { repository, tree: compositeTreeSha });
+			const plan = await this.#readPlan(preparedJob, { repository, tree: compositeTreeSha, ...subpathArg });
 			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
 			if (plan.kind === "build") {
 				return {
@@ -1766,6 +1789,7 @@ export class SurfaceCodeHostWorker {
 			const treeData = await this.#readTree(preparedJob, {
 				repository,
 				tree: compositeTreeSha,
+				...subpathArg,
 			});
 			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
 			return {
@@ -2101,6 +2125,7 @@ export class SurfaceCodeHostWorker {
 		};
 		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
 		const area = codeAreaPath(repository);
+		const pubSubpathArg = pub.repositorySubpath ? { subpath: pub.repositorySubpath } : {};
 		const readPublish = async (codeHostJob: CodeHostJob, seedFirst: boolean): Promise<PreparedPublish> => {
 			if (seedFirst) {
 				await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
@@ -2108,10 +2133,15 @@ export class SurfaceCodeHostWorker {
 			const resolveJob: CodeHostJob = seedFirst ? { ...codeHostJob, preparedKeptArea: area } : codeHostJob;
 			const resolved = await resolveMainHeadAndTree(resolveJob, repository, explicitHeadSha, {
 				readOnly: !seedFirst,
+				defaultBranch: pub.defaultBranch,
 			});
 			const preparedJob: CodeHostJob = { ...codeHostJob, preparedKeptArea: area };
 			if (this.#useCombinedPlanAndTree) {
-				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: resolved.treeSha });
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, {
+					repository,
+					tree: resolved.treeSha,
+					...pubSubpathArg,
+				});
 				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
 				if (combined.kind === "build") {
 					return {
@@ -2130,11 +2160,11 @@ export class SurfaceCodeHostWorker {
 					sharedAssets,
 				};
 			}
-			const plan = await this.#readPlan(preparedJob, { repository, tree: resolved.treeSha });
+			const plan = await this.#readPlan(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
 			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
 			if (plan.kind === "build")
 				return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
-			const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha });
+			const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
 			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
 			return {
 				status: "ready",

@@ -1,8 +1,12 @@
 import {
+	isSurfaceDefaultBranch,
 	isSurfaceOptionGroupKey,
+	isSurfaceRepositoryKey,
+	isSurfaceRepositorySubpath,
 	isSurfaceSlug,
 	isUuid,
 	type JsonValue,
+	normalizeSurfaceRepositorySubpath,
 	parseBoundedText,
 	parseClosedRecord,
 	parseInteger,
@@ -88,6 +92,8 @@ export interface SurfaceSenseEntry {
 	readonly isGlobal: boolean;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string;
 	readonly folderRoot: string | null;
 	readonly unpublishedChangeCount: number;
 	readonly publishStatus: SurfacePublishStatus;
@@ -166,6 +172,8 @@ export interface ProposeSurfaceRequest {
 	readonly sourceKind: SurfaceSourceKind;
 	readonly icon: string;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot: string | null;
 	readonly previewMode: SurfacePreviewMode;
 	readonly briefSummary: string | null;
@@ -565,6 +573,18 @@ function parseSurfaceCompanySenses(value: unknown, label = "surfaceSenses"): Sur
 			isGlobal: row.isGlobal,
 			sourceKind: parseWireEnum(row.sourceKind, SURFACE_SOURCE_KINDS, `${label}.surfaces[${index}].sourceKind`),
 			repositoryKey: parseOptionalWireText(row.repositoryKey, `${label}.surfaces[${index}].repositoryKey`, 200),
+			...(row.repositorySubpath !== undefined
+				? {
+						repositorySubpath: parseOptionalWireText(
+							row.repositorySubpath,
+							`${label}.surfaces[${index}].repositorySubpath`,
+							240,
+						),
+					}
+				: {}),
+			...(typeof row.defaultBranch === "string" && row.defaultBranch.trim()
+				? { defaultBranch: row.defaultBranch.trim() }
+				: {}),
 			folderRoot: parseOptionalWireText(row.folderRoot, `${label}.surfaces[${index}].folderRoot`, 256),
 			unpublishedChangeCount: parseInteger(
 				row.unpublishedChangeCount ?? 0,
@@ -705,6 +725,8 @@ export function createControlPlaneSurfaceToolsPort(
 					p_accent_hex: null,
 					p_is_global: request.isGlobal ?? false,
 					p_activate_immediately: request.activateImmediately ?? false,
+					...(request.repositorySubpath !== undefined ? { p_repository_subpath: request.repositorySubpath } : {}),
+					...(request.defaultBranch !== undefined ? { p_default_branch: request.defaultBranch } : {}),
 				},
 				context.signal,
 			);
@@ -1136,7 +1158,23 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					description: "Set true during Day-0 founding for 1-2 core product surfaces; omit or false to propose.",
 				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
-				repositoryKey: { type: "string", maxLength: 200 },
+				repositoryKey: {
+					type: "string",
+					maxLength: 200,
+					description:
+						"Qorpera repository owner/name to bind for code_repo surfaces (omit to create surfaces/<slug>, or pass an imported/existing repository key such as org/repo).",
+				},
+				repositorySubpath: {
+					type: "string",
+					maxLength: 240,
+					description:
+						"Optional relative subfolder inside a monorepo for code_repo surfaces (for example packages/web or apps/site).",
+				},
+				defaultBranch: {
+					type: "string",
+					maxLength: 128,
+					description: "Optional default branch name for code_repo surfaces (defaults to main).",
+				},
 				folderRoot: {
 					type: "string",
 					maxLength: 256,
@@ -1160,6 +1198,8 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 						"isGlobal",
 						"activateImmediately",
 						"repositoryKey",
+						"repositorySubpath",
+						"defaultBranch",
 						"folderRoot",
 						"previewMode",
 						"briefSummary",
@@ -1190,6 +1230,20 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
 			const icon = figure ? `figure:${figure}` : "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
+			if (repositoryKey !== null && !isSurfaceRepositoryKey(repositoryKey)) {
+				throw new CloudToolArgumentRefusal("repositoryKey must be a valid owner/name repository key");
+			}
+			const rawSubpath = parseOptionalBounded(raw.repositorySubpath, "repositorySubpath", 240);
+			const repositorySubpath = normalizeSurfaceRepositorySubpath(rawSubpath);
+			if (repositorySubpath !== null && !isSurfaceRepositorySubpath(repositorySubpath)) {
+				throw new CloudToolArgumentRefusal(
+					"repositorySubpath must be a relative subfolder path without leading slashes, dot segments, or hidden folders",
+				);
+			}
+			const defaultBranch = parseOptionalBounded(raw.defaultBranch, "defaultBranch", 128);
+			if (defaultBranch !== null && !isSurfaceDefaultBranch(defaultBranch)) {
+				throw new CloudToolArgumentRefusal("defaultBranch must be a valid Git branch name");
+			}
 			const rawFolderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
 			const folderRoot =
 				rawFolderRoot ??
@@ -1218,6 +1272,8 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				sourceKind,
 				icon,
 				repositoryKey,
+				...(repositorySubpath !== null ? { repositorySubpath } : {}),
+				...(defaultBranch !== null ? { defaultBranch } : {}),
 				folderRoot,
 				previewMode,
 				briefSummary,

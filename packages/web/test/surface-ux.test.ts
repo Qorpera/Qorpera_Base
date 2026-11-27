@@ -27,7 +27,11 @@ import { renderRail } from "../src/app/views/shell.ts";
 import { SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts";
 import { CrewFigures, crewLook, sessionCrew } from "../src/app/views/surface-crew.ts";
 import { IDENTITY_TOKENS_CSS_MESSAGE, SurfaceDoorStage } from "../src/app/views/surface-door.ts";
-import { openCreateSurfaceSheet, openScheduleAgentSheet } from "../src/app/views/surface-migration-sheet.ts";
+import {
+	openCreateSurfaceSheet,
+	openScheduleAgentSheet,
+	openSurfaceCodeSourceSheet,
+} from "../src/app/views/surface-migration-sheet.ts";
 import { openPublishSheet } from "../src/app/views/surface-publish-sheet.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { GO_LIVE_PUBLISH_WAIT_MS, SurfaceView } from "../src/app/views/surface-view.ts";
@@ -498,6 +502,109 @@ describe("creating surfaces", () => {
 		const name = sheet.querySelector<HTMLElement>(".surface-create-name")!;
 		name.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 		expect(figures.hidden).toBe(true);
+		store.dispose();
+	});
+
+	it("connects a new live_build surface to an existing repository, subfolder, and branch and supports rebinding", async () => {
+		const client = fakeClient();
+		const createCalls: unknown[] = [];
+		const bindCalls: unknown[] = [];
+		client.listCompanyCodeRepositories = vi.fn().mockResolvedValue([
+			{
+				repositoryKey: "qorpera/qorpera_base",
+				owner: "qorpera",
+				name: "qorpera_base",
+				mainSha: "a".repeat(40),
+				sourceBranch: "master",
+				sourceUrl: "https://github.com/Qorpera/Qorpera_Base",
+				boundSurfaceSlugs: [],
+				createdAt: "2026-11-27T00:00:00.000Z",
+				updatedAt: "2026-11-27T00:00:00.000Z",
+			},
+		]);
+		client.createSurface = vi.fn().mockImplementation(async (_companyId, input) => {
+			createCalls.push(input);
+			return summary({
+				id: "00000000-0000-4000-8000-000000000934",
+				slug: "web-app",
+				title: input.title,
+				archetype: "live_build",
+				kind: "web_app",
+				sourceKind: "code_repo",
+				repositoryKey: input.repositoryKey ?? "surfaces/web-app",
+				repositorySubpath: input.repositorySubpath ?? null,
+				defaultBranch: input.defaultBranch ?? "main",
+			});
+		});
+		client.bindSurfaceRepository = vi.fn().mockImplementation(async (surfaceId, input) => {
+			bindCalls.push({ surfaceId, input });
+			return summary({
+				id: surfaceId,
+				slug: "web-app",
+				title: "Web App",
+				archetype: "live_build",
+				kind: "web_app",
+				sourceKind: "code_repo",
+				repositoryKey: input.repositoryKey,
+				repositorySubpath: input.repositorySubpath ?? null,
+				defaultBranch: input.defaultBranch ?? "main",
+			});
+		});
+		const store = storeWith(client, { companyName: "Qorpera" });
+		await store.load();
+		const dialog = HTMLDialogElement.prototype;
+		dialog.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialog.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		openCreateSurfaceSheet(store);
+		const sheet = document.querySelector<HTMLDialogElement>(".surface-create-sheet")!;
+		sheet.querySelector<HTMLButtonElement>('[data-preset="web_app"]')!.click();
+		sheet.querySelector<HTMLButtonElement>('[data-source-mode="existing"]')!.click();
+		await flush();
+
+		const subpath = sheet.querySelector<HTMLInputElement>('input[aria-label="Subfolder (optional)"]')!;
+		const branch = sheet.querySelector<HTMLInputElement>('input[aria-label="Branch"]')!;
+		expect(branch.value).toBe("master");
+		subpath.value = "packages/web";
+		sheet.querySelector<HTMLFormElement>(".surface-create-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+
+		expect(createCalls).toHaveLength(1);
+		expect(createCalls[0]).toMatchObject({
+			title: "Web App",
+			archetype: "live_build",
+			repositoryKey: "qorpera/qorpera_base",
+			repositorySubpath: "packages/web",
+			defaultBranch: "master",
+		});
+
+		const created = store.state.surfaces.find((item) => item.id === "00000000-0000-4000-8000-000000000934")!;
+		openSurfaceCodeSourceSheet(store, created);
+		await flush();
+		const sourceSheet = document.querySelector<HTMLDialogElement>(".surface-source-sheet")!;
+		const rebindSubpath = sourceSheet.querySelector<HTMLInputElement>('input[aria-label="Subfolder (optional)"]')!;
+		const rebindBranch = sourceSheet.querySelector<HTMLInputElement>('input[aria-label="Branch"]')!;
+		rebindSubpath.value = "packages/admin";
+		rebindBranch.value = "release/v2";
+		sourceSheet.querySelector<HTMLFormElement>("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+		await flush();
+
+		expect(bindCalls).toEqual([
+			{
+				surfaceId: "00000000-0000-4000-8000-000000000934",
+				input: {
+					repositoryKey: "qorpera/qorpera_base",
+					repositorySubpath: "packages/admin",
+					defaultBranch: "release/v2",
+				},
+			},
+		]);
+		const updated = store.state.surfaces.find((item) => item.id === "00000000-0000-4000-8000-000000000934")!;
+		expect(updated.repositorySubpath).toBe("packages/admin");
+		expect(updated.defaultBranch).toBe("release/v2");
 		store.dispose();
 	});
 

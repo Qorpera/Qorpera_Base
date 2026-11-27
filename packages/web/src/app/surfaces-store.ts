@@ -7,12 +7,14 @@ import {
 } from "@qorpera/cloud-client/surface-studio-patches";
 import {
 	type ApplySurfaceMigrationInput,
+	type BindSurfaceRepositoryInput,
 	type CloudSurfacesClient,
 	isMissingSurfaceRpcError,
 	isSurfacesDisabledError,
 	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
+	type CompanyCodeRepositorySummary,
 	type CompiledIdentityTokens,
 	type CrossSurfaceHandoffRequest,
 	compileIdentityTokens,
@@ -173,6 +175,8 @@ export type SurfacesClient = Pick<
 			| "isSurfacesEnabled"
 			| "mintPreviewPass"
 			| "createSurface"
+			| "listCompanyCodeRepositories"
+			| "bindSurfaceRepository"
 			| "bootstrapCompanySurfaces"
 			| "discardExploration"
 			| "createAutomation"
@@ -354,6 +358,9 @@ export interface CreateSurfaceInput {
 	readonly initialPrompt?: string;
 	readonly kind?: SurfaceKind;
 	readonly description?: string;
+	readonly repositoryKey?: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string;
 }
 
 export interface CreateScheduledAgentInput {
@@ -3630,6 +3637,12 @@ export class SurfacesStore {
 			input.archetype === "studio"
 				? explicitFolderRoot || (input.kind === "identity" ? "identity" : `surfaces/${slug}`)
 				: null;
+		const repositoryKey =
+			input.archetype === "live_build" ? input.repositoryKey?.trim() || undefined : undefined;
+		const repositorySubpath =
+			input.archetype === "live_build" ? input.repositorySubpath?.trim() || undefined : undefined;
+		const defaultBranch =
+			input.archetype === "live_build" ? input.defaultBranch?.trim() || undefined : undefined;
 		if (this.state.source === "cloud" && this.#options.client?.createSurface) {
 			const cloudSlug = input.archetype === "studio" ? slug : explicitSlug || undefined;
 			const created = await this.#run("surface:create", (client) =>
@@ -3642,6 +3655,9 @@ export class SurfacesStore {
 					folderRoot,
 					briefSummary: description,
 					isGlobal: input.kind === "identity",
+					...(repositoryKey ? { repositoryKey } : {}),
+					...(repositorySubpath ? { repositorySubpath } : {}),
+					...(defaultBranch ? { defaultBranch } : {}),
 				}),
 			);
 			if (!created) return undefined;
@@ -3665,6 +3681,13 @@ export class SurfacesStore {
 		const sortOrder = this.state.surfaces.filter((surface) => surface.group === "products").length;
 		const created = localSurface(slug, title, "products", input.archetype, icon, sortOrder, {
 			sourceKind: input.archetype === "studio" ? "folder" : "code_repo",
+			repositoryKey: input.archetype === "live_build" ? (repositoryKey ?? `surfaces/${slug}`) : null,
+			...(input.archetype === "live_build"
+				? {
+						repositorySubpath: repositorySubpath ?? null,
+						defaultBranch: defaultBranch ?? "main",
+					}
+				: {}),
 			folderRoot,
 			previewMode: input.archetype === "studio" ? "studio_overlay" : "static_site",
 		});
@@ -3694,6 +3717,51 @@ export class SurfacesStore {
 		const prompt = input.initialPrompt?.trim();
 		if (prompt && this.canStartSessions(created)) void this.startSession(created.id, prompt);
 		return created;
+	}
+
+	async listCodeRepositories(signal?: AbortSignal): Promise<readonly CompanyCodeRepositorySummary[]> {
+		if (this.state.source !== "cloud" || !this.#options.client?.listCompanyCodeRepositories) return [];
+		return this.#options.client.listCompanyCodeRepositories(this.#options.companyId, signal);
+	}
+
+	async bindSurfaceRepository(
+		surfaceId: string,
+		input: BindSurfaceRepositoryInput,
+	): Promise<SurfaceSummary | undefined> {
+		if (this.state.source === "cloud" && !isLocalSurfaceId(surfaceId) && this.#options.client?.bindSurfaceRepository) {
+			const updated = await this.#run(`surface:bind-repo:${surfaceId}`, (client) =>
+				client.bindSurfaceRepository!(surfaceId, input),
+			);
+			if (!updated) return undefined;
+			this.#surfacesMutationEpoch += 1;
+			this.store.set((state) => {
+				const existing = state.workspaces[surfaceId];
+				return {
+					surfaces: state.surfaces.map((item) => (item.id === surfaceId ? updated : item)),
+					...(existing ? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } } : {}),
+					error: undefined,
+				};
+			});
+			void this.refreshWorkspace(surfaceId, { background: true });
+			return updated;
+		}
+		const surface = this.state.surfaces.find((item) => item.id === surfaceId);
+		if (!surface || surface.sourceKind !== "code_repo") return undefined;
+		const updated: SurfaceSummary = {
+			...surface,
+			repositoryKey: input.repositoryKey.trim().toLowerCase(),
+			repositorySubpath: input.repositorySubpath?.trim().replace(/^\/+|\/+$/g, "") || null,
+			defaultBranch: input.defaultBranch?.trim() || "main",
+		};
+		this.store.set((state) => {
+			const existing = state.workspaces[surfaceId];
+			return {
+				surfaces: state.surfaces.map((item) => (item.id === surfaceId ? updated : item)),
+				...(existing ? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } } : {}),
+				error: undefined,
+			};
+		});
+		return updated;
 	}
 
 	setMode(mode: SurfacePreviewMode): void {

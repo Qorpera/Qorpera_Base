@@ -216,6 +216,14 @@ a.surface-address-row:hover { text-decoration: none; }
 	background: transparent; color: var(--text); font: inherit; font-size: 14.5px;
 }
 .surface-address-input:focus { border-color: var(--text); }
+.surface-address-select {
+	width: 100%; min-width: 0; height: 38px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 10px;
+	background: var(--bg); color: var(--text); font: inherit; font-size: 13.5px;
+}
+.surface-address-field { display: grid; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.surface-address-source-summary {
+	max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; gap: 4px;
+}
 .surface-address-slug-box {
 	display: flex; align-items: center; min-width: 0; height: 38px; padding: 0 12px;
 	border: 1px solid var(--border-strong); border-radius: 10px; background: transparent;
@@ -1469,6 +1477,24 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-create-line { margin: 2px 0 0; color: var(--text-muted); font-size: 12.5px; text-align: center; }
 .surface-create-custom { display: grid; width: 100%; margin-top: 14px; }
 .surface-create-custom[hidden] { display: none; }
+.surface-create-source { display: grid; gap: 10px; width: 100%; margin-top: 14px; }
+.surface-create-source[hidden] { display: none; }
+.surface-create-source-tabs {
+	display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px;
+	border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle, var(--bg-soft));
+}
+.surface-create-source-tab {
+	padding: 6px 10px; border: 0; border-radius: 7px; background: transparent;
+	color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.surface-create-source-tab.is-on {
+	background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+.surface-source-fields { display: grid; gap: 10px; width: 100%; }
+.surface-source-fields[hidden] { display: none; }
+.surface-source-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.surface-source-select { width: 100%; }
+.surface-source-sheet { width: min(460px, calc(100vw - 32px)); }
 .surface-create-field { display: grid; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .surface-create-input, .surface-create-prompt {
 	width: 100%; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
