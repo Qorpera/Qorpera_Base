@@ -417,4 +417,20 @@ describe("mail message", () => {
 		);
 		assert.equal(abortedRes.status, 408);
 	});
+
+	it("extracts List-Unsubscribe and List-Unsubscribe-Post headers into normalized mail", () => {
+		const normalized = normalizeMessage(EMAIL_ID, {
+			subject: "Newsletter",
+			from: "News <news@example.org>",
+			to: ["hello@mail.example.test"],
+			created_at: "2026-11-27T10:00:00Z",
+			headers: {
+				"List-Unsubscribe": "<https://example.org/unsub?id=1>, <mailto:unsub@example.org>",
+				"List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+			},
+			text: "Hello subscribers",
+		});
+		assert.equal(normalized.listUnsubscribe, "<https://example.org/unsub?id=1>, <mailto:unsub@example.org>");
+		assert.equal(normalized.listUnsubscribePost, "List-Unsubscribe=One-Click");
+	});
 });

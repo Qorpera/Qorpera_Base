@@ -6,6 +6,7 @@ import {
 	BATCH,
 	createMailObjectReader,
 	handleMailOutbox,
+	isPublicIpAddress,
 	type MailJob,
 	type MailOutboxStore,
 	MailSendError,
@@ -18,6 +19,7 @@ import {
 	parseMailClaim,
 	providerEmail,
 	ResendSender,
+	sendOneClickUnsubscribe,
 	StorageObjectReader,
 } from "./mail-outbox.ts";
 
@@ -782,5 +784,211 @@ describe("mail outbox attachments", () => {
 			messageIds: 0,
 		});
 		assert.equal(sent.length, 0);
+	});
+
+	it("validates public IP addresses and blocks SSRF targets for one-click unsubscribe", async () => {
+		assert.equal(isPublicIpAddress("93.184.216.34"), true);
+		assert.equal(isPublicIpAddress("1.1.1.1"), true);
+		assert.equal(isPublicIpAddress("2606:2800:220:1:248:1893:25c8:1946"), true);
+		for (const bad of [
+			"127.0.0.1",
+			"10.0.0.1",
+			"172.16.0.1",
+			"192.168.1.1",
+			"169.254.169.254",
+			"100.64.0.1",
+			"0.0.0.0",
+			"224.0.0.1",
+			"::1",
+			"fe80::1",
+			"fc00::1",
+			"fd12:3456::1",
+			"2001:db8::1",
+			"::ffff:127.0.0.1",
+			"not-an-ip",
+		]) {
+			assert.equal(isPublicIpAddress(bad), false, `expected ${bad} to be rejected`);
+		}
+
+		let fetched = 0;
+		const neverFetch = (async () => {
+			fetched += 1;
+			return new Response("ok");
+		}) as typeof fetch;
+		const publicResolve = async () => ["93.184.216.34"];
+
+		for (const badUrl of [
+			"http://news.example.org/unsub",
+			"https://user:pass@news.example.org/unsub",
+			"https://news.example.org:8443/unsub",
+			"https://localhost/unsub",
+			"https://service.local/unsub",
+			"https://db.internal/unsub",
+			"https://169.254.169.254/latest/meta-data",
+			"https://127.0.0.1/unsub",
+			"https://[::1]/unsub",
+			"not-a-url",
+		]) {
+			await assert.rejects(
+				() => sendOneClickUnsubscribe(badUrl, { fetchImpl: neverFetch, resolveHost: publicResolve }),
+				(err: unknown) => err instanceof MailSendError && !err.retryable,
+			);
+		}
+
+		await assert.rejects(
+			() =>
+				sendOneClickUnsubscribe("https://rebind.example.org/unsub", {
+					fetchImpl: neverFetch,
+					resolveHost: async () => ["93.184.216.34", "169.254.169.254"],
+				}),
+			(err: unknown) => err instanceof MailSendError && !err.retryable,
+		);
+		assert.equal(fetched, 0);
+
+		const requests: { url: string; method?: string; body?: unknown; redirect?: string; contentType?: string }[] = [];
+		await sendOneClickUnsubscribe("https://news.example.org/unsub?token=abc", {
+			resolveHost: publicResolve,
+			fetchImpl: (async (input, init) => {
+				const headers = new Headers(init?.headers);
+				requests.push({
+					url: String(input),
+					method: init?.method,
+					body: init?.body,
+					redirect: init?.redirect,
+					contentType: headers.get("content-type") ?? undefined,
+				});
+				return new Response("ok", { status: 200 });
+			}) as typeof fetch,
+		});
+		assert.deepEqual(requests, [
+			{
+				url: "https://news.example.org/unsub?token=abc",
+				method: "POST",
+				body: "List-Unsubscribe=One-Click",
+				redirect: "error",
+				contentType: "application/x-www-form-urlencoded",
+			},
+		]);
+	});
+
+	it("drains one-click unsubscribe jobs alongside outbox sends", async () => {
+		const completed: string[] = [];
+		const failed: { id: string; retryable: boolean; error: string }[] = [];
+		const unsubOk = "73300000-0000-4000-8000-0000000000a1";
+		const unsubFail = "73300000-0000-4000-8000-0000000000a2";
+		const store: MailOutboxStore = {
+			claim: async () => [],
+			complete: async () => undefined,
+			fail: async () => undefined,
+			messageIdsDue: async () => [],
+			recordMessageId: async () => undefined,
+			claimUnsubscribes: async (_limit, leaseId) => [
+				{
+					unsubscribeId: unsubOk,
+					leaseId,
+					url: "https://news.example.org/one-click/ok",
+					attemptCount: 1,
+				},
+				{
+					unsubscribeId: unsubFail,
+					leaseId,
+					url: "https://news.example.org/one-click/503",
+					attemptCount: 1,
+				},
+			],
+			completeUnsubscribe: async (id) => {
+				completed.push(id);
+			},
+			failUnsubscribe: async (id, _leaseId, error, retryable) => {
+				failed.push({ id, retryable, error });
+			},
+		};
+		const sender: MailSender = {
+			send: async () => "unused",
+			messageId: async () => null,
+		};
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => store,
+			sender,
+			pace: 0,
+			resolveHost: async () => ["93.184.216.34"],
+			unsubscribeFetch: (async (target) =>
+				String(target).endsWith("/ok")
+					? new Response("done", { status: 200 })
+					: new Response("busy", { status: 503 })) as typeof fetch,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 0,
+			sent: 0,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			deferred: 0,
+			messageIds: 0,
+			unsubscribed: 1,
+			unsubscribeFailed: 1,
+		});
+		assert.deepEqual(completed, [unsubOk]);
+		assert.equal(failed.length, 1);
+		assert.equal(failed[0]?.id, unsubFail);
+		assert.equal(failed[0]?.retryable, true);
+		assert.match(failed[0]?.error ?? "", /503/);
+	});
+
+	it("releases unprocessed unsubscribe claims when the outbox time budget runs out", async () => {
+		const completed: string[] = [];
+		const released: string[] = [];
+		const u1 = "73300000-0000-4000-8000-0000000000b1";
+		const u2 = "73300000-0000-4000-8000-0000000000b2";
+		const u3 = "73300000-0000-4000-8000-0000000000b3";
+		let clock = 1000;
+		const store: MailOutboxStore = {
+			claim: async () => [],
+			complete: async () => undefined,
+			fail: async () => undefined,
+			messageIdsDue: async () => [],
+			recordMessageId: async () => undefined,
+			claimUnsubscribes: async (_limit, leaseId) => [
+				{ unsubscribeId: u1, leaseId, url: "https://news.example.org/u1", attemptCount: 1 },
+				{ unsubscribeId: u2, leaseId, url: "https://news.example.org/u2", attemptCount: 1 },
+				{ unsubscribeId: u3, leaseId, url: "https://news.example.org/u3", attemptCount: 1 },
+			],
+			completeUnsubscribe: async (id) => {
+				completed.push(id);
+				clock += 1000;
+			},
+			failUnsubscribe: async () => undefined,
+			releaseUnsubscribe: async (id) => {
+				released.push(id);
+			},
+		};
+		const sender: MailSender = {
+			send: async () => "unused",
+			messageId: async () => null,
+		};
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => store,
+			sender,
+			pace: 0,
+			budgetMs: 500,
+			now: () => clock,
+			resolveHost: async () => ["93.184.216.34"],
+			unsubscribeFetch: (async () => new Response("ok", { status: 200 })) as typeof fetch,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 0,
+			sent: 0,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			deferred: 0,
+			messageIds: 0,
+			unsubscribed: 1,
+			unsubscribeFailed: 0,
+		});
+		assert.deepEqual(completed, [u1]);
+		assert.deepEqual(released, [u2, u3]);
 	});
 });

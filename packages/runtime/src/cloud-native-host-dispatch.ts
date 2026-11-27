@@ -106,6 +106,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_list_company_paths", "standard"],
 	["qorpera_list_company_paths_v2", "standard"],
 	["qorpera_list_native_connector_tools", "standard"],
+	["qorpera_manage_agent_mail", "standard"],
 	["qorpera_memory_branches", "standard"],
 	["qorpera_memory_compaction_record", "standard"],
 	["qorpera_memory_events_run", "standard"],

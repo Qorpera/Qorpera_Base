@@ -2816,6 +2816,61 @@ export class PostgresCloudSecretBrokerAuthority
 		);
 	}
 
+	applyGoogleMailLabelChanges(
+		input: Parameters<NonNullable<GmailMailboxAuthority["applyGoogleMailLabelChanges"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_apply_google_mail_label_changes($1::uuid,$2::text,$3::uuid,$4::uuid,$5::jsonb) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.mailboxId,
+				input.lease,
+				JSON.stringify(input.changes),
+			],
+			signal,
+		);
+	}
+
+	claimGoogleMailActions(limit: number, signal: AbortSignal): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_claim_google_mail_actions($1::uuid,$2::text,$3::integer) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, limit],
+			signal,
+		);
+	}
+
+	completeGoogleMailAction(
+		input: Parameters<NonNullable<GmailMailboxAuthority["completeGoogleMailAction"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_complete_google_mail_action($1::uuid,$2::text,$3::uuid,$4::uuid) as result",
+			[this.#brokerAuthorityId, this.#brokerCapabilitySha256, input.actionId, input.lease],
+			signal,
+		);
+	}
+
+	failGoogleMailAction(
+		input: Parameters<NonNullable<GmailMailboxAuthority["failGoogleMailAction"]>>[0],
+		signal: AbortSignal,
+	): Promise<unknown> {
+		return this.#rpc(
+			"select public.qorpera_fail_google_mail_action($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::boolean,$7::boolean) as result",
+			[
+				this.#brokerAuthorityId,
+				this.#brokerCapabilitySha256,
+				input.actionId,
+				input.lease,
+				input.error,
+				input.retryable,
+				input.refused,
+			],
+			signal,
+		);
+	}
+
 	/** Signed hooks W1b: the company's deliveries waiting for a signature check (20260929998000). */
 	claimEventVerifications(limit: number, signal: AbortSignal): Promise<unknown> {
 		return this.#rpc(

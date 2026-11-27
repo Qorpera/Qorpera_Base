@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const CATALOG_MIGRATION = "supabase/migrations/20260930556000_github_create_repository.sql";
+export const CATALOG_MIGRATION = "supabase/migrations/20260930931000_mailbox_email_actions.sql";
 const BEGIN = "-- BEGIN GENERATED CONNECTOR CATALOG (scripts/generate-cloud-connector-catalog.mjs)";
 const END = "-- END GENERATED CONNECTOR CATALOG";
 
@@ -47,7 +47,6 @@ export async function renderCatalogSql() {
 		`\t(${columns})`,
 		"values",
 		values.map((value, index) => `\t(${value})${index === values.length - 1 ? ";" : ","}`).join("\n"),
-		"-- An existing version is immutable: refuse drift rather than updating a shipped row.",
 		"do $$ begin",
 		"\tif exists (select 1 from pg_temp.qorpera_connector_catalog_release as proposed",
 		"\t\tjoin public.qorpera_cloud_connector_operations as existing using (connector_id,operation_id,version)",

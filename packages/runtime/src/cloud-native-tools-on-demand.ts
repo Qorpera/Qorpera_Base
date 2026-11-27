@@ -126,6 +126,7 @@ const INDEX_LINES: Readonly<Record<string, string>> = {
 	read_event: "read one event that arrived at a hook",
 	send_mail: "send an email from a company mailbox",
 	find_mail: "find email that arrived at the company's mailboxes",
+	manage_mail: "trash, restore, archive, star, unsubscribe, or block senders on company mail",
 	manage_hook: "open a hook or mailbox, or pause, resume or remove one",
 	publish_site: "publish a static website from the company folder at a private link",
 	unpublish_site: "take a website or app link offline",

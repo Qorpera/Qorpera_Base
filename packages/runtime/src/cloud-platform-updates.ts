@@ -574,6 +574,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "On an Analytics page or a numbers tab, and in every reply about its numbers, give counts, sums and groups: never a person's name or email, one order or one visit, because you read with more access than the member may have. Asked who (best customers, who came back), say how many fall in which groups, and where the member can look for themselves (the company database or the source the numbers came from).",
 	},
 	{
+		id: "mailbox-email-actions",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Inbox cleanup: trash, star, unsubscribe and block senders",
+		text: "Agents and Inbox sessions can now manage email like Gmail without permanent deletion. Use find_mail (with view filters and up to 50 results) and manage_mail to move conversations to Trash or restore them, archive, star or unstar, block or unblock senders (auto-trashing future mail and skipping routine wakes), and unsubscribe via one-click POST or mailto; brought-in Google mailboxes sync two-way with Gmail. Connected Gmail accounts also gain list, batch update (trash, archive, star, read/unread, spam), and reversible sender-block filter actions. For web-only newsletter links, open the URL in a company or coding machine browser instead of asking the member.",
+	},
+	{
 		id: "surface-guards-supersede-and-change-stats",
 		kind: "behaviour",
 		date: "2026-11-27",

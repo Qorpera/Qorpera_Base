@@ -287,6 +287,8 @@ export function normalizeMessage(emailId: string, received: Json): Json {
 		precedence: header("precedence"),
 		listId: header("list-id"),
 		automated: automated(header),
+		listUnsubscribe: text(named.get("list-unsubscribe"), 4096),
+		listUnsubscribePost: text(named.get("list-unsubscribe-post"), 256),
 		authentication: {
 			spf: text(authentication.spf, 32),
 			dkim: text(authentication.dkim, 32),

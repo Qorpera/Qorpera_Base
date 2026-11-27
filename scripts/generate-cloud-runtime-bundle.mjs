@@ -8,20 +8,25 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929029399_runtime_bundle_activation_v293.sql";
-const activationVersion = 293;
-const previousActivationVersion = 292;
-const previousActivationSha256 = "9c1525f5e2ba5f1d751e7703ab397235e50f95b6caba358242f6e95b9379d74e";
+const activation = "supabase/migrations/20260929029499_runtime_bundle_activation_v294.sql";
+const activationVersion = 294;
+const previousActivationVersion = 293;
+const previousActivationSha256 = "a0f02b961194bfc1c7f786fd581d81986026f9b1f92788635c2d40cfb9b840df";
 const activationRequires = Object.freeze([
 	[
 		"20260930926000_company_mail_bare_handle",
-		"#2467 (bare-handle company email addresses): bundle 293 pairs with the bare-handle branch of qorpera_mail_admit_local_part",
+		"#2467 (bare-handle company email addresses): bundle 294 pairs with the bare-handle branch of qorpera_mail_admit_local_part",
 		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_mail_admit_local_part(uuid,text,uuid)')), ''), 'v_box := null;') > 0",
 	],
 	[
 		"20260930927000_google_mailboxes",
-		"#2472 (Google mail in the Mailbox): bundle 293 pairs with qorpera_google_mailboxes",
+		"#2472 (Google mail in the Mailbox): bundle 294 pairs with qorpera_google_mailboxes",
 		"to_regclass('public.qorpera_google_mailboxes') is not null",
+	],
+	[
+		"20260930931000_mailbox_email_actions",
+		"#2483 (mailbox and Gmail email actions): bundle 294 pairs with qorpera_manage_agent_mail",
+		"to_regprocedure('public.qorpera_manage_agent_mail(jsonb,text,jsonb)') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

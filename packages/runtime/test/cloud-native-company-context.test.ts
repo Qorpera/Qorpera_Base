@@ -679,6 +679,7 @@ const STAFF_TOOLS = [
 	"read_event",
 	"send_mail",
 	"find_mail",
+	"manage_mail",
 	"manage_hook",
 	"publish_site",
 	"unpublish_site",

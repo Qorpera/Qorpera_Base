@@ -64,6 +64,7 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	// Company mail (M2b): an email from a mailbox; finding received mail; saving a received attachment (M2c-1).
 	"send_mail",
 	"find_mail",
+	"manage_mail",
 	"save_attachment",
 	// The node's folder search (F3, "Light threads").
 	"company_search",
