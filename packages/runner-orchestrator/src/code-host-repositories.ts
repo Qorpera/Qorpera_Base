@@ -482,6 +482,8 @@ export class CodeHostRepositories implements CodingFolderRepositories {
 			headSha: verified.headSha,
 			changed: verified.changed,
 			filesChanged: verified.filesChanged,
+			...(verified.affectedPaths ? { affectedPaths: verified.affectedPaths } : {}),
+			...(verified.diffStats ? { diffStats: verified.diffStats } : {}),
 		};
 	}
 

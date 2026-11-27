@@ -946,4 +946,22 @@ describe("a folder-v2 agent's todos", () => {
 		await expect(todo.execute(listing, context)).resolves.toEqual({ kind: "text", value: '{"todos":[]}' });
 		expect(list).toHaveBeenCalledWith({ action: "list", includeClosed: true }, context, fitsOneResult);
 	});
+
+	it("refuses manage_worker coding dispatches targeting surfaces/* repositories", async () => {
+		const f = await fixture();
+		try {
+			const result = await f.boundary.invoke("c_surface_repo", "qorpera", "manage_worker", {
+				...dispatch,
+				access: "read",
+				species: "coding",
+				harness: "codex",
+				repository: { host: "qorpera", owner: "surfaces", name: "web-app", baseBranch: "main" },
+			});
+			expect(body(result)).toMatchObject({ status: "denied" });
+			expect(JSON.stringify(body(result))).toContain("start_surface_session");
+			expect(f.writerCalls()).toBe(0);
+		} finally {
+			f.run.close();
+		}
+	});
 });

@@ -457,7 +457,8 @@ export function cloudWorkerTools(
 							type: "string",
 							minLength: 1,
 							maxLength: 39,
-							description: "On qorpera, a short lowercase area of the company's code, such as company.",
+							description:
+								"On qorpera, a short lowercase area of the company's code, such as company. Never surfaces (Interface repos are updated via start_surface_session).",
 						},
 						name: {
 							type: "string",
@@ -605,8 +606,7 @@ export function cloudWorkerTools(
 						throw new CloudToolArgumentRefusal(
 							"a coding session needs repository with exactly host (qorpera or github.com), owner, name and baseBranch, each text",
 						);
-					// A repository kept in Qorpera names a folder, code/<owner>/<name>/: lower case only, said plainly.
-					if (repository.host === "qorpera")
+					if (repository.host === "qorpera") {
 						try {
 							parseCloudCodingRepository(repository);
 						} catch {
@@ -614,6 +614,12 @@ export function cloudWorkerTools(
 								"A repository kept in Qorpera has a lowercase owner (letters, digits, hyphens), a lowercase name (letters, digits, hyphens, dots, underscores; not ending with a dot) and baseBranch main, such as owner company and name shop",
 							);
 						}
+						if (repository.owner.toLowerCase() === "surfaces") {
+							throw new CloudToolArgumentRefusal(
+								"Repositories under surfaces/<slug> belong to a company Interface and must be changed through start_surface_session or steer_surface_session, not manage_worker.",
+							);
+						}
+					}
 					let claimedPaths: string[] | undefined;
 					if (a.claimedPaths !== undefined) {
 						if (!Array.isArray(a.claimedPaths) || a.claimedPaths.length > 32)

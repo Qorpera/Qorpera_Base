@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added optional `supersedeKey` (`SURFACE_SUPERSEDE_KEY_PATTERN`, `SURFACE_MAX_SUPERSEDE_KEY_CHARS`, `isSurfaceSupersedeKey`) to `SurfaceChangeUnit` and `SurfaceSession` (`surfaces.ts`) so recurring upkeep/sync Surface changes can cleanly supersede prior unapproved refreshes.
 - A chart's ask takes `estimate` (boolean; `SURFACE_ASK_FIELDS`, refused by figure, facts.from and table.from asks) and `SURFACE_ASK_FORMAT` says "estimate true draws it dashed, as an estimate". A chart file's series takes `estimate: true` too (`SurfaceChartSeries.estimate`, kept by `parseSurfaceChartDocument`, named in `SURFACE_CHART_FORMAT`).
 - The Analytics starter (`SURFACE_STARTER_LAYOUTS.analytics`) has at most one chart a tab: Money keeps "How long does the money last?" and drops the money-months chart.
 - `inferSurfaceKind`: a studio whose slug names analytics, a dashboard, kpis, metrics or numbers (`business-numbers`, `shop-dashboard`) is a `dashboard`, so it gets the Analytics starter without a stored kind.

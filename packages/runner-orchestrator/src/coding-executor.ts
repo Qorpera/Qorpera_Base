@@ -478,6 +478,12 @@ export interface CodingExecutorPublication {
 		readonly baseSha: string;
 		readonly headSha: string;
 		readonly filesChanged: number;
+		readonly affectedPaths?: readonly string[];
+		readonly diffStats?: {
+			readonly filesChanged: number;
+			readonly additions: number;
+			readonly deletions: number;
+		} | null;
 	};
 }
 export interface CodingAutoRedeployContext {
@@ -1408,6 +1414,10 @@ export class CloudCodingExecutor {
 											branch: staged.branch,
 											baseSha: staged.baseSha,
 											headSha: staged.headSha,
+											...(staged.affectedPaths && staged.affectedPaths.length > 0
+												? { affectedPaths: [...staged.affectedPaths] }
+												: {}),
+											...(staged.diffStats ? { diffStats: staged.diffStats } : {}),
 										},
 									],
 									p_files_changed: filesChanged,

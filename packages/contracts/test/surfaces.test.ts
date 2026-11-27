@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	countOpenSurfaceChanges,
 	isSurfaceOptionGroupKey,
+	isSurfaceSupersedeKey,
 	nextSurfaceSessionLifecycleState,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
@@ -677,5 +678,27 @@ describe("surfaces contracts", () => {
 				],
 			}),
 		).toThrow("session.changes[0].optionGroupTitle");
+
+		expect(isSurfaceSupersedeKey("github-sync")).toBe(true);
+		expect(isSurfaceSupersedeKey("metrics:daily_v1.2")).toBe(true);
+		expect(isSurfaceSupersedeKey("Bad Key")).toBe(false);
+		expect(isSurfaceSupersedeKey("-leading")).toBe(false);
+
+		const withSupersede = parseSurfaceSession({
+			...baseSession,
+			supersedeKey: "github-sync",
+			changes: [{ ...baseChange, supersedeKey: "github-sync" }],
+		});
+		expect(withSupersede.supersedeKey).toBe("github-sync");
+		expect(withSupersede.changes[0]?.supersedeKey).toBe("github-sync");
+		expect("supersedeKey" in omitted).toBe(false);
+		expect("supersedeKey" in (omitted.changes[0] ?? {})).toBe(false);
+		expect(() => parseSurfaceSession({ ...baseSession, supersedeKey: "BAD!" })).toThrow("session.supersedeKey");
+		expect(() =>
+			parseSurfaceSession({
+				...baseSession,
+				changes: [{ ...baseChange, supersedeKey: "BAD!" }],
+			}),
+		).toThrow("session.changes[0].supersedeKey");
 	});
 });
