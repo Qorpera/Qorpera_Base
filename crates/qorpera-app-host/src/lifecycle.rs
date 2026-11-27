@@ -724,11 +724,33 @@ impl AppLifecycleManager {
     }
 
     pub async fn stop_deployment(&self, deployment_id: &str) -> Result<(), String> {
+        let _ = self.stop_deployment_if_upstream(deployment_id, None).await?;
+        Ok(())
+    }
+
+    pub async fn stop_deployment_if_upstream(
+        &self,
+        deployment_id: &str,
+        expected_upstream_addr: Option<&str>,
+    ) -> Result<bool, String> {
         let dep_lock = self.deployment_lock(deployment_id)?;
         let res = {
             let _dep_guard = dep_lock.lock().await;
+            if let Some(expected) = expected_upstream_addr {
+                let actual = {
+                    let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
+                    map.get(deployment_id)
+                        .and_then(|entry| entry.handle.as_ref().map(|h| h.upstream_addr.clone()))
+                };
+                if let Some(actual_addr) = actual {
+                    if actual_addr != expected {
+                        return Ok(false);
+                    }
+                }
+            }
             self.stop_deployment_unlocked(deployment_id, InstanceState::Stopped, true)
-                .await
+                .await?;
+            Ok(true)
         };
         drop(dep_lock);
         self.prune_stopped_history();

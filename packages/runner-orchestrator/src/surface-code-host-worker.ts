@@ -808,6 +808,7 @@ async function registerSurfaceNativeDeployment(
 	readonly siteId: string;
 	readonly siteSlug: string;
 	readonly deploymentId: string | null;
+	readonly deploymentState: string | null;
 }> {
 	const args: Record<string, unknown> = {
 		p_surface_id: input.surfaceId,
@@ -837,6 +838,7 @@ async function registerSurfaceNativeDeployment(
 	}
 	const raw = (await control.call("qorpera_surface_site_deployment_register", args, signal)) as {
 		state?: unknown;
+		deploymentState?: unknown;
 		code?: unknown;
 		versionId?: unknown;
 		siteId?: unknown;
@@ -854,13 +856,15 @@ async function registerSurfaceNativeDeployment(
 	const siteId = typeof raw.siteId === "string" && isUuid(raw.siteId) ? raw.siteId : null;
 	const siteSlug = typeof raw.slug === "string" ? raw.slug : typeof raw.siteSlug === "string" ? raw.siteSlug : "";
 	const deploymentId = typeof raw.deploymentId === "string" && isUuid(raw.deploymentId) ? raw.deploymentId : null;
+	const deploymentState =
+		typeof raw.deploymentState === "string" ? raw.deploymentState : typeof raw.state === "string" ? raw.state : null;
 	if (!versionId || !siteId) {
 		throw new Error("Surface native site deployment register did not return versionId and siteId");
 	}
 	if (input.app && !deploymentId) {
 		throw new Error("Surface native app deployment register did not return deploymentId");
 	}
-	return { versionId, siteId, siteSlug, deploymentId };
+	return { versionId, siteId, siteSlug, deploymentId, deploymentState };
 }
 
 function createControlPlaneBridge(control: SurfaceCodeHostControl): SurfaceExecutionControlPlane {
@@ -1239,13 +1243,25 @@ export class SurfaceCodeHostWorker {
 						: null;
 				if (typeof deploymentId !== "string" || !isUuid(deploymentId)) continue;
 				try {
-					await stopHostedAppDeployment({
+					const claim = (await this.#control.call(
+						"qorpera_surface_app_deployment_mark_stopped",
+						{
+							p_deployment_id: deploymentId,
+							p_expected_upstream_addr: upstreamAddr,
+							p_claim_only: true,
+						},
+						signal,
+					)) as { claimed?: unknown } | null;
+					if (!claim || claim.claimed !== true) continue;
+					const stopRes = await stopHostedAppDeployment({
 						appHostInternalUrl,
 						controlToken: appHostControlToken,
 						deploymentId,
+						expectedUpstreamAddr: upstreamAddr,
 						fetchImpl: this.#nativeEdge?.appHostFetchImpl,
 						signal,
 					});
+					if (!stopRes.stopped) continue;
 					await this.#control.call(
 						"qorpera_surface_app_deployment_mark_stopped",
 						{
@@ -1932,34 +1948,71 @@ export class SurfaceCodeHostWorker {
 				signal,
 			});
 
-			const rollbackDeployedContainer = async (): Promise<void> => {
+			const recordUpstreamFallback = async (): Promise<void> => {
+				await this.#control
+					.call(
+						"qorpera_surface_site_deployment_set_upstream",
+						{
+							p_deployment_id: deploymentId,
+							p_upstream_addr: deployed.upstreamAddr,
+						},
+						AbortSignal.timeout(5_000),
+					)
+					.catch(() => undefined);
+			};
+
+			const rollbackDeployedContainer = async (
+				verifyLiveFirst: boolean,
+			): Promise<{ readonly promotedLive: boolean }> => {
+				if (registered.deploymentState === "live") {
+					await recordUpstreamFallback();
+					return { promotedLive: false };
+				}
+				if (verifyLiveFirst) {
+					try {
+						const claim = (await this.#control.call(
+							"qorpera_surface_app_deployment_mark_stopped",
+							{
+								p_deployment_id: deploymentId,
+								p_force: true,
+								p_claim_only: true,
+							},
+							AbortSignal.timeout(5_000),
+						)) as { claimed?: unknown; isLive?: unknown } | null;
+						if (claim?.isLive === true) {
+							return { promotedLive: true };
+						}
+						if (claim?.claimed !== true) {
+							await recordUpstreamFallback();
+							return { promotedLive: false };
+						}
+					} catch {
+						await recordUpstreamFallback();
+						return { promotedLive: false };
+					}
+				}
 				try {
-					await stopHostedAppDeployment({
+					const stopRes = await stopHostedAppDeployment({
 						appHostInternalUrl,
 						controlToken: appHostControlToken,
 						deploymentId,
+						expectedUpstreamAddr: deployed.upstreamAddr,
 						fetchImpl: nativeEdge.appHostFetchImpl,
 						signal: AbortSignal.timeout(10_000),
 					});
-					await this.#control
-						.call(
-							"qorpera_surface_app_deployment_mark_stopped",
-							{ p_deployment_id: deploymentId, p_force: true },
-							AbortSignal.timeout(5_000),
-						)
-						.catch(() => undefined);
+					if (stopRes.stopped) {
+						await this.#control
+							.call(
+								"qorpera_surface_app_deployment_mark_stopped",
+								{ p_deployment_id: deploymentId, p_force: true },
+								AbortSignal.timeout(5_000),
+							)
+							.catch(() => undefined);
+					}
 				} catch {
-					await this.#control
-						.call(
-							"qorpera_surface_site_deployment_set_upstream",
-							{
-								p_deployment_id: deploymentId,
-								p_upstream_addr: deployed.upstreamAddr,
-							},
-							AbortSignal.timeout(5_000),
-						)
-						.catch(() => undefined);
+					await recordUpstreamFallback();
 				}
+				return { promotedLive: false };
 			};
 
 			if (input.promoteLive) {
@@ -1985,7 +2038,16 @@ export class SurfaceCodeHostWorker {
 						deploymentId: promoted.deploymentId ?? deploymentId,
 					};
 				} catch (error) {
-					await rollbackDeployedContainer();
+					const rollback = await rollbackDeployedContainer(true);
+					if (rollback.promotedLive) {
+						return {
+							yielded: false,
+							versionId: registered.versionId,
+							siteId: registered.siteId,
+							siteSlug: registered.siteSlug,
+							deploymentId,
+						};
+					}
 					throw error;
 				}
 			}
@@ -2000,7 +2062,7 @@ export class SurfaceCodeHostWorker {
 					signal,
 				);
 			} catch (error) {
-				await rollbackDeployedContainer();
+				await rollbackDeployedContainer(false);
 				throw error;
 			}
 			return {

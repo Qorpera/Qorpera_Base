@@ -403,21 +403,32 @@ export async function stopHostedAppDeployment(options: {
 	readonly appHostInternalUrl: string;
 	readonly controlToken: string;
 	readonly deploymentId: string;
+	readonly expectedUpstreamAddr?: string | null;
 	readonly fetchImpl?: AppHostFetch;
 	readonly signal?: AbortSignal;
-}): Promise<void> {
+}): Promise<{ readonly stopped: boolean }> {
 	const base = options.appHostInternalUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
+	const expectedUpstream =
+		typeof options.expectedUpstreamAddr === "string" && options.expectedUpstreamAddr.trim().length > 0
+			? options.expectedUpstreamAddr.trim()
+			: null;
 	const res = await fetchImpl(`${base}/_internal/apps/${encodeURIComponent(options.deploymentId)}/stop`, {
 		method: "POST",
 		headers: {
 			authorization: `Bearer ${options.controlToken}`,
+			...(expectedUpstream ? { "content-type": "application/json" } : {}),
 		},
+		...(expectedUpstream ? { body: JSON.stringify({ expected_upstream_addr: expectedUpstream }) } : {}),
 		signal: options.signal,
 	});
+	if (res.status === 409) {
+		return { stopped: false };
+	}
 	if (res.status !== 200 && res.status !== 404) {
 		throw new Error(`APP_HOST_STOP_FAILED_${res.status}`);
 	}
+	return { stopped: true };
 }
 
 export async function fetchAppLogs(options: {

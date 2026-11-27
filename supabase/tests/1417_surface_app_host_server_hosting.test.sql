@@ -74,7 +74,7 @@ begin
 		'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)',
 		'public.qorpera_surface_site_deployment_set_upstream(uuid,text)',
 		'public.qorpera_surface_stale_app_deployments_due(integer)',
-		'public.qorpera_surface_app_deployment_mark_stopped(uuid,text,boolean,boolean)',
+		'public.qorpera_surface_app_deployment_mark_stopped(uuid,text,boolean,boolean,boolean)',
 		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text,boolean)'
 	] loop
 		perform pg_temp.sahs_assert(
@@ -252,6 +252,23 @@ begin
 		and not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_live_2),
 		'expired preview deployment becomes due for stop while live deployment is excluded: ' || v_due::text
 	);
+
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'claimed')::boolean = true and (v_stopped ->> 'stopped')::boolean = false,
+		'claim_only atomically claims stale deployment before app-host stop: ' || v_stopped::text
+	);
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'claimed')::boolean = false,
+		'second concurrent claim_only is refused while first stop claim holds backoff window: ' || v_stopped::text
+	);
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, null, true, false, true)', v_dep_live_2));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'claimed')::boolean = false and (v_stopped ->> 'isLive')::boolean = true,
+		'forced claim_only reports isLive=true for active live deployment: ' || v_stopped::text
+	);
+	update public.qorpera_company_site_deployments set last_stop_attempt_at = null where id = v_dep_prev_1;
 
 	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
 	perform pg_temp.sahs_assert(

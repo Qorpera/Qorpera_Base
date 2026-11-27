@@ -1566,3 +1566,81 @@ async fn preview_deploy_does_not_replace_or_stop_live_deployment_for_same_site()
 
     manager.shutdown_all().await;
 }
+
+#[tokio::test]
+async fn stop_with_mismatched_expected_upstream_leaves_replacement_running() {
+    let driver = Arc::new(ControlledDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(64, 16 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+        logs,
+        Duration::from_secs(2),
+        Duration::ZERO,
+    ));
+    let server = AppHostServer::bind(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        Arc::clone(&manager),
+        "stop-guard-secret".to_string(),
+    )
+    .await
+    .unwrap();
+    let addr = server.addr;
+    let _handle = server.spawn();
+
+    let mut req1 = mock_deploy_request("dep-reused", "site-stop-guard");
+    req1.is_preview = true;
+    let first = manager.deploy_blue_green(req1).await.unwrap();
+    let first_upstream = first.upstream_addr.clone().unwrap();
+
+    let mut req2 = mock_deploy_request("dep-reused", "site-stop-guard");
+    req2.is_preview = true;
+    let second = manager.deploy_blue_green(req2).await.unwrap();
+    let second_upstream = second.upstream_addr.clone().unwrap();
+    assert_ne!(first_upstream, second_upstream);
+
+    let (st, body) = http_call(
+        addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-reused/stop")
+            .header("authorization", "Bearer stop-guard-secret")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::json!({ "expected_upstream_addr": first_upstream }).to_string(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["stopped"], false);
+    assert_eq!(parsed["error"], "upstream_mismatch");
+    assert_eq!(
+        manager.status("dep-reused").unwrap().state,
+        InstanceState::Running
+    );
+    assert!(driver.is_running("dep-reused").await);
+
+    let (st2, body2) = http_call(
+        addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-reused/stop")
+            .header("authorization", "Bearer stop-guard-secret")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::json!({ "expected_upstream_addr": second_upstream }).to_string(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st2, StatusCode::OK);
+    let parsed2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(parsed2["stopped"], true);
+    assert_eq!(
+        manager.status("dep-reused").unwrap().state,
+        InstanceState::Stopped
+    );
+
+    manager.shutdown_all().await;
+}
