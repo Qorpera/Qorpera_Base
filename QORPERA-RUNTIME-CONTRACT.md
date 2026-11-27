@@ -4941,7 +4941,13 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    platform creates `hooks/` with the first saved event, as it creates `code/`
    when coding starts (5.6), and only the platform adds or changes files
    under it; agents and members read them, and owners and admins may delete
-   them. Otherwise they stay until the company is deleted.
+   them. Otherwise they stay until the company is deleted. Amended 17
+   November 2026 (founder: "we need to build support for users to bring in
+   their emails", "Yes, build it"; item 9's Google mailboxes): the deliveries
+   of a company's Google mailbox, with their body and headers, and its
+   threads are kept as long as the company keeps that mailbox's record, also
+   after Remove, until the company is deleted; they are the mail the member
+   brought in, which Gmail itself keeps.
 7. **Today's routines take the trigger too.** Event wakes are added to the
    routine rows of `snapshot-v1` companies before the clean reset, and hooks
    exist for those companies (item 2), although new company state otherwise
@@ -5004,6 +5010,41 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    answers an email that was sent automatically, since a person replying
    starts no mail loop, and it never says it is an automatic response.
    Mail for one of the company's accounts on a site is not answered.
+
+   A member's Google mail is a company mailbox too (founder, 17 November
+   2026: "we need to build support for users to bring in their emails", and
+   to the drawn design, "Yes, build it"; migration `20260930927000`). It
+   amends this item where it says a mailbox is an address on the platform's
+   mail domain, that only the platform's mail door fills it, and that only
+   the platform's sender sends. An owner or admin connects the Google
+   account once (or links a company Gmail connection already stored in
+   Settings → Company connections); the mailbox's address is the one Google
+   names, one live Google mailbox per address across the platform. Who fills
+   it: the company's own vault (the secret broker), which alone holds the
+   Google sign-in, reads Gmail with it and hands each message to the same
+   mail door, keyed by the Gmail message so it is stored once; no one else
+   reaches that mailbox through the door, and outside mail to its inner
+   name on the platform's domain is unknown. Mail from before the
+   connection (the first import, at most 50,000 messages) is stored but
+   wakes no routine and is not counted against the company's hourly intake;
+   mail that arrives after it is a received email like any other, with two
+   quiet exceptions that are stored the same way as the first import and
+   wake nothing: mail recovered when Gmail no longer keeps the change list
+   since the vault's last mark (the newest messages, read again from the
+   top), and mail that arrived while the address was removed, brought in
+   when the same company connects it again (newest first, until mail that is
+   already here; an import that Remove interrupted then goes on where it
+   stopped, quietly too, under its own 50,000). After such a reconnect only
+   mail newer than the moment its gap walk began arrives as new mail. Who
+   sends: email from a Google address, an agent's or a member's, leaves
+   through Gmail from the vault, from that address, in the thread it
+   answers; nothing else sends it. Everything else of this item holds for a
+   Google address: the sending switch (switched off, nothing leaves through
+   Gmail either), never to the company's own mailboxes (its Google
+   addresses included), never as if from Qorpera, the AI line and the
+   automatic review for an agent's email, and the company's limits counted
+   together with all its other email. It carries no attached files. Remove
+   ends the Google sign-in; the mail brought in stays with the company.
 
 Section 21, item 33, is the event-wake acceptance item.
 
@@ -6321,7 +6362,9 @@ the proofs and the list of documents, is
      they may already read. The first scope is exactly two pages:
      - **Mailbox:** the company's chosen mail source, its threads and messages, and the mail actions and protections
        that already exist. In this rebuild the source is the company's own mail addresses; a connected outside
-       mailbox as a source is deferred;
+       mailbox as a source is deferred. Amended 17 November 2026 (founder: "we need to build support for users to
+       bring in their emails", "Yes, build it"): a member's Google mail is such a source, as a company mailbox the
+       vault fills and sends from (section 17, item 9);
      - **Member-to-agent ownership:** who owns or supervises which agent, with the consent, transfer and departure
        handling that keep it right.
    - The member sets only the page's allowed activation and source fields. It is not a general data binding editor.
