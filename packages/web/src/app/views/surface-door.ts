@@ -208,6 +208,8 @@ export class SurfaceDoorStage {
 	readonly #options: SurfaceDoorOptions;
 	#active: DoorSlot | undefined;
 	#staging: DoorSlot | undefined;
+	#lastSync: { readonly frame: SurfacePreviewFrameState; readonly title: string } | undefined;
+	#requestSeq = 0;
 	#retriedPreviewId: string | undefined;
 	#failedPreviewKey: string | undefined;
 	#requestedPassKey: string | undefined;
@@ -237,6 +239,7 @@ export class SurfaceDoorStage {
 
 	sync(frame: SurfacePreviewFrameState, title: string): void {
 		if (this.#lifetime.signal.aborted) return;
+		this.#lastSync = { frame, title };
 		const kept = frame.status === "failed" ? frame.kept : null;
 		if (!kept) {
 			this.#mark = null;
@@ -289,6 +292,11 @@ export class SurfaceDoorStage {
 				staging.path === path &&
 				(!frame.doorActionUrl || staging.action === frame.doorActionUrl)
 			) {
+				const stagingPassUsable =
+					staging.sent ||
+					!previewId ||
+					!this.#options.isPassUsable ||
+					this.#options.isPassUsable(previewId, staging.pass);
 				const freshPassForUnsent =
 					!staging.sent &&
 					Boolean(frame.doorActionUrl) &&
@@ -296,7 +304,7 @@ export class SurfaceDoorStage {
 					frame.memberPass !== "" &&
 					frame.memberPass !== staging.pass &&
 					(!previewId || !this.#options.isPassUsable || this.#options.isPassUsable(previewId, frame.memberPass));
-				if (!freshPassForUnsent) {
+				if (stagingPassUsable && !freshPassForUnsent) {
 					staging.iframe.title = title;
 					this.#restPill();
 					if (!this.#active) this.#showWaiting("running", t("Opening preview…"));
@@ -368,6 +376,10 @@ export class SurfaceDoorStage {
 				slot.timeout = setTimeout(() => {
 					slot.timeout = undefined;
 					if (this.#lifetime.signal.aborted || this.#staging !== slot) return;
+					if (!slot.iframe.isConnected) {
+						this.#dropStaging();
+						return;
+					}
 					this.#dropStaging();
 					if (previewId && this.#options.onNeedFreshPass && this.#retriedPreviewId !== previewId) {
 						this.#retriedPreviewId = previewId;
@@ -444,12 +456,14 @@ export class SurfaceDoorStage {
 	}
 
 	resetRetryState(): void {
+		this.#requestSeq += 1;
 		this.#retriedPreviewId = undefined;
 		this.#failedPreviewKey = undefined;
 		this.#requestedPassKey = undefined;
 	}
 
 	clear(): void {
+		this.#lastSync = undefined;
 		this.#mark = null;
 		if (this.#inspectorActive) {
 			this.#postInspectorMode(false);
@@ -470,9 +484,16 @@ export class SurfaceDoorStage {
 	}
 
 	#requestFreshPass(previewId: string, requestKey: string, failKey: string, stalePass?: string): void {
+		const reqSeq = ++this.#requestSeq;
 		this.#requestedPassKey = requestKey;
 		const onFailure = () => {
-			if (this.#lifetime.signal.aborted || this.#requestedPassKey !== requestKey || this.#staging) return;
+			if (
+				this.#lifetime.signal.aborted ||
+				this.#requestSeq !== reqSeq ||
+				this.#requestedPassKey !== requestKey ||
+				this.#staging
+			)
+				return;
 			this.#requestedPassKey = undefined;
 			this.#retriedPreviewId = undefined;
 			this.#failedPreviewKey = failKey;
@@ -549,25 +570,51 @@ export class SurfaceDoorStage {
 		applyIdentityTokensToFrame(this.#active.iframe, this.#identityTokens, false);
 	}
 
+	#recoverReloadedSlot(slot: DoorSlot): void {
+		const lastSync = this.#lastSync;
+		if (this.#staging === slot) this.#dropStaging();
+		if (this.#active === slot) this.#dropActive();
+		this.resetRetryState();
+		if (slot.previewId) this.#options.onPassSent?.(slot.previewId, slot.pass);
+		if (lastSync) {
+			this.sync(lastSync.frame, lastSync.title);
+		} else {
+			this.#showWaiting("running", t("Opening preview…"));
+		}
+	}
+
 	#onMessage(event: MessageEvent): void {
-		if (event.origin !== location.origin) return;
+		if (event.origin !== location.origin || event.source === null) return;
 		const data = event.data as { type?: unknown; target?: unknown } | null;
 		if (!data || typeof data !== "object") return;
 		const staging = this.#staging;
-		if (staging && event.source === staging.iframe.contentWindow) {
-			if (data.type === SITE_DOOR_READY && !staging.sent) {
-				staging.sent = true;
-				if (staging.previewId) this.#options.onPassSent?.(staging.previewId, staging.pass);
-				staging.iframe.contentWindow?.postMessage(
-					{
-						type: SITE_DOOR_PASS,
-						action: staging.action,
-						pass: staging.pass,
-						title: staging.iframe.title,
-						path: staging.path,
-					},
-					location.origin,
-				);
+		const stagingWindow = staging?.iframe.contentWindow ?? null;
+		if (staging && stagingWindow !== null && event.source === stagingWindow) {
+			if (data.type === SITE_DOOR_READY) {
+				if (!staging.sent) {
+					if (
+						staging.previewId &&
+						this.#options.isPassUsable &&
+						!this.#options.isPassUsable(staging.previewId, staging.pass)
+					) {
+						this.#recoverReloadedSlot(staging);
+						return;
+					}
+					staging.sent = true;
+					if (staging.previewId) this.#options.onPassSent?.(staging.previewId, staging.pass);
+					stagingWindow.postMessage(
+						{
+							type: SITE_DOOR_PASS,
+							action: staging.action,
+							pass: staging.pass,
+							title: staging.iframe.title,
+							path: staging.path,
+						},
+						location.origin,
+					);
+					return;
+				}
+				this.#recoverReloadedSlot(staging);
 				return;
 			}
 			if (data.type === SITE_DOOR_SHOWN && staging.sent) {
@@ -593,7 +640,12 @@ export class SurfaceDoorStage {
 			}
 		}
 		const active = this.#active;
-		if (!active || event.source !== active.iframe.contentWindow) return;
+		const activeWindow = active?.iframe.contentWindow ?? null;
+		if (!active || activeWindow === null || event.source !== activeWindow) return;
+		if (data.type === SITE_DOOR_READY) {
+			this.#recoverReloadedSlot(active);
+			return;
+		}
 		if (data.type === SITE_DOOR_SHOWN) {
 			if (this.#inspectorActive) this.#postInspectorMode(true);
 			if (this.#identityTokens) this.#postIdentityTokens();
