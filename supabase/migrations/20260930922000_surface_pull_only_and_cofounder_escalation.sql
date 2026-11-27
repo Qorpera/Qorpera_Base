@@ -316,11 +316,11 @@ select pg_temp.surf_esc_patch('public.qorpera_surface_session_json(public.qorper
 select pg_temp.surf_esc_patch('public.qorpera_reply_surface_session(uuid,text,boolean,uuid)', array[
 	$old$		wake_id = case when worker_id is not null then null else wake_id end,
 		turn_requested_by_user_id = v_user_id,
-		retry_count = 0,$old$,
+$old$,
 	$new$		wake_id = case when worker_id is not null then null else wake_id end,
 		turn_requested_by_user_id = v_user_id,
 		turn_member_initiated = true, /* WHY: 20260930922000 restores member-initiated status on member replies */
-		retry_count = 0,$new$,
+$new$,
 	$old$	return public.qorpera_surface_session_json(v_session);$old$,
 	$new$	update public.qorpera_surface_escalations
 	set resolved_at = clock_timestamp()
