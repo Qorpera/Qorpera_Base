@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { noteConnectorReturn, type ServicesAccess, ServicesView } from "../src/app/views/settings-services.ts";
 import { type HostedConnectorConnection, takeConnectorReturn, type WebConnectors } from "../src/cloud/connectors.ts";
-import { id, settle, timestamp } from "./fixtures.ts";
+import { deferred, id, settle, timestamp } from "./fixtures.ts";
 
 const gmail: HostedConnectorConnection = {
 	secretId: id(91),
@@ -355,6 +355,60 @@ describe("services", () => {
 		view?.update();
 		expect(buttons(card(0)).map((button) => button.textContent)).toEqual(["Disconnect"]);
 		expect(view?.el.textContent).not.toContain("Only founders and admins");
+	});
+
+	it("shares a token captured while an earlier sign-in grant and its follow-up list are still in flight", async () => {
+		startedHere("gmail");
+		history.replaceState(null, "", `#/?connector=gmail&connection=confirm&confirmation=${CONFIRMATION}`);
+		noteConnectorReturn(takeConnectorReturn());
+		const freshGmail: HostedConnectorConnection = {
+			...gmail,
+			secretId: id(91),
+			availableToAllAgents: false,
+			activeGrantCount: 0,
+		};
+		const grantGate = deferred<void>();
+		const listAfterGrant = deferred<HostedConnectorConnection[]>();
+		let listCalls = 0;
+		let roleReady = false;
+		const { client, state } = setup(
+			[freshGmail],
+			undefined,
+			{
+				canManage: () => true,
+				memberName: (userId) => (roleReady && userId === id(1) ? "Anna Owner" : undefined),
+			},
+			(mock) => {
+				vi.mocked(mock.list).mockImplementation(async () => {
+					listCalls += 1;
+					if (listCalls === 2) return listAfterGrant.promise;
+					return structuredClone(state.connections);
+				});
+				const originalGrant = mock.grantAllAgents;
+				vi.mocked(mock.grantAllAgents).mockImplementation(async (secretId, signal) => {
+					if (secretId === id(91)) await grantGate.promise;
+					await originalGrant(secretId, signal);
+				});
+			},
+		);
+		await settle();
+		expect(client.grantAllAgents).toHaveBeenCalledWith(id(91), expect.any(AbortSignal));
+		roleReady = true;
+		view?.update();
+		buttons(card(2))[1]!.click();
+		const field = card(2).querySelector<HTMLInputElement>('input[type="password"]')!;
+		field.value = "github_pat_overlapping_grant";
+		grantGate.resolve();
+		await settle();
+		expect(listCalls).toBe(2);
+		[...card(2).querySelectorAll<HTMLButtonElement>("button")]
+			.find((button) => button.textContent === "Save token")!
+			.click();
+		await settle();
+		listAfterGrant.resolve([{ ...freshGmail, availableToAllAgents: true, activeGrantCount: 7 }]);
+		await settle();
+		expect(client.grantAllAgents).toHaveBeenCalledWith(id(92), expect.any(AbortSignal));
+		expect(card(2).textContent).toContain("Available to every agent in the company, including new hires.");
 	});
 
 	it("never shows a member's own secret as the company's connection", async () => {

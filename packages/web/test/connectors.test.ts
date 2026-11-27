@@ -7,9 +7,6 @@ import type { Cloud } from "../src/cloud/client.ts";
 import { createWebConnectors, HOSTED_CONNECTORS, takeConnectorReturn } from "../src/cloud/connectors.ts";
 import { id, timestamp } from "./fixtures.ts";
 
-/* The company connector client (cloud/connectors.ts). Settings' Company connections page that drew these is gone
- * (Jonas, 10 Nov 2026: fully Qorpera-hosted companies); the Bank page still signs in through this client. */
-
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** A sign-in this tab started (what beginSignIn leaves in session storage). */

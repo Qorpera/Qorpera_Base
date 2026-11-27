@@ -65,7 +65,8 @@ export class ServicesView {
 	readonly #access: ServicesAccess;
 	#drawnAccess: string | undefined;
 	#connections: HostedConnectorConnection[] | undefined;
-	#pendingGrant: HostedConnectorId | undefined;
+	readonly #pendingGrants = new Set<HostedConnectorId>();
+	#grantSeq = 0;
 	#loading = true;
 	#error: string | undefined;
 	#working: string | undefined;
@@ -143,11 +144,7 @@ export class ServicesView {
 
 	update(): void {
 		if (this.#lifetime.signal.aborted) return;
-		if (this.#pendingGrant && this.#access.canManage()) {
-			const connector = this.#pendingGrant;
-			this.#pendingGrant = undefined;
-			void this.#refresh(connector);
-		}
+		if (this.#pendingGrants.size > 0 && this.#access.canManage()) void this.#refresh();
 		if (this.#accessState() !== this.#drawnAccess) this.#draw();
 	}
 
@@ -159,7 +156,10 @@ export class ServicesView {
 
 	#refresh(grantAfter?: HostedConnectorId): Promise<void> {
 		if (this.#lifetime.signal.aborted) return Promise.resolve();
-		if (grantAfter) this.#pendingGrant = grantAfter;
+		if (grantAfter) {
+			this.#pendingGrants.add(grantAfter);
+			this.#grantSeq += 1;
+		}
 		this.#refreshing ??= this.#read().finally(() => {
 			this.#refreshing = undefined;
 		});
@@ -168,29 +168,46 @@ export class ServicesView {
 
 	async #read(): Promise<void> {
 		try {
+			let listedAt = this.#grantSeq;
 			const connections = await this.#client.list(this.#lifetime.signal);
 			if (this.#lifetime.signal.aborted) return;
 			this.#connections = connections;
 			this.#error = undefined;
-			const grantAfter = this.#pendingGrant;
-			const fresh = grantAfter ? this.#current(grantAfter) : undefined;
-			if (grantAfter && (!fresh || (fresh.availableToAllAgents && fresh.activeGrantCount > 0))) {
-				this.#pendingGrant = undefined;
-			} else if (grantAfter && fresh && this.#access.canManage()) {
-				this.#pendingGrant = undefined;
-				try {
-					await this.#client.grantAllAgents(fresh.secretId, this.#lifetime.signal);
-					if (!this.#lifetime.signal.aborted) this.#connections = await this.#client.list(this.#lifetime.signal);
-				} catch {
-					if (!this.#lifetime.signal.aborted)
-						this.#outcome = {
-							connector: grantAfter,
-							tone: "error",
-							text: t(
-								"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
-							),
-						};
+			while (this.#pendingGrants.size > 0 && !this.#lifetime.signal.aborted) {
+				if (this.#grantSeq !== listedAt) {
+					listedAt = this.#grantSeq;
+					const latest = await this.#client.list(this.#lifetime.signal);
+					if (this.#lifetime.signal.aborted) return;
+					this.#connections = latest;
 				}
+				let granted = false;
+				for (const grantAfter of [...this.#pendingGrants]) {
+					const fresh = this.#current(grantAfter);
+					if (!fresh || (fresh.availableToAllAgents && fresh.activeGrantCount > 0)) {
+						this.#pendingGrants.delete(grantAfter);
+						continue;
+					}
+					if (!this.#access.canManage()) continue;
+					this.#pendingGrants.delete(grantAfter);
+					granted = true;
+					try {
+						await this.#client.grantAllAgents(fresh.secretId, this.#lifetime.signal);
+						if (!this.#lifetime.signal.aborted) {
+							listedAt = this.#grantSeq;
+							this.#connections = await this.#client.list(this.#lifetime.signal);
+						}
+					} catch {
+						if (!this.#lifetime.signal.aborted)
+							this.#outcome = {
+								connector: grantAfter,
+								tone: "error",
+								text: t(
+									"The account is connected, but the company's agents could not get it yet. Disconnect it and connect it again.",
+								),
+							};
+					}
+				}
+				if (!granted && this.#grantSeq === listedAt) break;
 			}
 		} catch {
 			if (this.#lifetime.signal.aborted) return;

@@ -3,33 +3,7 @@ import { isRecord } from "@qorpera/contracts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import { UUID_PATTERN } from "./parse.ts";
 
-/**
- * Member surface for Runtime Step 7 connectors (Gmail, Google Drive, GitHub).
- *
- * Company first: a connection belongs to the company. An owner or admin
- * connects it (the kernel refuses anyone else a company-owned ticket), every
- * agent of the company may use it, and the member who connected it is shown
- * for attribution only.
- *
- * Connecting an account is two hops: the cloud issues a one-time capture
- * ticket (RPC), and the member's browser takes that ticket to the company's
- * secret broker, which sends the member to the provider and seals what comes
- * back. Nothing secret passes through this module or Supabase: the browser
- * only ever sees the ticket, the broker origin and a provider consent page.
- * Several companies' brokers share one origin; `?company=<profileId>` (not a
- * secret) lets its router reach this company's broker, as for secret cards.
- * Contract §11.5; RPCs listed in supabase/CLIENT-CONTRACT.md §2.
- *
- * The company's bank (`bank`) signs in the same way, from the Bank page: the
- * start names the bank the member picked, the bank's own sign-in (MitID) sends
- * the member back, and the broker seals the session. No agent tool uses it.
- *
- * The Gmail, Google Drive and GitHub sign-ins were started from Settings → Company connections, which is gone
- * (Jonas, 10 Nov 2026: companies are fully Qorpera-hosted); the bank is the only sign-in the web starts now.
- */
-
 export type HostedConnectorId = "gmail" | "google_drive" | "github";
-/** Every connector a sign-in can be finished for. */
 export type SignInConnectorId = HostedConnectorId | "bank";
 
 /** The bank a member picked for the company's bank connection, as Enable Banking names it, and whether the account
