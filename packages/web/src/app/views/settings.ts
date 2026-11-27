@@ -1,5 +1,6 @@
 import type { CloudApi } from "../../cloud/api.ts";
 import { WebCompanyFiles } from "../../cloud/company-files.ts";
+import { createWebConnectors } from "../../cloud/connectors.ts";
 import { createWebDefaultModels } from "../../cloud/default-models.ts";
 import { createWebGeminiKey } from "../../cloud/gemini-key.ts";
 import { createWebNativeSubscription } from "../../cloud/native-subscription.ts";
@@ -35,11 +36,12 @@ import {
 	SETTINGS_TABS as TABS,
 } from "./settings-places.ts";
 import { RulesView } from "./settings-rules.ts";
+import { ServicesView } from "./settings-services.ts";
 import { renderTeam, type TeamFeedback } from "./team.ts";
 
 export { markSettingsPlace, type SettingsPlace, type SettingsTab, settingsPlaces };
 
-const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company"]);
+const COMPANY_TABS: ReadonlySet<SettingsCategory> = new Set(["company", "company-connections"]);
 
 /** AI subscriptions' lead, with or without a company open. */
 const subscriptionsLead = () =>
@@ -107,6 +109,7 @@ export class SettingsView {
 	#geminiKey: GeminiKeyView | undefined;
 	/** AI subscriptions with no company open: the member's account logins. */
 	#accountSubscriptions: AccountSubscriptionsView | undefined;
+	#services: ServicesView | undefined;
 	#rules: RulesView | undefined;
 	#brand: CompanyBrandView | undefined;
 	/** The company's good will, on the Company tab. */
@@ -324,6 +327,7 @@ export class SettingsView {
 		this.#connections?.dispose();
 		this.#geminiKey?.dispose();
 		this.#accountSubscriptions?.dispose();
+		this.#services?.dispose();
 		this.#rules?.dispose();
 		this.#goodWill?.dispose();
 		this.#myGoodWill?.dispose();
@@ -460,6 +464,34 @@ export class SettingsView {
 						this.#geminiKey.el,
 					),
 				);
+			} else if (tab === "company-connections" && !this.#services) {
+				const canManage = () => {
+					const role = company.store.get().team?.role;
+					return role === "owner" || role === "admin";
+				};
+				this.#services = new ServicesView(
+					createWebConnectors(this.#api.cloud, {
+						profileId: company.profile.profileId,
+						environmentId: company.profile.environmentId,
+					}),
+					this.#companyLifetime.signal,
+					{
+						access: {
+							canManage,
+							memberName: (userId) =>
+								company.store.get().team?.members.find((member) => member.userId === userId)?.displayName ||
+								undefined,
+						},
+					},
+				);
+				this.#panels.set(
+					tab,
+					connectionsPage(
+						t("Company connections"),
+						t("The company's own accounts. Every agent can use them, and they stay when someone leaves."),
+						this.#services.el,
+					),
+				);
 			}
 		}
 		const panel =
@@ -577,6 +609,8 @@ export class SettingsView {
 		this.#geminiKey = undefined;
 		this.#accountSubscriptions?.dispose();
 		this.#accountSubscriptions = undefined;
+		this.#services?.dispose();
+		this.#services = undefined;
 		this.#rules?.dispose();
 		this.#rules = undefined;
 		this.#brand = undefined;
@@ -591,13 +625,14 @@ export class SettingsView {
 		this.#staffRef = undefined;
 		this.#staffSnap = undefined;
 		this.#teamSnap = undefined;
-		for (const tab of ["company", "ai-subscriptions"] as const) this.#panels.delete(tab);
+		for (const tab of ["company", "ai-subscriptions", "company-connections"] as const) this.#panels.delete(tab);
 		if (company) {
 			this.#unsubscribe = company.store.subscribe(() => {
 				if (company.store.get().accessLost) {
 					this.#close();
 					return;
 				}
+				this.#services?.update();
 				this.#rules?.update();
 				if (this.#tab === "company") this.#drawCompany();
 			});

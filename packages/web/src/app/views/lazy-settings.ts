@@ -5,4 +5,5 @@ export { _bootHub } from "./lazy-boot-hub.ts";
 export * as settingsView from "./settings.ts";
 export * as settingsConnections from "./settings-connections.ts";
 export * as goodWill from "./settings-good-will.ts";
+export * as settingsServices from "./settings-services.ts";
 export * as teamView from "./team.ts";

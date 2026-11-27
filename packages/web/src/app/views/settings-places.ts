@@ -31,6 +31,13 @@ export const SETTINGS_TABS = [
 		keywords:
 			"ai subscriptions default models conversational coding voice tts effort credits my connections model accounts providers sign in openai chatgpt codex anthropic claude google gemini neon api key usage ai-abonnementer standardmodeller stemme lyd mine forbindelser modelkonti udbydere abonnementer log ind forbrug kredit",
 	},
+	{
+		id: "company-connections",
+		label: phrase("Company connections"),
+		icon: "connections",
+		keywords:
+			"company connections services accounts gmail google drive github token secrets agents import mail code virksomhedens forbindelser tjenester konti hemmeligheder agenter",
+	},
 ] as const;
 
 export type SettingsCategory = (typeof SETTINGS_TABS)[number]["id"];
@@ -124,6 +131,13 @@ export function settingsPlaces(deletes: boolean): SettingsPlace[] {
 			t("Default models"),
 		),
 		place("ai-subscriptions", t("Gemini API key"), subscriptions, "google gemini api key nøgle", t("Gemini API key")),
+		place(
+			"company-connections",
+			t("Services"),
+			t("Company connections"),
+			"company connections services accounts gmail google drive github token import mail code virksomhedens forbindelser tjenester konti",
+			t("Services"),
+		),
 	];
 }
 
