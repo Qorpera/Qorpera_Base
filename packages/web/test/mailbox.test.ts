@@ -3550,4 +3550,142 @@ describe("Digital Post", () => {
 		reader.dispose();
 		expect(pendingSignals.every((s) => s.aborted)).toBe(true);
 	});
+
+	it("supports starring, trashing with undo, archiving, unsubscribing, and blocking senders", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "news@promo.example", subject: "Weekly digest" }),
+				summary(2, { fromAddress: "web@promo.example", subject: "Web-only newsletter" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "news@promo.example", subject: "Weekly digest" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(910),
+					oneClick: true,
+					webUrl: "https://promo.example/unsub",
+					urls: ["https://promo.example/unsub"],
+				},
+			};
+			mail.reads[thread(2)] = {
+				thread: thread(2),
+				address: ADDRESS.address,
+				messages: [received(2, { fromAddress: "web@promo.example", subject: "Web-only newsletter" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(911),
+					oneClick: false,
+					webUrl: "https://promo.example/manage",
+					urls: ["https://promo.example/manage"],
+				},
+			};
+		});
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "star",
+			}),
+		);
+		tab(main, "Starred");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Weekly digest");
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Unsubscribe")).toBeDefined());
+		button(main, "Unsubscribe")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_unsubscribe").at(-1)).toMatchObject({
+				p_thread: thread(1),
+				p_delivery_id: id(910),
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-unsubscribe-status")?.textContent).toBe("Unsubscribed"),
+		);
+
+		button(main, "Move to Trash")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "trash",
+			}),
+		);
+		await vi.waitFor(() => expect(button(main, "Undo")).toBeDefined());
+		button(main, "Undo")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector('a[href="https://promo.example/manage"]')).not.toBeNull());
+		expect(main.querySelector('a[href="https://promo.example/manage"]')?.getAttribute("rel")).toBe(
+			"noopener noreferrer",
+		);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_block_sender").at(-1)).toMatchObject({
+				p_sender: "web@promo.example",
+				p_trash_existing: true,
+			}),
+		);
+
+		tab(main, "Trash");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Web-only newsletter");
+
+		tab(main, "Addresses");
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-blocked-sender")?.textContent).toBe("web@promo.example"),
+		);
+		button(main, "Unblock")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_unblock_sender").at(-1)).toMatchObject({
+				p_sender: "web@promo.example",
+			}),
+		);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-blocked")).toBeNull());
+	});
+
+	it("hides star, trash, unsubscribe, and block controls for viewers", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { starred: true })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				starred: true,
+				messages: [received(1)],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(912),
+					oneClick: true,
+					urls: ["https://promo.example/unsub"],
+				},
+			};
+		}, "viewer");
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(main.querySelector(".mailbox-star")).toBeNull();
+		expect(main.querySelector(".mailbox-row-tools")).toBeNull();
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-message")).not.toBeNull());
+		expect(main.querySelector(".mailbox-toolbar-actions")).toBeNull();
+		expect(button(main, "Move to Trash")).toBeUndefined();
+		expect(button(main, "Unsubscribe")).toBeUndefined();
+		expect(button(main, "Block sender")).toBeUndefined();
+	});
 });

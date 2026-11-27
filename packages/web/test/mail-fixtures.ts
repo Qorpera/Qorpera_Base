@@ -161,6 +161,7 @@ export interface MailFake {
 	reads: Record<string, Record<string, unknown>>;
 	/** Threads the call refuses with 22023. */
 	gone: Set<string>;
+	blockedSenders: { id: string; sender: string; matchKind: "address" | "domain"; createdAt: string }[];
 	/** What the Digital Post read answers; unset, the cloud has no such call. */
 	digitalPost?: Record<string, unknown>;
 	/** What a member's own send is refused with; unset, it is queued: a new email's thread is the newest, and an answer
@@ -178,11 +179,106 @@ export const older = (item: Record<string, unknown>, before: { lastAt: string; t
 
 /** The member mail read on the fixture's cloud. */
 export function mailFake(f: ReturnType<typeof fixture>): MailFake {
-	const fake: MailFake = { addresses: [], waiting: [], threads: [], reads: {}, gone: new Set(), calls: [] };
+	const fake: MailFake = {
+		addresses: [],
+		waiting: [],
+		threads: [],
+		reads: {},
+		gone: new Set(),
+		blockedSenders: [],
+		calls: [],
+	};
 	(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
 		fake.calls.push({ fn, args });
 		if (fn === "qorpera_member_mail_addresses") return fake.addresses;
 		if (fn === "qorpera_member_mail_waiting") return fake.waiting;
+		if (fn === "qorpera_member_mail_blocked_senders") return { senders: [...fake.blockedSenders] };
+		if (fn === "qorpera_member_mail_update_threads") {
+			const targets = new Set(args.p_threads as string[]);
+			const action = String(args.p_action);
+			const now = new Date().toISOString();
+			let updated = 0;
+			for (const item of fake.threads) {
+				if (!targets.has(String(item.thread))) continue;
+				updated += 1;
+				if (action === "star") item.starred = true;
+				else if (action === "unstar") delete item.starred;
+				else if (action === "trash") item.trashedAt = now;
+				else if (action === "restore") {
+					delete item.trashedAt;
+					delete item.archivedAt;
+				} else if (action === "archive") item.archivedAt = now;
+				else if (action === "unarchive") delete item.archivedAt;
+				const read = fake.reads[String(item.thread)];
+				if (read) {
+					if (action === "star") read.starred = true;
+					else if (action === "unstar") delete read.starred;
+					else if (action === "trash") read.trashedAt = now;
+					else if (action === "restore") {
+						delete read.trashedAt;
+						delete read.archivedAt;
+					} else if (action === "archive") read.archivedAt = now;
+					else if (action === "unarchive") delete read.archivedAt;
+				}
+			}
+			return { updated };
+		}
+		if (fn === "qorpera_member_mail_unsubscribe") {
+			const targetThread = String(args.p_thread);
+			const read = fake.reads[targetThread];
+			const info = read?.unsubscribe as
+				| { oneClick?: boolean; mailto?: string; webUrl?: string; urls?: string[] }
+				| undefined;
+			const method = info?.oneClick ? "one_click" : info?.mailto ? "mailto" : "browser";
+			const status = method === "browser" ? "browser_required" : "queued";
+			if (read && info) read.unsubscribe = { ...info, status, method };
+			return {
+				unsubscribeId: id(980),
+				thread: targetThread,
+				method,
+				status,
+				...(info?.webUrl ? { urls: [info.webUrl] } : {}),
+			};
+		}
+		if (fn === "qorpera_member_mail_block_sender") {
+			const sender = String(args.p_sender).trim().toLowerCase();
+			const matchKind = sender.startsWith("@") ? "domain" : "address";
+			if (!fake.blockedSenders.some((entry) => entry.sender === sender)) {
+				fake.blockedSenders.unshift({
+					id: id(970 + fake.blockedSenders.length),
+					sender,
+					matchKind,
+					createdAt: at(0),
+				});
+			}
+			const trashExisting = args.p_trash_existing !== false;
+			let trashed = 0;
+			for (const item of fake.threads) {
+				const from = String(item.fromAddress ?? "").toLowerCase();
+				const matched = matchKind === "domain" ? from.endsWith(sender) : from === sender;
+				if (!matched) continue;
+				if (trashExisting && !item.trashedAt) {
+					item.trashedAt = at(0);
+					trashed += 1;
+				}
+				const read = fake.reads[String(item.thread)];
+				if (read) read.senderBlocked = true;
+			}
+			return { sender, matchKind, trashed };
+		}
+		if (fn === "qorpera_member_mail_unblock_sender") {
+			const sender = String(args.p_sender).trim().toLowerCase();
+			const beforeCount = fake.blockedSenders.length;
+			fake.blockedSenders = fake.blockedSenders.filter((entry) => entry.sender !== sender);
+			for (const item of fake.threads) {
+				const from = String(item.fromAddress ?? "").toLowerCase();
+				if (from === sender || (sender.startsWith("@") && from.endsWith(sender))) {
+					const read = fake.reads[String(item.thread)];
+					if (read) delete read.senderBlocked;
+				}
+			}
+			return { sender, removed: fake.blockedSenders.length < beforeCount };
+		}
 		if (fn === "qorpera_member_digital_post") {
 			if (!fake.digitalPost)
 				throw new CloudRpcError(fn, { message: "Could not find the function", code: "PGRST202" }, 404);
@@ -193,12 +289,23 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 				state?: string;
 				address?: string;
 				direction?: string;
+				view?: string;
 				before?: { lastAt: string; thread: string };
 				limit: number;
 			};
 			const { before } = request;
+			const view = request.view ?? (request.direction ? "all" : "inbox");
+			const matchesView = (item: Record<string, unknown>) => {
+				if (view === "trash") return Boolean(item.trashedAt);
+				if (view === "starred") return item.starred === true && !item.trashedAt;
+				if (view === "archived") return Boolean(item.archivedAt) && !item.trashedAt;
+				if (view === "sent") return !item.trashedAt && item.direction === "sent";
+				if (view === "all") return !item.trashedAt;
+				return !item.trashedAt && !item.archivedAt;
+			};
 			const rows = fake.threads.filter(
 				(item) =>
+					matchesView(item) &&
 					(request.state === undefined || item.state === request.state) &&
 					(request.address === undefined || item.address === request.address) &&
 					(request.direction === undefined || item.direction === request.direction) &&
