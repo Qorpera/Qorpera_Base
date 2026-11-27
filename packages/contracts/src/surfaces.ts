@@ -14,12 +14,20 @@ export const SURFACE_SCHEMA_VERSION = "qorpera.surface/v1";
 
 export const SURFACE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SURFACE_OPTION_GROUP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SURFACE_REPOSITORY_OWNER_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/;
+export const SURFACE_REPOSITORY_NAME_PATTERN = /^[a-z0-9_](?:[a-z0-9_.-]{0,98}[a-z0-9_-])?$/;
+export const SURFACE_REPOSITORY_SUBPATH_SEGMENT_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+export const SURFACE_DEFAULT_BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
+export const SURFACE_MAX_REPOSITORY_SUBPATH_CHARS = 240;
+export const SURFACE_MAX_DEFAULT_BRANCH_CHARS = 128;
+export const SURFACE_SUPERSEDE_KEY_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,79}$/;
 export const SURFACE_MAX_TITLE_CHARS = 80;
 export const SURFACE_MAX_PROMPT_CHARS = 16_000;
 export const SURFACE_MAX_CHANGE_TITLE_CHARS = 160;
 export const SURFACE_MAX_CHANGE_SUMMARY_CHARS = 2_000;
 export const SURFACE_MAX_OPTION_GROUP_KEY_CHARS = 80;
 export const SURFACE_MAX_OPTION_GROUP_TITLE_CHARS = 160;
+export const SURFACE_MAX_SUPERSEDE_KEY_CHARS = 80;
 export const SURFACE_MAX_COMPARE_VARIANTS = 3;
 
 export const SURFACE_GROUPS = ["products", "operations"] as const;
@@ -280,6 +288,8 @@ export interface SurfaceSummary {
 	readonly icon: string;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string;
 	readonly folderRoot: string | null;
 	readonly siteSlug: string | null;
 	readonly previewMode: SurfacePreviewMode;
@@ -317,6 +327,7 @@ export interface SurfaceChangeUnit {
 	readonly status: SurfaceChangeStatus;
 	readonly optionGroupKey?: string | null;
 	readonly optionGroupTitle?: string | null;
+	readonly supersedeKey?: string | null;
 	readonly parentSha: string | null;
 	readonly headSha: string | null;
 	readonly dependsOnChangeIds: readonly string[];
@@ -353,6 +364,7 @@ export interface SurfaceSession {
 	readonly turnRequestedByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
+	readonly supersedeKey?: string | null;
 	readonly branchHeadSha?: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
@@ -613,6 +625,107 @@ export function parseStudioBinaryRef(value: unknown, label = "file"): StudioBina
 	};
 }
 
+export interface CompanyCodeRepositorySummary {
+	readonly repositoryKey: string;
+	readonly owner: string;
+	readonly name: string;
+	readonly mainSha: string | null;
+	readonly sourceBranch: string;
+	readonly sourceUrl: string | null;
+	readonly boundSurfaceSlugs: readonly string[];
+	readonly createdAt: string;
+	readonly updatedAt: string;
+}
+
+export function isSurfaceRepositoryKey(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const parts = value.toLowerCase().split("/");
+	if (parts.length !== 2) return false;
+	const [owner, name] = parts;
+	if (!owner || !name) return false;
+	if (!SURFACE_REPOSITORY_OWNER_PATTERN.test(owner) || !SURFACE_REPOSITORY_NAME_PATTERN.test(name)) return false;
+	return name !== "." && name !== ".." && !name.startsWith(".") && !name.endsWith(".git");
+}
+
+export function normalizeSurfaceRepositorySubpath(value: string | null | undefined): string | null {
+	if (value === null || value === undefined) return null;
+	const cleaned = value.trim().replace(/^\/+|\/+$/g, "");
+	if (!cleaned || cleaned === ".") return null;
+	return cleaned;
+}
+
+const UTF8_ENCODER = new TextEncoder();
+
+export function isSurfaceRepositorySubpath(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	if (value.length === 0 || UTF8_ENCODER.encode(value).byteLength > SURFACE_MAX_REPOSITORY_SUBPATH_CHARS) return false;
+	if (
+		value.startsWith("/") ||
+		value.endsWith("/") ||
+		value.includes("//") ||
+		value.includes("\\") ||
+		value.includes("\0")
+	)
+		return false;
+	const segments = value.split("/");
+	return segments.every(
+		(segment) =>
+			segment.length > 0 &&
+			segment !== "." &&
+			segment !== ".." &&
+			SURFACE_REPOSITORY_SUBPATH_SEGMENT_PATTERN.test(segment),
+	);
+}
+
+export function isSurfaceDefaultBranch(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	if (value.length === 0 || UTF8_ENCODER.encode(value).byteLength > SURFACE_MAX_DEFAULT_BRANCH_CHARS) return false;
+	const lower = value.toLowerCase();
+	if (lower === "qorpera" || lower.startsWith("qorpera/")) return false;
+	if (
+		!SURFACE_DEFAULT_BRANCH_PATTERN.test(value) ||
+		value.includes("..") ||
+		value.includes("//") ||
+		value.includes("@{")
+	)
+		return false;
+	if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;
+	return value
+		.split("/")
+		.every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".") && !part.endsWith(".lock"));
+}
+
+export function parseCompanyCodeRepositorySummary(
+	value: unknown,
+	label = "codeRepository",
+): CompanyCodeRepositorySummary {
+	const raw = parseRecord(value, label);
+	const repositoryKey = parseBoundedText(raw.repositoryKey, `${label}.repositoryKey`, 200);
+	if (!isSurfaceRepositoryKey(repositoryKey)) throw new WireValueError(`${label}.repositoryKey`);
+	const owner = parseBoundedText(raw.owner, `${label}.owner`, 64);
+	const name = parseBoundedText(raw.name, `${label}.name`, 128);
+	const sourceBranchRaw = parseOptionalText(
+		raw.sourceBranch,
+		`${label}.sourceBranch`,
+		SURFACE_MAX_DEFAULT_BRANCH_CHARS,
+	);
+	const sourceBranch = sourceBranchRaw && isSurfaceDefaultBranch(sourceBranchRaw) ? sourceBranchRaw : "main";
+	return {
+		repositoryKey,
+		owner,
+		name,
+		mainSha: parseOptionalText(raw.mainSha, `${label}.mainSha`, 64),
+		sourceBranch,
+		sourceUrl: parseOptionalText(raw.sourceUrl, `${label}.sourceUrl`, 512),
+		boundSurfaceSlugs:
+			raw.boundSurfaceSlugs === undefined
+				? []
+				: parseStringArray(raw.boundSurfaceSlugs, `${label}.boundSurfaceSlugs`, 64, 64),
+		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
+		updatedAt: parseTimestamp(raw.updatedAt, `${label}.updatedAt`).text,
+	};
+}
+
 export function isSurfaceSlug(value: unknown): value is string {
 	return typeof value === "string" && value.length >= 1 && value.length <= 64 && SURFACE_SLUG_PATTERN.test(value);
 }
@@ -623,6 +736,15 @@ export function isSurfaceOptionGroupKey(value: unknown): value is string {
 		value.length >= 1 &&
 		value.length <= SURFACE_MAX_OPTION_GROUP_KEY_CHARS &&
 		SURFACE_OPTION_GROUP_KEY_PATTERN.test(value)
+	);
+}
+
+export function isSurfaceSupersedeKey(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length >= 1 &&
+		value.length <= SURFACE_MAX_SUPERSEDE_KEY_CHARS &&
+		SURFACE_SUPERSEDE_KEY_PATTERN.test(value)
 	);
 }
 
@@ -696,6 +818,24 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 			? raw.publishAsk
 			: parseSurfacePublishAsk(raw.publishAsk, `${label}.publishAsk`);
 	const publishBeingFixed = parseOptionalFlag(raw.publishBeingFixed, `${label}.publishBeingFixed`);
+	const repositorySubpath =
+		raw.repositorySubpath === undefined
+			? undefined
+			: raw.repositorySubpath === null
+				? null
+				: isSurfaceRepositorySubpath(raw.repositorySubpath)
+					? raw.repositorySubpath
+					: (() => {
+							throw new WireValueError(`${label}.repositorySubpath`);
+						})();
+	const defaultBranch =
+		raw.defaultBranch === undefined || raw.defaultBranch === null
+			? undefined
+			: isSurfaceDefaultBranch(raw.defaultBranch)
+				? raw.defaultBranch
+				: (() => {
+						throw new WireValueError(`${label}.defaultBranch`);
+					})();
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		slug: parseSurfaceSlug(raw.slug, `${label}.slug`),
@@ -709,6 +849,8 @@ export function parseSurfaceSummary(value: unknown, label = "surface"): SurfaceS
 		icon: parseBoundedText(raw.icon, `${label}.icon`, 40),
 		sourceKind: parseEnum(raw.sourceKind, SURFACE_SOURCE_KINDS, `${label}.sourceKind`),
 		repositoryKey: parseOptionalText(raw.repositoryKey, `${label}.repositoryKey`, 200),
+		...(repositorySubpath !== undefined ? { repositorySubpath } : {}),
+		...(defaultBranch !== undefined ? { defaultBranch } : {}),
 		folderRoot: parseOptionalText(raw.folderRoot, `${label}.folderRoot`, 256),
 		siteSlug: parseOptionalText(raw.siteSlug, `${label}.siteSlug`, 64),
 		previewMode: parseEnum(raw.previewMode, SURFACE_PREVIEW_MODES, `${label}.previewMode`),
@@ -804,6 +946,16 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		raw.optionGroupTitle === undefined
 			? undefined
 			: parseOptionalText(raw.optionGroupTitle, `${label}.optionGroupTitle`, SURFACE_MAX_OPTION_GROUP_TITLE_CHARS);
+	const supersedeKey =
+		raw.supersedeKey === undefined
+			? undefined
+			: raw.supersedeKey === null
+				? null
+				: isSurfaceSupersedeKey(raw.supersedeKey)
+					? raw.supersedeKey
+					: (() => {
+							throw new WireValueError(`${label}.supersedeKey`);
+						})();
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
@@ -815,6 +967,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		status: parseEnum(raw.status, SURFACE_CHANGE_STATUSES, `${label}.status`),
 		...(optionGroupKey !== undefined ? { optionGroupKey } : {}),
 		...(optionGroupTitle !== undefined ? { optionGroupTitle } : {}),
+		...(supersedeKey !== undefined ? { supersedeKey } : {}),
 		parentSha: parseOptionalText(raw.parentSha, `${label}.parentSha`, 64),
 		headSha: parseOptionalText(raw.headSha, `${label}.headSha`, 64),
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),
@@ -905,6 +1058,16 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
 	const branchHeadSha =
 		raw.branchHeadSha === undefined ? undefined : parseOptionalText(raw.branchHeadSha, `${label}.branchHeadSha`, 64);
+	const supersedeKey =
+		raw.supersedeKey === undefined
+			? undefined
+			: raw.supersedeKey === null
+				? null
+				: isSurfaceSupersedeKey(raw.supersedeKey)
+					? raw.supersedeKey
+					: (() => {
+							throw new WireValueError(`${label}.supersedeKey`);
+						})();
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -918,6 +1081,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		...(turnRequestedByUserId !== undefined ? { turnRequestedByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
+		...(supersedeKey !== undefined ? { supersedeKey } : {}),
 		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
 		hasActiveChat: raw.hasActiveChat,
 		question,

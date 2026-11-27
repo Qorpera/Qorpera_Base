@@ -1,8 +1,13 @@
 import {
+	isSurfaceDefaultBranch,
 	isSurfaceOptionGroupKey,
+	isSurfaceRepositoryKey,
+	isSurfaceRepositorySubpath,
 	isSurfaceSlug,
+	isSurfaceSupersedeKey,
 	isUuid,
 	type JsonValue,
+	normalizeSurfaceRepositorySubpath,
 	parseBoundedText,
 	parseClosedRecord,
 	parseInteger,
@@ -25,6 +30,7 @@ import {
 	SURFACE_MAX_OPTION_GROUP_KEY_CHARS,
 	SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 	SURFACE_MAX_PROMPT_CHARS,
+	SURFACE_MAX_SUPERSEDE_KEY_CHARS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
 	SURFACE_PUBLISH_STATUSES,
@@ -33,6 +39,7 @@ import {
 	SURFACE_STATUSES,
 	type SurfaceArchetype,
 	type SurfaceAutomationStatus,
+	type SurfaceChangeDiffStats,
 	type SurfaceGroup,
 	type SurfaceKind,
 	type SurfacePreviewMode,
@@ -88,6 +95,8 @@ export interface SurfaceSenseEntry {
 	readonly isGlobal: boolean;
 	readonly sourceKind: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string;
 	readonly folderRoot: string | null;
 	readonly unpublishedChangeCount: number;
 	readonly publishStatus: SurfacePublishStatus;
@@ -149,10 +158,13 @@ export interface CodingRecordChangeRequest {
 	readonly commitSha: string;
 	readonly parentSha?: string | null;
 	readonly dependsOnChangeIds?: readonly string[] | null;
+	readonly affectedPaths?: readonly string[];
+	readonly diffStats?: SurfaceChangeDiffStats | null;
 	readonly changeId?: string | null;
 	readonly rebase?: boolean;
 	readonly optionGroup?: string | null;
 	readonly optionGroupTitle?: string | null;
+	readonly supersedeKey?: string | null;
 }
 
 export interface ProposeSurfaceRequest {
@@ -166,6 +178,8 @@ export interface ProposeSurfaceRequest {
 	readonly sourceKind: SurfaceSourceKind;
 	readonly icon: string;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot: string | null;
 	readonly previewMode: SurfacePreviewMode;
 	readonly briefSummary: string | null;
@@ -179,6 +193,7 @@ export interface StartSurfaceSessionToolRequest {
 	readonly explorationTitle: string | null;
 	readonly ownerLabel?: string | null;
 	readonly variantLabels?: readonly string[] | null;
+	readonly supersedeKey?: string | null;
 }
 
 export interface SteerSurfaceSessionRequest {
@@ -199,6 +214,7 @@ export interface StageSurfacePatchRequest {
 	readonly replaceAll?: boolean;
 	readonly optionGroup?: string | null;
 	readonly optionGroupTitle?: string | null;
+	readonly supersedeKey?: string | null;
 }
 
 export interface StageSurfaceOpsActionRequest {
@@ -208,6 +224,7 @@ export interface StageSurfaceOpsActionRequest {
 	readonly actionPayload: Readonly<Record<string, JsonValue>>;
 	readonly finishSession: boolean;
 	readonly changeId?: string | null;
+	readonly supersedeKey?: string | null;
 }
 
 export interface SurfaceChangeStagedResult {
@@ -565,6 +582,18 @@ function parseSurfaceCompanySenses(value: unknown, label = "surfaceSenses"): Sur
 			isGlobal: row.isGlobal,
 			sourceKind: parseWireEnum(row.sourceKind, SURFACE_SOURCE_KINDS, `${label}.surfaces[${index}].sourceKind`),
 			repositoryKey: parseOptionalWireText(row.repositoryKey, `${label}.surfaces[${index}].repositoryKey`, 200),
+			...(row.repositorySubpath !== undefined
+				? {
+						repositorySubpath: parseOptionalWireText(
+							row.repositorySubpath,
+							`${label}.surfaces[${index}].repositorySubpath`,
+							240,
+						),
+					}
+				: {}),
+			...(typeof row.defaultBranch === "string" && row.defaultBranch.trim()
+				? { defaultBranch: row.defaultBranch.trim() }
+				: {}),
 			folderRoot: parseOptionalWireText(row.folderRoot, `${label}.surfaces[${index}].folderRoot`, 256),
 			unpublishedChangeCount: parseInteger(
 				row.unpublishedChangeCount ?? 0,
@@ -672,14 +701,17 @@ export function createControlPlaneSurfaceToolsPort(
 								? null
 								: []
 							: [...request.dependsOnChangeIds],
-					p_affected_paths: [],
-					p_diff_stats: null,
+					p_affected_paths: request.affectedPaths ? [...request.affectedPaths] : [],
+					p_diff_stats: request.diffStats ?? null,
 					p_patch_manifest: request.rebase === true ? { rebase: true } : null,
 					p_finish_session: false,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 					...(request.optionGroup !== undefined ? { p_option_group_key: request.optionGroup } : {}),
 					...(request.optionGroupTitle !== undefined ? { p_option_group_title: request.optionGroupTitle } : {}),
 					...(request.changeId ? { p_change_id: request.changeId } : {}),
+					...(request.supersedeKey !== undefined && request.supersedeKey !== null
+						? { p_supersede_key: request.supersedeKey }
+						: {}),
 				},
 				context.signal,
 			);
@@ -705,6 +737,8 @@ export function createControlPlaneSurfaceToolsPort(
 					p_accent_hex: null,
 					p_is_global: request.isGlobal ?? false,
 					p_activate_immediately: request.activateImmediately ?? false,
+					...(request.repositorySubpath !== undefined ? { p_repository_subpath: request.repositorySubpath } : {}),
+					...(request.defaultBranch !== undefined ? { p_default_branch: request.defaultBranch } : {}),
 				},
 				context.signal,
 			);
@@ -732,6 +766,9 @@ export function createControlPlaneSurfaceToolsPort(
 					p_exploration_count: request.explorationCount,
 					p_exploration_title: request.explorationTitle,
 					p_variant_labels: request.variantLabels ? [...request.variantLabels] : null,
+					...(request.supersedeKey !== undefined && request.supersedeKey !== null
+						? { p_supersede_key: request.supersedeKey }
+						: {}),
 				},
 				context.signal,
 			);
@@ -795,6 +832,9 @@ export function createControlPlaneSurfaceToolsPort(
 					...(request.optionGroup !== undefined ? { p_option_group_key: request.optionGroup } : {}),
 					...(request.optionGroupTitle !== undefined ? { p_option_group_title: request.optionGroupTitle } : {}),
 					...(request.changeId ? { p_change_id: request.changeId } : {}),
+					...(request.supersedeKey !== undefined && request.supersedeKey !== null
+						? { p_supersede_key: request.supersedeKey }
+						: {}),
 				},
 				context.signal,
 			);
@@ -825,6 +865,9 @@ export function createControlPlaneSurfaceToolsPort(
 					p_finish_session: options.deferSessionCompletion ? false : request.finishSession,
 					...(options.leaseToken !== undefined ? { p_lease_token: options.leaseToken } : {}),
 					...(request.changeId ? { p_change_id: request.changeId } : {}),
+					...(request.supersedeKey !== undefined && request.supersedeKey !== null
+						? { p_supersede_key: request.supersedeKey }
+						: {}),
 				},
 				context.signal,
 			);
@@ -905,6 +948,24 @@ function parseOptionGroupArgs(raw: Record<string, unknown>): {
 	};
 }
 
+function parseSupersedeKeyArg(raw: Record<string, unknown>): string | undefined {
+	const rawKey = raw.supersedeKey;
+	if (rawKey === undefined || rawKey === null) return undefined;
+	if (typeof rawKey !== "string") {
+		throw new CloudToolArgumentRefusal(
+			`supersedeKey must be 1..${SURFACE_MAX_SUPERSEDE_KEY_CHARS} lower-case letters, digits, dots, colons, underscores, or hyphens`,
+		);
+	}
+	const normalized = rawKey.trim().toLowerCase();
+	if (!normalized) return undefined;
+	if (!isSurfaceSupersedeKey(normalized)) {
+		throw new CloudToolArgumentRefusal(
+			`supersedeKey must be 1..${SURFACE_MAX_SUPERSEDE_KEY_CHARS} lower-case letters, digits, dots, colons, underscores, or hyphens`,
+		);
+	}
+	return normalized;
+}
+
 export function createCodingRecordChangeTool(
 	sessionId: string,
 	port: Pick<CloudSurfaceToolsPort, "recordChange">,
@@ -967,6 +1028,12 @@ export function createCodingRecordChangeTool(
 					maxLength: SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 					description: "Optional plain founder-facing heading for the optionGroup multiple-choice block.",
 				},
+				supersedeKey: {
+					type: "string",
+					maxLength: SURFACE_MAX_SUPERSEDE_KEY_CHARS,
+					description:
+						"Optional stable lower-case key (e.g. 'github-sync') for recurring upkeep or sync updates; staging a new change with this key automatically supersedes earlier unapproved changes on the same Surface with the same key.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -984,6 +1051,7 @@ export function createCodingRecordChangeTool(
 						"rebase",
 						"optionGroup",
 						"optionGroupTitle",
+						"supersedeKey",
 					],
 				);
 			} catch (error) {
@@ -1013,6 +1081,7 @@ export function createCodingRecordChangeTool(
 				throw new CloudToolArgumentRefusal("dependsOnChangeIds must be an array of change UUIDs");
 			}
 			const groupArgs = parseOptionGroupArgs(raw);
+			const supersedeKey = parseSupersedeKeyArg(raw);
 			let explicitChangeId: string | null = null;
 			if (raw.changeId !== undefined && raw.changeId !== null) {
 				if (!isUuid(raw.changeId)) {
@@ -1071,6 +1140,7 @@ export function createCodingRecordChangeTool(
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
 				...(rebase ? { rebase: true } : {}),
 				...groupArgs,
+				...(supersedeKey !== undefined ? { supersedeKey } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
@@ -1136,7 +1206,23 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 					description: "Set true during Day-0 founding for 1-2 core product surfaces; omit or false to propose.",
 				},
 				sourceKind: { type: "string", enum: [...SURFACE_SOURCE_KINDS] },
-				repositoryKey: { type: "string", maxLength: 200 },
+				repositoryKey: {
+					type: "string",
+					maxLength: 200,
+					description:
+						"Qorpera repository owner/name to bind for code_repo surfaces (omit to create surfaces/<slug>, or pass an imported/existing repository key such as org/repo).",
+				},
+				repositorySubpath: {
+					type: "string",
+					maxLength: 240,
+					description:
+						"Optional relative subfolder inside a monorepo for code_repo surfaces (for example packages/web or apps/site).",
+				},
+				defaultBranch: {
+					type: "string",
+					maxLength: 128,
+					description: "Optional default branch name for code_repo surfaces (defaults to main).",
+				},
 				folderRoot: {
 					type: "string",
 					maxLength: 256,
@@ -1160,6 +1246,8 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 						"isGlobal",
 						"activateImmediately",
 						"repositoryKey",
+						"repositorySubpath",
+						"defaultBranch",
 						"folderRoot",
 						"previewMode",
 						"briefSummary",
@@ -1190,6 +1278,20 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 			const activateImmediately = parseBooleanArg(raw.activateImmediately, "activateImmediately", false);
 			const icon = figure ? `figure:${figure}` : "page";
 			const repositoryKey = parseOptionalBounded(raw.repositoryKey, "repositoryKey", 200);
+			if (repositoryKey !== null && !isSurfaceRepositoryKey(repositoryKey)) {
+				throw new CloudToolArgumentRefusal("repositoryKey must be a valid owner/name repository key");
+			}
+			const rawSubpath = parseOptionalBounded(raw.repositorySubpath, "repositorySubpath", 240);
+			const repositorySubpath = normalizeSurfaceRepositorySubpath(rawSubpath);
+			if (repositorySubpath !== null && !isSurfaceRepositorySubpath(repositorySubpath)) {
+				throw new CloudToolArgumentRefusal(
+					"repositorySubpath must be a relative subfolder path without leading slashes, dot segments, or hidden folders",
+				);
+			}
+			const defaultBranch = parseOptionalBounded(raw.defaultBranch, "defaultBranch", 128);
+			if (defaultBranch !== null && !isSurfaceDefaultBranch(defaultBranch)) {
+				throw new CloudToolArgumentRefusal("defaultBranch must be a valid Git branch name");
+			}
 			const rawFolderRoot = parseOptionalBounded(raw.folderRoot, "folderRoot", 256);
 			const folderRoot =
 				rawFolderRoot ??
@@ -1218,6 +1320,8 @@ export function createProposeSurfaceTool(port: Pick<CloudSurfaceToolsPort, "prop
 				sourceKind,
 				icon,
 				repositoryKey,
+				...(repositorySubpath !== null ? { repositorySubpath } : {}),
+				...(defaultBranch !== null ? { defaultBranch } : {}),
 				folderRoot,
 				previewMode,
 				briefSummary,
@@ -1269,6 +1373,12 @@ export function createStartSurfaceSessionTool(
 					items: { type: "string", minLength: 1, maxLength: MAX_VARIANT_LABEL_CHARS },
 					description: "Optional 2 to 3 custom labels for side-by-side exploration variants.",
 				},
+				supersedeKey: {
+					type: "string",
+					maxLength: SURFACE_MAX_SUPERSEDE_KEY_CHARS,
+					description:
+						"Optional stable lower-case key (e.g. 'github-sync') for recurring upkeep or sync sessions; changes staged by this session supersede earlier unapproved changes on the same Surface carrying the same key.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -1278,7 +1388,7 @@ export function createStartSurfaceSessionTool(
 					value,
 					"start_surface_session",
 					["surfaceId", "prompt"],
-					["title", "explorationCount", "explorationTitle", "ownerLabel", "variantLabels"],
+					["title", "explorationCount", "explorationTitle", "ownerLabel", "variantLabels", "supersedeKey"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -1293,6 +1403,7 @@ export function createStartSurfaceSessionTool(
 			const title = parseOptionalBounded(raw.title, "title", 160);
 			const explorationTitle = parseOptionalBounded(raw.explorationTitle, "explorationTitle", 160);
 			const ownerLabel = parseOptionalBounded(raw.ownerLabel, "ownerLabel", MAX_OWNER_LABEL_CHARS);
+			const supersedeKey = parseSupersedeKeyArg(raw);
 			let explorationCount: 2 | 3 | null = null;
 			if (raw.explorationCount !== undefined && raw.explorationCount !== null) {
 				if (raw.explorationCount !== 2 && raw.explorationCount !== 3) {
@@ -1333,6 +1444,7 @@ export function createStartSurfaceSessionTool(
 				explorationTitle,
 				ownerLabel,
 				variantLabels,
+				...(supersedeKey !== undefined ? { supersedeKey } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
@@ -1856,6 +1968,12 @@ export function createStageSurfacePatchTool(
 			maxLength: SURFACE_MAX_OPTION_GROUP_TITLE_CHARS,
 			description: "Optional plain founder-facing heading for the optionGroup multiple-choice block.",
 		},
+		supersedeKey: {
+			type: "string",
+			maxLength: SURFACE_MAX_SUPERSEDE_KEY_CHARS,
+			description:
+				"Optional stable lower-case key (e.g. 'daily-metrics-refresh') for recurring upkeep updates; staging a new change with this key automatically supersedes earlier unapproved changes on the same Surface with the same key.",
+		},
 	};
 	if (!options.deferSessionCompletion) {
 		schemaProperties.finishSession = {
@@ -1882,7 +2000,16 @@ export function createStageSurfacePatchTool(
 					value,
 					"stage_surface_patch",
 					["title", "summary", "ops"],
-					["notePaths", "finishSession", "changeId", "createNew", "replaceAll", "optionGroup", "optionGroupTitle"],
+					[
+						"notePaths",
+						"finishSession",
+						"changeId",
+						"createNew",
+						"replaceAll",
+						"optionGroup",
+						"optionGroupTitle",
+						"supersedeKey",
+					],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -1925,6 +2052,7 @@ export function createStageSurfacePatchTool(
 			const parsedFinishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
 			const finishSession = options.deferSessionCompletion ? false : parsedFinishSession;
 			const groupArgs = parseOptionGroupArgs(raw);
+			const supersedeKey = parseSupersedeKeyArg(raw);
 			let explicitChangeId: string | null = null;
 			if (raw.changeId !== undefined && raw.changeId !== null) {
 				if (!isUuid(raw.changeId)) {
@@ -1951,6 +2079,7 @@ export function createStageSurfacePatchTool(
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
 				...(replaceAll ? { replaceAll: true } : {}),
 				...groupArgs,
+				...(supersedeKey !== undefined ? { supersedeKey } : {}),
 			};
 		},
 		async prepare(parsed: JsonValue, context: CloudToolContext): Promise<JsonValue> {
@@ -2104,6 +2233,12 @@ export function createStageSurfaceOpsActionTool(
 					description:
 						"Set true when intentionally staging an additional separate action alongside existing open actions in this session.",
 				},
+				supersedeKey: {
+					type: "string",
+					maxLength: SURFACE_MAX_SUPERSEDE_KEY_CHARS,
+					description:
+						"Optional stable lower-case key for recurring upkeep actions; staging a new action with this key automatically supersedes earlier unapproved actions on the same Surface with the same key.",
+				},
 			},
 		},
 		parseArguments(value: JsonValue): JsonValue {
@@ -2113,7 +2248,7 @@ export function createStageSurfaceOpsActionTool(
 					value,
 					"stage_surface_ops_action",
 					["title", "summary", "actionKind", "actionPayload"],
-					["finishSession", "changeId", "createNew"],
+					["finishSession", "changeId", "createNew", "supersedeKey"],
 				);
 			} catch (error) {
 				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
@@ -2143,6 +2278,7 @@ export function createStageSurfaceOpsActionTool(
 				throw new CloudToolArgumentRefusal("actionPayload exceeds maximum size");
 			}
 			const finishSession = parseBooleanArg(raw.finishSession, "finishSession", false);
+			const supersedeKey = parseSupersedeKeyArg(raw);
 			let explicitChangeId: string | null = null;
 			if (raw.changeId !== undefined && raw.changeId !== null) {
 				if (!isUuid(raw.changeId)) {
@@ -2166,6 +2302,7 @@ export function createStageSurfaceOpsActionTool(
 				actionPayload: actionPayload as JsonValue,
 				finishSession,
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
+				...(supersedeKey !== undefined ? { supersedeKey } : {}),
 			};
 		},
 		async execute(argumentsValue: JsonValue, context: CloudToolContext) {

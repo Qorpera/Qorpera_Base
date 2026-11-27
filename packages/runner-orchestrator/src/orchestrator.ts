@@ -1538,6 +1538,14 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 			: input.leaseToken === null
 				? null
 				: responseUuid(input.leaseToken, "surface session lease token");
+	const repositorySubpath =
+		input.repositorySubpath === undefined
+			? undefined
+			: optionalResponseString(input.repositorySubpath, "surface repository subpath");
+	const defaultBranch =
+		input.defaultBranch === undefined
+			? undefined
+			: optionalResponseString(input.defaultBranch, "surface default branch");
 	return {
 		sessionId: responseUuid(input.sessionId, "surface session id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1547,6 +1555,8 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 		originKind: input.originKind,
 		originRef: input.originRef ?? null,
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(repositorySubpath !== undefined ? { repositorySubpath } : {}),
+		...(defaultBranch !== undefined ? { defaultBranch } : {}),
 		...(folderRoot !== undefined ? { folderRoot } : {}),
 		...(surfaceSlug !== undefined ? { surfaceSlug } : {}),
 		...(surfaceTitle !== undefined ? { surfaceTitle } : {}),
@@ -1627,6 +1637,14 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		input.reconciledCommitSha === undefined
 			? undefined
 			: optionalResponseString(input.reconciledCommitSha, "surface preview reconciled commit sha");
+	const repositorySubpath =
+		input.repositorySubpath === undefined
+			? undefined
+			: optionalResponseString(input.repositorySubpath, "surface preview repository subpath");
+	const defaultBranch =
+		input.defaultBranch === undefined
+			? undefined
+			: optionalResponseString(input.defaultBranch, "surface preview default branch");
 	return {
 		previewId: responseUuid(input.previewId, "surface preview id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1636,6 +1654,8 @@ function parseClaimedSurfacePreviewJob(value: unknown): ClaimedSurfacePreviewJob
 		baseSha: responseText(input.baseSha, "surface preview base sha", 64),
 		selectedChangeIds: input.selectedChangeIds.map((id) => responseUuid(id, "surface change id")),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(repositorySubpath !== undefined ? { repositorySubpath } : {}),
+		...(defaultBranch !== undefined ? { defaultBranch } : {}),
 		...(leaseToken !== undefined ? { leaseToken } : {}),
 		...(reconciledCommitSha !== undefined ? { reconciledCommitSha } : {}),
 		...(exploration !== undefined ? { exploration } : {}),
@@ -1844,6 +1864,14 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 				: Array.isArray(input.reconciledConflictPaths)
 					? input.reconciledConflictPaths.filter((p): p is string => typeof p === "string")
 					: undefined;
+	const repositorySubpath =
+		input.repositorySubpath === undefined
+			? undefined
+			: optionalResponseString(input.repositorySubpath, "surface merge repository subpath");
+	const defaultBranch =
+		input.defaultBranch === undefined
+			? undefined
+			: optionalResponseString(input.defaultBranch, "surface merge default branch");
 	return {
 		jobId: responseUuid(input.jobId, "surface merge job id"),
 		kind: input.kind,
@@ -1854,6 +1882,8 @@ function parseClaimedSurfaceMergeJob(value: unknown): ClaimedSurfaceMergeJob {
 		...(leaseToken !== undefined ? { leaseToken } : {}),
 		...(sourceKind !== undefined ? { sourceKind } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(repositorySubpath !== undefined ? { repositorySubpath } : {}),
+		...(defaultBranch !== undefined ? { defaultBranch } : {}),
 		folderRoot: optionalResponseString(input.folderRoot, "surface folder root"),
 		...(autoPublish !== undefined ? { autoPublish } : {}),
 		...(expectMainSha !== undefined ? { expectMainSha } : {}),
@@ -1903,6 +1933,14 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 	}
 	const liveHeadSha =
 		input.liveHeadSha === undefined ? undefined : optionalResponseString(input.liveHeadSha, "surface live head sha");
+	const repositorySubpath =
+		input.repositorySubpath === undefined
+			? undefined
+			: optionalResponseString(input.repositorySubpath, "surface publish repository subpath");
+	const defaultBranch =
+		input.defaultBranch === undefined
+			? undefined
+			: optionalResponseString(input.defaultBranch, "surface publish default branch");
 	return {
 		jobId: responseUuid(input.jobId, "surface publish job id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),
@@ -1912,6 +1950,8 @@ function parseClaimedSurfacePublishJob(value: unknown): ClaimedSurfacePublishJob
 		...(liveHeadSha !== undefined ? { liveHeadSha } : {}),
 		...(leaseToken !== undefined ? { leaseToken } : {}),
 		repositoryKey: optionalResponseString(input.repositoryKey, "surface repository key"),
+		...(repositorySubpath !== undefined ? { repositorySubpath } : {}),
+		...(defaultBranch !== undefined ? { defaultBranch } : {}),
 		siteId,
 		payload,
 	};

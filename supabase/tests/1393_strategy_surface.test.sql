@@ -27,9 +27,9 @@ begin
 	);
 
 	perform pg_temp.ss_assert(
-		not has_function_privilege('anon', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)', 'EXECUTE')
-		and not has_function_privilege('authenticated', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)', 'EXECUTE')
-		and has_function_privilege('service_role', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean)', 'EXECUTE'),
+		not has_function_privilege('anon', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean,text,text)', 'EXECUTE')
+		and not has_function_privilege('authenticated', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean,text,text)', 'EXECUTE')
+		and has_function_privilege('service_role', 'public.qorpera_propose_surface(uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,boolean,text,text)', 'EXECUTE'),
 		'preserves grants on qorpera_propose_surface'
 	);
 

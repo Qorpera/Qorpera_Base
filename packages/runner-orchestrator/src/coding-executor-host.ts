@@ -5491,6 +5491,8 @@ export class LxdCodingExecutorHost implements CodingExecutorHost {
 							baseSha: staged.baseSha,
 							headSha: staged.headSha,
 							filesChanged: staged.filesChanged,
+							...(staged.affectedPaths ? { affectedPaths: staged.affectedPaths } : {}),
+							...(staged.diffStats ? { diffStats: staged.diffStats } : {}),
 						},
 					};
 				}

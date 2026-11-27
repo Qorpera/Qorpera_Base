@@ -7,6 +7,7 @@ import { describeSurfaceBlocks, type JsonValue, starterSurfaceLayout } from "@qo
 import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
+import { decodeChangeDiffOutput, parseGitNumstatZ } from "../src/cloud-coding-preflight-land.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import { CloudControlRpcRefused } from "../src/cloud-control-errors.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
@@ -39,6 +40,7 @@ import {
 	createSteerSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
 import {
+	buildCompanyInterfacesSection,
 	buildSurfaceTurnBrief,
 	parseSurfaceTurnOpenChanges,
 	parseSurfaceTurnResolvedChanges,
@@ -4488,5 +4490,194 @@ describe("cloud surface runtime tools", () => {
 		expect(() => tool.parseArguments({ sessionId: "not-a-uuid", message: "Hi" })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "   " })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "Hi", changeId: "bad" })).toThrow();
+	});
+
+	it("threads repositorySubpath and defaultBranch through propose_surface, turn briefs, and Company Interfaces", async () => {
+		const proposeSurface = vi.fn().mockResolvedValue({
+			id: randomUUID(),
+			slug: "web-app",
+			title: "Web App",
+			status: "active",
+			archetype: "live_build",
+			sourceKind: "code_repo",
+		});
+		const tool = createProposeSurfaceTool({ proposeSurface });
+		const parsed = tool.parseArguments({
+			slug: "web-app",
+			title: "Web App",
+			group: "products",
+			archetype: "live_build",
+			sourceKind: "code_repo",
+			kind: "web_app",
+			repositoryKey: "qorpera/qorpera_base",
+			repositorySubpath: "/packages/web/",
+			defaultBranch: "master",
+		});
+		await tool.execute(parsed, toolContext());
+		expect(proposeSurface).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({
+				repositoryKey: "qorpera/qorpera_base",
+				repositorySubpath: "packages/web",
+				defaultBranch: "master",
+			}),
+			expect.any(Object),
+		);
+		expect(() =>
+			tool.parseArguments({
+				slug: "bad-sub",
+				title: "Bad Sub",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				repositorySubpath: "../escape",
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				slug: "bad-branch",
+				title: "Bad Branch",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				defaultBranch: "bad..branch",
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				slug: "reserved-branch",
+				title: "Reserved Branch",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				defaultBranch: "qorpera/coding/abc",
+			}),
+		).toThrow();
+
+		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			briefMarkdown: null,
+			surfaceSlug: "web-app",
+			surfaceTitle: "Web App",
+			sourceKind: "code_repo",
+			repositoryKey: "qorpera/qorpera_base",
+			repositorySubpath: "packages/web",
+			defaultBranch: "master",
+		});
+		expect(brief).toContain("qorpera/qorpera_base");
+		expect(brief).toContain("packages/web");
+		expect(brief).toContain("Upstream branch: master (local changes land on main)");
+
+		const section = buildCompanyInterfacesSection({
+			interfaces: [
+				{
+					slug: "web-app",
+					title: "Web App",
+					kind: "web_app",
+					archetype: "live_build",
+					sourceKind: "code_repo",
+					repositoryKey: "qorpera/qorpera_base",
+					repositorySubpath: "packages/web",
+					defaultBranch: "master",
+					folderRoot: null,
+					briefSummary: "Main web application",
+					isGlobal: false,
+				},
+			],
+		});
+		expect(section).toContain("qorpera/qorpera_base");
+		expect(section).toContain("packages/web");
+		expect(section).toContain("master");
+	});
+
+	it("forwards supersedeKey, affectedPaths, and diffStats across Surface tools and parses git numstat output", async () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				if (method === "qorpera_native_surface_start_session") {
+					return { sessionId, explorationId: null };
+				}
+				return { changeId, seq: 1, openChangeCount: 1 };
+			},
+		});
+
+		const startTool = createStartSurfaceSessionTool(port);
+		const startParsed = startTool.parseArguments({
+			surfaceId,
+			prompt: "Refresh from upstream main",
+			title: "Sync upstream",
+			supersedeKey: "GitHub-Sync",
+		});
+		await startTool.execute(startParsed, toolContext());
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_native_surface_start_session",
+			args: { p_supersede_key: "github-sync" },
+		});
+		expect(() => startTool.parseArguments({ surfaceId, prompt: "Bad key", supersedeKey: "bad key!" })).toThrow();
+
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Sync commit",
+				summary: "Updated app source.",
+				parentSha: "1".repeat(40),
+				commitSha: "2".repeat(40),
+				affectedPaths: ["src/app.tsx", "src/nav.tsx"],
+				diffStats: { filesChanged: 2, additions: 14, deletions: 3 },
+				supersedeKey: "github-sync",
+			},
+			toolContext(),
+		);
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_affected_paths: ["src/app.tsx", "src/nav.tsx"],
+				p_diff_stats: { filesChanged: 2, additions: 14, deletions: 3 },
+				p_supersede_key: "github-sync",
+			},
+		});
+
+		const patchTool = createStageSurfacePatchTool(sessionId, port);
+		const patchParsed = patchTool.parseArguments({
+			title: "Refresh metrics",
+			summary: "Updated KPIs.",
+			ops: [{ op: "write_text", path: "metrics.json", content: "{}" }],
+			supersedeKey: "daily-metrics",
+		});
+		await patchTool.execute(patchParsed, toolContext());
+		expect(calls[2]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: { p_supersede_key: "daily-metrics" },
+		});
+
+		const rawNumstat = "12\t3\tsrc/app.tsx\x00-\t-\tassets/logo.png\x004\t1\tdir/file\twith\ttab.ts\x00";
+		expect(parseGitNumstatZ(rawNumstat)).toEqual({
+			affectedPaths: ["src/app.tsx", "assets/logo.png", "dir/file\twith\ttab.ts"],
+			diffStats: { filesChanged: 3, additions: 16, deletions: 4 },
+		});
+		expect(parseGitNumstatZ("")).toEqual({
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		});
+		const overCap = Array.from({ length: 505 }, (_, i) => `1\t0\tf-${i}.ts`).join("\0");
+		const capped = parseGitNumstatZ(overCap);
+		expect(capped?.affectedPaths).toHaveLength(500);
+		expect(capped?.diffStats).toEqual({ filesChanged: 505, additions: 505, deletions: 0 });
+
+		const encoded = Buffer.from(rawNumstat, "utf8").toString("base64");
+		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded}:__QORPERA_CHANGE_DIFF_END__\n`)).toEqual({
+			affectedPaths: ["src/app.tsx", "assets/logo.png", "dir/file\twith\ttab.ts"],
+			diffStats: { filesChanged: 3, additions: 16, deletions: 4 },
+		});
+		expect(decodeChangeDiffOutput("__QORPERA_CHANGE_DIFF_V1__::__QORPERA_CHANGE_DIFF_END__\n")).toEqual({
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		});
+		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded.slice(0, 12)}`)).toBeNull();
+		expect(decodeChangeDiffOutput("__QORPERA_CHANGE_DIFF_V1__:not*base64:__QORPERA_CHANGE_DIFF_END__\n")).toBeNull();
 	});
 });

@@ -121,10 +121,15 @@ export type SurfaceAppSourceExport = (
 	},
 ) => Promise<{ sourceDir: string; cleanup?: () => Promise<void> }>;
 
+export type SurfaceSiteTreeRead = (
+	job: CodeHostJob,
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
+) => Promise<{ files: readonly CodeSiteTreeFile[]; manifestSha256: string }>;
+
 export interface SurfaceCodeHostWorkerOptions {
 	readonly control: SurfaceCodeHostControl;
 	readonly hosts: Pick<CodeHostJobs, "run">;
-	readonly readTree?: CodeSiteTreeRead;
+	readonly readTree?: SurfaceSiteTreeRead;
 	readonly readBuiltTree?: CodeSiteTreeRead;
 	readonly readPlan?: SurfacePreviewPlanRead;
 	readonly exportSource?: SurfaceAppSourceExport;
@@ -143,7 +148,7 @@ export interface SurfaceCodeHostWorkerOptions {
 
 export type SurfacePreviewPlanRead = (
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ) => Promise<SurfacePreviewPlan>;
 
 type SurfaceBuildAnswer =
@@ -947,7 +952,7 @@ function isUnseededAreaRefusal(error: unknown): boolean {
 export class SurfaceCodeHostWorker {
 	readonly #control: SurfaceCodeHostControl;
 	readonly #hosts: Pick<CodeHostJobs, "run">;
-	readonly #readTree: CodeSiteTreeRead;
+	readonly #readTree: SurfaceSiteTreeRead;
 	readonly #readBuiltTree: CodeSiteTreeRead;
 	readonly #readPlan: SurfacePreviewPlanRead;
 	readonly #exportSource: SurfaceAppSourceExport;
@@ -1338,6 +1343,8 @@ export class SurfaceCodeHostWorker {
 			preview.profileId,
 			environmentId,
 			preview.repositoryKey,
+			preview.repositorySubpath ?? null,
+			preview.defaultBranch ?? null,
 			baseSha,
 			preview.reconciledCommitSha ?? null,
 			preview.exploration
@@ -2219,13 +2226,18 @@ export class SurfaceCodeHostWorker {
 		const planCacheKey = this.#previewPlanKey(preview, environmentId, baseSha);
 		const cachedBuildPlan = this.#getCachedPreviewPlan(planCacheKey);
 		const area = codeAreaPath(repository);
+		const subpathArg = preview.repositorySubpath ? { subpath: preview.repositorySubpath } : {};
 		const readPlanAndTree = async (
 			preparedJob: CodeHostJob,
 			compositeCommitSha: string,
 			compositeTreeSha: string,
 		): Promise<PreparedPreview> => {
 			if (this.#useCombinedPlanAndTree) {
-				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: compositeTreeSha });
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, {
+					repository,
+					tree: compositeTreeSha,
+					...subpathArg,
+				});
 				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
 				if (combined.kind === "app") {
 					const sharedAssets =
@@ -2258,12 +2270,12 @@ export class SurfaceCodeHostWorker {
 					sharedAssets,
 				};
 			}
-			const plan = await this.#readPlan(preparedJob, { repository, tree: compositeTreeSha });
+			const plan = await this.#readPlan(preparedJob, { repository, tree: compositeTreeSha, ...subpathArg });
 			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
 			if (plan.kind === "app") {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
-						const treeData = await this.#readTree(preparedJob, { repository, tree: compositeTreeSha });
+						const treeData = await this.#readTree(preparedJob, { repository, tree: compositeTreeSha, ...subpathArg });
 						const sharedAssets = await readSharedIdentityAssets(
 							preparedJob,
 							preparedJob.signal,
@@ -2300,6 +2312,7 @@ export class SurfaceCodeHostWorker {
 			const treeData = await this.#readTree(preparedJob, {
 				repository,
 				tree: compositeTreeSha,
+				...subpathArg,
 			});
 			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
 			return {
@@ -2753,6 +2766,7 @@ export class SurfaceCodeHostWorker {
 		};
 		const productFolderRoots = await this.#resolveProductFolderRoots(pub.profileId, signal);
 		const area = codeAreaPath(repository);
+		const pubSubpathArg = pub.repositorySubpath ? { subpath: pub.repositorySubpath } : {};
 		const readPublish = async (codeHostJob: CodeHostJob, seedFirst: boolean): Promise<PreparedPublish> => {
 			if (seedFirst) {
 				await prepareSurfaceRepository(codeHostJob, { repository, slug: repository.name });
@@ -2763,7 +2777,11 @@ export class SurfaceCodeHostWorker {
 			});
 			const preparedJob: CodeHostJob = { ...codeHostJob, preparedKeptArea: area };
 			if (this.#useCombinedPlanAndTree) {
-				const combined = await readSurfacePreviewPlanAndTree(preparedJob, { repository, tree: resolved.treeSha });
+				const combined = await readSurfacePreviewPlanAndTree(preparedJob, {
+					repository,
+					tree: resolved.treeSha,
+					...pubSubpathArg,
+				});
 				if (combined.kind === "invalid") return { status: "invalid", detail: combined.detail };
 				if (combined.kind === "app") {
 					const sharedAssets =
@@ -2796,12 +2814,12 @@ export class SurfaceCodeHostWorker {
 					sharedAssets,
 				};
 			}
-			const plan = await this.#readPlan(preparedJob, { repository, tree: resolved.treeSha });
+			const plan = await this.#readPlan(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
 			if (plan.kind === "invalid") return { status: "invalid", detail: plan.detail };
 			if (plan.kind === "app") {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
-						const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha });
+						const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
 						const sharedAssets = await readSharedIdentityAssets(
 							preparedJob,
 							preparedJob.signal,
@@ -2835,7 +2853,7 @@ export class SurfaceCodeHostWorker {
 			}
 			if (plan.kind === "build")
 				return { status: "build", headSha: resolved.headSha, treeSha: resolved.treeSha, recipe: plan.recipe };
-			const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha });
+			const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha, ...pubSubpathArg });
 			const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
 			return {
 				status: "ready",

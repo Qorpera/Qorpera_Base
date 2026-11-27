@@ -28,6 +28,8 @@ export interface ClaimedSurfaceSessionJob {
 	readonly originKind: string;
 	readonly originRef: unknown;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot?: string | null;
 	readonly surfaceSlug?: string;
 	readonly surfaceTitle?: string;
@@ -69,6 +71,8 @@ export interface ClaimedSurfacePreviewJob {
 	readonly baseSha: string;
 	readonly selectedChangeIds: readonly string[];
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly leaseToken?: string | null;
 	readonly reconciledCommitSha?: string | null;
 	readonly exploration?: ClaimedSurfacePreviewExploration | null;
@@ -104,6 +108,8 @@ export interface ClaimedSurfaceMergeJob {
 	readonly leaseToken?: string | null;
 	readonly sourceKind?: SurfaceSourceKind;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot: string | null;
 	readonly autoPublish?: boolean;
 	readonly expectMainSha?: string | null;
@@ -135,6 +141,8 @@ export interface ClaimedSurfacePublishJob {
 	readonly liveHeadSha?: string | null;
 	readonly leaseToken?: string | null;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly siteId: string | null;
 	readonly payload: Readonly<Record<string, unknown>>;
 }

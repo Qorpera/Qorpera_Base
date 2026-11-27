@@ -26,6 +26,10 @@ import {
 export const MAIL_THREAD_ID = /^[A-Za-z0-9_-]{43}$/;
 export const MAIL_PAGE_SIZE = 50;
 export const MAIL_DIRECTIONS = ["received", "sent"] as const;
+export const MAIL_THREAD_VIEWS = ["inbox", "starred", "trash", "archived", "sent", "all"] as const;
+export type MailThreadView = (typeof MAIL_THREAD_VIEWS)[number];
+export const MAIL_THREAD_ACTIONS = ["star", "unstar", "trash", "restore", "archive", "unarchive"] as const;
+export type MailThreadAction = (typeof MAIL_THREAD_ACTIONS)[number];
 export type MailThreadState = "new" | "handled" | "waiting";
 const MAIL_THREAD_STATES = ["new", "handled", "waiting"] as const;
 
@@ -124,6 +128,7 @@ export interface MailThreadRequest {
 	readonly state?: MailThreadState;
 	/** Only the threads whose newest message went this way: the `direction` each one shows. */
 	readonly direction?: MailDirection;
+	readonly view?: MailThreadView;
 	readonly before?: MailCursor;
 	readonly limit?: number;
 }
@@ -143,10 +148,43 @@ export interface MailThreadSummary {
 	readonly sentBy?: MailMember;
 	readonly unread: boolean;
 	readonly messages: number;
+	readonly starred?: boolean;
+	readonly archivedAt?: string;
+	readonly trashedAt?: string;
+	readonly canUnsubscribe?: boolean;
 	readonly account?: MailAccount;
 	/** The start of the newest message's text on one line (at most 200 characters), while its text is kept; never for
 	 * account mail. Absent before migration 20260930522000. */
 	readonly snippet?: string;
+}
+
+export interface MailThreadUnsubscribe {
+	readonly deliveryId?: string;
+	readonly oneClick: boolean;
+	readonly mailto?: string;
+	readonly webUrl?: string;
+	readonly urls: readonly string[];
+	readonly status?: "queued" | "succeeded" | "failed" | "browser_required";
+	readonly method?: "one_click" | "mailto" | "browser";
+	readonly requestedAt?: string;
+	readonly lastError?: string;
+}
+
+export interface MailUnsubscribeOutcome {
+	readonly unsubscribeId?: string;
+	readonly thread: string;
+	readonly method: "one_click" | "mailto" | "browser";
+	readonly status: "queued" | "succeeded" | "failed" | "browser_required";
+	readonly url?: string;
+	readonly to?: string;
+	readonly urls?: readonly string[];
+}
+
+export interface MailBlockedSender {
+	readonly id: string;
+	readonly sender: string;
+	readonly matchKind: "address" | "domain";
+	readonly createdAt: string;
 }
 
 export interface MailThreadPage {
@@ -241,6 +279,11 @@ export interface MailThread {
 	/** Absent while the company's mail is off. */
 	readonly thread?: string;
 	readonly address?: string;
+	readonly starred?: boolean;
+	readonly archivedAt?: string;
+	readonly trashedAt?: string;
+	readonly senderBlocked?: boolean;
+	readonly unsubscribe?: MailThreadUnsubscribe;
 	/** Oldest first: the newest 50, or the 50 before a cursor. */
 	readonly messages: readonly MailMessage[];
 	/** The thread has older messages than these. */
@@ -396,11 +439,69 @@ function parseMessageCursor(value: unknown): MailMessageCursor {
 	};
 }
 
+function safeWebUrl(value: unknown): string | undefined {
+	if (typeof value !== "string" || !value.trim() || value.length > 2048) return undefined;
+	try {
+		const parsed = new URL(value.trim());
+		if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return undefined;
+		return parsed.href;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseThreadUnsubscribe(value: unknown): MailThreadUnsubscribe | undefined {
+	if (absent(value) || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const item = value as Record<string, unknown>;
+	const urls = Array.isArray(item.urls)
+		? item.urls.flatMap((entry) => {
+				const safe = safeWebUrl(entry);
+				return safe ? [safe] : [];
+			})
+		: [];
+	const webUrl = safeWebUrl(item.webUrl) ?? urls[0];
+	const mailto = shownText(item.mailto, 320);
+	const oneClick = item.oneClick === true;
+	if (!oneClick && !mailto && !webUrl) return undefined;
+	const status: MailThreadUnsubscribe["status"] =
+		item.status === "queued" ||
+		item.status === "succeeded" ||
+		item.status === "failed" ||
+		item.status === "browser_required"
+			? item.status
+			: undefined;
+	const method: MailThreadUnsubscribe["method"] =
+		item.method === "one_click" || item.method === "mailto" || item.method === "browser" ? item.method : undefined;
+	return {
+		...optional("deliveryId", shownText(item.deliveryId, 128)),
+		oneClick,
+		...optional("mailto", mailto),
+		...optional("webUrl", webUrl),
+		urls,
+		...optional("status", status),
+		...optional("method", method),
+		...optional("requestedAt", shownText(item.requestedAt, 64)),
+		...optional("lastError", shownText(item.lastError, 500)),
+	};
+}
+
+function parseBlockedSender(value: unknown): MailBlockedSender {
+	const item = cloudRecord(value, "mail blocked sender");
+	return {
+		id: cloudUuid(item.id, "mail blocked sender id"),
+		sender: nonEmptyString(item.sender, "mail blocked sender", 320),
+		matchKind: oneOf(item.matchKind, ["address", "domain"] as const, "mail blocked sender kind"),
+		createdAt: timestamp(item.createdAt, "mail blocked sender time"),
+	};
+}
+
 function parseSummary(value: unknown): MailThreadSummary {
 	const item = cloudRecord(value, "mail thread");
 	const found = account(item.account);
 	const handledBy = agent(item.handledBy, "mail thread agent");
 	const sentBy = member(item.sentBy, "mail thread member");
+	const archivedAt = absent(item.archivedAt) ? undefined : timestamp(item.archivedAt, "mail thread archived");
+	const trashedAt = absent(item.trashedAt) ? undefined : timestamp(item.trashedAt, "mail thread trashed");
 	return {
 		thread: threadId(item.thread, "mail thread"),
 		address: nonEmptyString(item.address, "mail thread address", 320),
@@ -415,6 +516,10 @@ function parseSummary(value: unknown): MailThreadSummary {
 		...(sentBy ? { sentBy } : {}),
 		unread: flag(item.unread, "mail thread unread"),
 		messages: absent(item.messages) ? 0 : boundedInteger(item.messages, "mail count", 0, Number.MAX_SAFE_INTEGER),
+		...(item.starred === true ? { starred: true } : {}),
+		...(archivedAt ? { archivedAt } : {}),
+		...(trashedAt ? { trashedAt } : {}),
+		...(!found && item.canUnsubscribe === true ? { canUnsubscribe: true } : {}),
 		...(found ? { account: found } : optional("snippet", shownText(item.snippet, 200))),
 	};
 }
@@ -564,6 +669,7 @@ export async function readMailThreads(
 			...(request.address === undefined ? {} : { address: request.address }),
 			...(request.state === undefined ? {} : { state: request.state }),
 			...(request.direction === undefined ? {} : { direction: request.direction }),
+			...(request.view === undefined ? {} : { view: request.view }),
 			...(request.before === undefined ? {} : { before: request.before }),
 			limit: request.limit ?? MAIL_PAGE_SIZE,
 		},
@@ -601,9 +707,17 @@ export async function readMailThread(
 		"mail thread",
 	);
 	const more = flag(answer.more, "mail thread more");
+	const archivedAt = absent(answer.archivedAt) ? undefined : timestamp(answer.archivedAt, "mail thread archived");
+	const trashedAt = absent(answer.trashedAt) ? undefined : timestamp(answer.trashedAt, "mail thread trashed");
+	const unsubscribe = parseThreadUnsubscribe(answer.unsubscribe);
 	return {
 		...(absent(answer.thread) ? {} : { thread: threadId(answer.thread, "mail thread") }),
 		...optional("address", shownText(answer.address, 320)),
+		...(answer.starred === true ? { starred: true } : {}),
+		...(archivedAt ? { archivedAt } : {}),
+		...(trashedAt ? { trashedAt } : {}),
+		...(answer.senderBlocked === true ? { senderBlocked: true } : {}),
+		...(unsubscribe ? { unsubscribe } : {}),
 		messages: array(answer.messages, "mail messages").map(parseMessage),
 		more,
 		...(more && !absent(answer.nextBefore) ? { nextBefore: parseMessageCursor(answer.nextBefore) } : {}),
@@ -674,5 +788,141 @@ export async function sendMemberMail(
 		mailId: cloudUuid(answer.mailId, "mail send"),
 		thread: threadId(answer.thread, "mail send thread"),
 		status: shownText(answer.status, 64) ?? "queued",
+	};
+}
+
+export async function updateMailThreads(
+	cloud: Cloud,
+	environmentId: string,
+	threads: readonly string[],
+	action: MailThreadAction,
+	signal?: AbortSignal,
+): Promise<{ readonly updated: number }> {
+	const args = {
+		p_environment_id: environmentId,
+		p_threads: [...threads],
+		p_action: action,
+	};
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_member_mail_update_threads", args, signal)
+			: cloud.rpc("qorpera_member_mail_update_threads", args)),
+		"mail thread update",
+	);
+	return { updated: absent(answer.updatedCount) ? 0 : count(answer.updatedCount, "mail thread update count") };
+}
+
+export async function unsubscribeMailThread(
+	cloud: Cloud,
+	environmentId: string,
+	thread: string,
+	deliveryId?: string,
+	signal?: AbortSignal,
+): Promise<MailUnsubscribeOutcome> {
+	const args = {
+		p_environment_id: environmentId,
+		p_thread: thread,
+		...(deliveryId ? { p_delivery_id: deliveryId } : {}),
+	};
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_member_mail_unsubscribe", args, signal)
+			: cloud.rpc("qorpera_member_mail_unsubscribe", args)),
+		"mail unsubscribe",
+	);
+	const urls = Array.isArray(answer.urls)
+		? answer.urls.flatMap((entry) => {
+				const safe = safeWebUrl(entry);
+				return safe ? [safe] : [];
+			})
+		: undefined;
+	return {
+		...(absent(answer.unsubscribeId)
+			? {}
+			: { unsubscribeId: cloudUuid(answer.unsubscribeId, "mail unsubscribe id") }),
+		thread: threadId(answer.thread, "mail unsubscribe thread"),
+		method: oneOf(answer.method, ["one_click", "mailto", "browser"] as const, "mail unsubscribe method"),
+		status: oneOf(
+			answer.status,
+			["queued", "succeeded", "failed", "browser_required"] as const,
+			"mail unsubscribe status",
+		),
+		...optional("url", safeWebUrl(answer.url)),
+		...optional("to", shownText(answer.to, 320)),
+		...(urls?.length ? { urls } : {}),
+	};
+}
+
+export async function readMailBlockedSenders(
+	cloud: Cloud,
+	environmentId: string,
+	signal?: AbortSignal,
+): Promise<MailBlockedSender[]> {
+	const args = { p_environment_id: environmentId };
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_member_mail_blocked_senders", args, signal)
+			: cloud.rpc("qorpera_member_mail_blocked_senders", args)),
+		"mail blocked senders",
+	);
+	return array(answer.senders, "mail blocked senders").map(parseBlockedSender);
+}
+
+export async function blockMailSender(
+	cloud: Cloud,
+	environmentId: string,
+	sender: string,
+	trashExisting = true,
+	signal?: AbortSignal,
+): Promise<{
+	readonly sender: string;
+	readonly trashedCount: number;
+	readonly trashedThreads: readonly string[];
+	readonly trashedArchivedThreads: readonly string[];
+}> {
+	const args = {
+		p_environment_id: environmentId,
+		p_sender: sender,
+		p_trash_existing: trashExisting,
+	};
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_member_mail_block_sender", args, signal)
+			: cloud.rpc("qorpera_member_mail_block_sender", args)),
+		"mail block sender",
+	);
+	const trashedThreads = Array.isArray(answer.trashedThreads)
+		? answer.trashedThreads.map((entry) => threadId(entry, "mail blocked trashed thread"))
+		: [];
+	const trashedArchivedThreads = Array.isArray(answer.trashedArchivedThreads)
+		? answer.trashedArchivedThreads.map((entry) => threadId(entry, "mail blocked archived thread"))
+		: [];
+	return {
+		sender: nonEmptyString(answer.sender, "mail blocked sender", 320),
+		trashedCount: absent(answer.trashedCount) ? 0 : count(answer.trashedCount, "mail blocked trashed"),
+		trashedThreads,
+		trashedArchivedThreads,
+	};
+}
+
+export async function unblockMailSender(
+	cloud: Cloud,
+	environmentId: string,
+	sender: string,
+	signal?: AbortSignal,
+): Promise<{ readonly sender: string; readonly removed: boolean }> {
+	const args = {
+		p_environment_id: environmentId,
+		p_sender: sender,
+	};
+	const answer = cloudRecord(
+		await (signal
+			? cloud.rpc("qorpera_member_mail_unblock_sender", args, signal)
+			: cloud.rpc("qorpera_member_mail_unblock_sender", args)),
+		"mail unblock sender",
+	);
+	return {
+		sender: nonEmptyString(answer.sender, "mail unblocked sender", 320),
+		removed: answer.removed === true,
 	};
 }

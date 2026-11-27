@@ -140,6 +140,8 @@ export interface SurfaceSessionTurnInput {
 	readonly state?: "queued" | "reconciling";
 	readonly isInternal?: boolean;
 	readonly repositoryKey?: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot?: string | null;
 	readonly productFolderRoots?: readonly string[];
 	readonly briefSummary?: string | null;
@@ -312,6 +314,8 @@ export interface SurfaceSessionDeliveryJob {
 	readonly originKind?: string;
 	readonly originRef?: unknown;
 	readonly repositoryKey?: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot?: string | null;
 	readonly productFolderRoots?: readonly string[];
 	readonly surfaceSlug?: string;
@@ -1133,6 +1137,8 @@ export async function runSurfaceSessionTurn(
 			companyInterfaces: input.companyInterfaces ?? null,
 			briefMarkdown,
 			repositoryKey: input.repositoryKey ?? null,
+			...(input.repositorySubpath !== undefined ? { repositorySubpath: input.repositorySubpath } : {}),
+			...(input.defaultBranch !== undefined ? { defaultBranch: input.defaultBranch } : {}),
 			folderRoot: normalizedFolderRoot,
 			explorationVariantLabel: input.explorationVariantLabel ?? null,
 			identityContext,
@@ -1388,6 +1394,8 @@ export async function runSurfaceSessionTurn(
 				isInternalReconciliation,
 				briefMarkdown,
 				repositoryKey: input.repositoryKey ?? null,
+				...(input.repositorySubpath !== undefined ? { repositorySubpath: input.repositorySubpath } : {}),
+				...(input.defaultBranch !== undefined ? { defaultBranch: input.defaultBranch } : {}),
 				folderRoot: normalizedFolderRoot,
 				explorationVariantLabel: input.explorationVariantLabel ?? null,
 				identityContext,

@@ -1051,7 +1051,11 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				const store = surfacesOf(company);
 				if (!store) return;
 				event.preventDefault();
-				withSurfaceMigrationSheet((mod) => mod.openCreateSurfaceSheet(store));
+				const role = company.store.get().team?.role;
+				const canBindRepo = role === undefined || role === "owner" || role === "admin";
+				withSurfaceMigrationSheet((mod) =>
+					mod.openCreateSurfaceSheet(store, { canConnectExistingRepo: canBindRepo }),
+				);
 			},
 			{ signal: company.signal },
 		);
@@ -2833,6 +2837,13 @@ function surfaceRailFor(company: CompanyController): SurfaceRail | undefined {
 			},
 			(text) => company.reportRailError(text),
 			(surface) => siteAnswer(company.store.get(), surface),
+			{
+				canManage: () => {
+					const role = company.store.get().team?.role;
+					return role === "owner" || role === "admin";
+				},
+				open: (surface) => withSurfaceMigrationSheet((mod) => mod.openSurfaceCodeSourceSheet(store, surface)),
+			},
 		);
 		surfaceRails.set(company, rail);
 	}

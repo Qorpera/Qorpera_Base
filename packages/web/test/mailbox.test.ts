@@ -3551,6 +3551,453 @@ describe("Digital Post", () => {
 		reader.dispose();
 		expect(pendingSignals.every((s) => s.aborted)).toBe(true);
 	});
+
+	it("supports starring, trashing with undo, archiving, unsubscribing, and blocking senders", async () => {
+		const { main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "news@promo.example", subject: "Weekly digest" }),
+				summary(2, { fromAddress: "web@promo.example", subject: "Web-only newsletter" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "news@promo.example", subject: "Weekly digest" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(910),
+					oneClick: true,
+					webUrl: "https://promo.example/unsub",
+					urls: ["https://promo.example/unsub"],
+				},
+			};
+			mail.reads[thread(2)] = {
+				thread: thread(2),
+				address: ADDRESS.address,
+				messages: [received(2, { fromAddress: "web@promo.example", subject: "Web-only newsletter" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(911),
+					oneClick: false,
+					webUrl: "https://promo.example/manage",
+					urls: ["https://promo.example/manage"],
+				},
+			};
+		});
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "star",
+			}),
+		);
+		tab(main, "Starred");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Weekly digest");
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Unsubscribe")).toBeDefined());
+		button(main, "Unsubscribe")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_unsubscribe").at(-1)).toMatchObject({
+				p_thread: thread(1),
+				p_delivery_id: id(910),
+			}),
+		);
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-unsubscribe-status")?.textContent).toBe("Unsubscribed"),
+		);
+
+		button(main, "Move to Trash")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "trash",
+			}),
+		);
+		await vi.waitFor(() => expect(button(main, "Undo")).toBeDefined());
+		button(main, "Undo")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector('a[href="https://promo.example/manage"]')).not.toBeNull());
+		expect(main.querySelector('a[href="https://promo.example/manage"]')?.getAttribute("rel")).toBe(
+			"noopener noreferrer",
+		);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector(".confirm-dialog")!, "Cancel")!.click();
+		expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(0);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector(".confirm-dialog")!, "Block sender")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_block_sender").at(-1)).toMatchObject({
+				p_sender: "web@promo.example",
+				p_trash_existing: true,
+			}),
+		);
+
+		tab(main, "Trash");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Web-only newsletter");
+		button(lines(main)[0]!, "Restore to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(2)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Archive")).toBeDefined());
+		button(main, "Archive")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "archive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		tab(main, "Archived");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Weekly digest");
+		button(lines(main)[0]!, "Move back to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "unarchive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Addresses");
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-blocked-sender")?.textContent).toBe("web@promo.example"),
+		);
+		button(main, "Unblock")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_unblock_sender").at(-1)).toMatchObject({
+				p_sender: "web@promo.example",
+			}),
+		);
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-blocked")).toBeNull());
+	});
+
+	it("rolls back only the failed thread action without clobbering concurrent mutations and shows inline browser_required links", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "a@outside.example", subject: "Alpha" }),
+				summary(2, { fromAddress: "b@outside.example", subject: "Beta" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "a@outside.example", subject: "Alpha" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(915),
+					oneClick: true,
+					webUrl: "https://outside.example/unsub-portal",
+					urls: ["https://outside.example/unsub-portal"],
+				},
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+
+		let rejectStar!: (err: Error) => void;
+		const starPending = new Promise<never>((_resolve, reject) => {
+			rejectStar = reject;
+		});
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_update_threads" && args.p_action === "star") {
+				return starPending;
+			}
+			if (fn === "qorpera_member_mail_unsubscribe") {
+				const targetThread = String(args.p_thread);
+				const read = fake.reads[targetThread];
+				if (read?.unsubscribe) {
+					read.unsubscribe = {
+						...(read.unsubscribe as Record<string, unknown>),
+						status: "browser_required",
+						method: "browser",
+					};
+				}
+				return {
+					unsubscribeId: id(981),
+					thread: targetThread,
+					method: "browser",
+					status: "browser_required",
+					urls: ["https://outside.example/unsub-portal"],
+				};
+			}
+			return baseRpc(fn, args);
+		});
+
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(lines(main)[0]!.querySelector(".mailbox-star")?.classList.contains("is-starred")).toBe(true),
+		);
+		button(lines(main)[1]!, "Move to Trash")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+
+		rejectStar(new Error("transient network error"));
+		await vi.waitFor(() =>
+			expect(lines(main)[0]!.querySelector(".mailbox-star")?.classList.contains("is-starred")).toBe(false),
+		);
+		expect(lines(main)).toHaveLength(1);
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Alpha");
+
+		const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Unsubscribe")).toBeDefined());
+		button(main, "Unsubscribe")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector('a[href="https://outside.example/unsub-portal"]')?.textContent).toContain(
+				"Open unsubscribe page",
+			),
+		);
+		expect(openSpy).not.toHaveBeenCalled();
+	});
+
+	it("hides star, trash, unsubscribe, and block controls for viewers and handles denied blocked-senders reads", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1, { starred: true })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				starred: true,
+				messages: [received(1)],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(912),
+					oneClick: true,
+					urls: ["https://promo.example/unsub"],
+				},
+			};
+		}, "viewer");
+
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_blocked_senders") {
+				fake.calls.push({ fn, args });
+				throw Object.assign(new Error("permission denied"), { code: "42501", denied: true });
+			}
+			return baseRpc(fn, args);
+		});
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(main.querySelector(".mailbox-star")).toBeNull();
+		expect(main.querySelector(".mailbox-row-tools")).toBeNull();
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-message")).not.toBeNull());
+		expect(main.querySelector(".mailbox-toolbar-actions")).toBeNull();
+		expect(button(main, "Move to Trash")).toBeUndefined();
+		expect(button(main, "Unsubscribe")).toBeUndefined();
+		expect(button(main, "Block sender")).toBeUndefined();
+
+		button(main, "Back to Inbox")!.click();
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(1));
+		expect(main.querySelector(".mailbox-blocked")).toBeNull();
+	});
+
+	it("supports archived toolbar unarchive, trash row restore, block confirm + exact multi-thread Undo, rerun after in-flight list read, and blocked-senders retry", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "bulk@sender.example", subject: "Inbox one" }),
+				summary(2, { fromAddress: "bulk@sender.example", subject: "Inbox two" }),
+				summary(3, { fromAddress: "bulk@sender.example", subject: "Archived three", archivedAt: at(10) }),
+				summary(4, { fromAddress: "bulk@sender.example", subject: "Already trashed four", trashedAt: at(20) }),
+				summary(5, { fromAddress: "keep@other.example", subject: "Keep five" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "bulk@sender.example", subject: "Inbox one" })],
+				more: false,
+				waiting: [],
+			};
+			mail.reads[thread(3)] = {
+				thread: thread(3),
+				address: ADDRESS.address,
+				archivedAt: at(10),
+				messages: [received(3, { fromAddress: "bulk@sender.example", subject: "Archived three" })],
+				more: false,
+				waiting: [],
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+
+		tab(main, "Trash");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Already trashed four");
+		button(lines(main)[0]!, "Restore to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(4)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		const restoredFour = lines(main).find(
+			(row) => row.querySelector(".mailbox-subject")?.textContent === "Already trashed four",
+		)!;
+		button(restoredFour, "Move to Trash")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+
+		tab(main, "Archived");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Move back to Inbox")).toBeDefined());
+		button(main, "Move back to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(3)],
+				p_action: "unarchive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		lines(main)
+			.find((row) => row.querySelector(".mailbox-subject")?.textContent === "Archived three")!
+			.querySelector<HTMLButtonElement>(".mailbox-open")!
+			.click();
+		await vi.waitFor(() => expect(button(main, "Archive")).toBeDefined());
+		button(main, "Archive")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(3)],
+				p_action: "archive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Block sender")).toBeDefined());
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector<HTMLElement>(".confirm-dialog")!, "Cancel")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).toBeNull());
+		expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(0);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector<HTMLElement>(".confirm-dialog")!, "Block sender")!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(1));
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+
+		const undo = button(main, "Undo");
+		expect(undo).toBeDefined();
+		undo!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_unblock_sender")).toHaveLength(1));
+		await vi.waitFor(() =>
+			expect(
+				calls(fake, "qorpera_member_mail_update_threads").some(
+					(call) =>
+						call.p_action === "restore" &&
+						Array.isArray(call.p_threads) &&
+						call.p_threads.length === 3 &&
+						call.p_threads.includes(thread(1)) &&
+						call.p_threads.includes(thread(2)) &&
+						call.p_threads.includes(thread(3)) &&
+						!call.p_threads.includes(thread(4)),
+				),
+			).toBe(true),
+		);
+		await vi.waitFor(() =>
+			expect(
+				calls(fake, "qorpera_member_mail_update_threads").some(
+					(call) =>
+						call.p_action === "archive" &&
+						Array.isArray(call.p_threads) &&
+						call.p_threads.length === 1 &&
+						call.p_threads[0] === thread(3),
+				),
+			).toBe(true),
+		);
+
+		let releaseInflight!: () => void;
+		const inflightGate = new Promise<void>((resolve) => {
+			releaseInflight = resolve;
+		});
+		let delayedOnce = false;
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_threads" && !delayedOnce) {
+				delayedOnce = true;
+				const answer = await baseRpc(fn, args);
+				await inflightGate;
+				return answer;
+			}
+			return baseRpc(fn, args);
+		});
+
+		const threadsCallsBefore = calls(fake, "qorpera_member_mail_threads").length;
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_threads").length).toBe(threadsCallsBefore + 1));
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(2)],
+				p_action: "star",
+			}),
+		);
+		releaseInflight();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_threads").length).toBe(threadsCallsBefore + 2));
+	});
+
+	it("shows a retryable error in Addresses when loading blocked senders fails transiently", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+			mail.blockedSenders = [
+				{ id: id(975), sender: "retry@blocked.example", matchKind: "address", createdAt: at(0) },
+			];
+		});
+		let failBlockedOnce = true;
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_blocked_senders" && failBlockedOnce) {
+				failBlockedOnce = false;
+				fake.calls.push({ fn, args });
+				throw new Error("temporary failure");
+			}
+			return baseRpc(fn, args);
+		});
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.textContent).toContain("Could not load blocked senders."));
+		expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(1);
+		button(main, "Try again")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-blocked-sender")?.textContent).toBe("retry@blocked.example"),
+		);
+		expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(2);
+	});
 });
 
 function handshakeMailFrame(frame: HTMLIFrameElement): {
