@@ -76,7 +76,7 @@ export interface CodeChangeFile {
 	n: number;
 	version: number;
 	/** `import`: change 1 of a repository brought in with its history (step 6, migration `20260930736000`). */
-	kind: "landing" | "undo" | "restore" | "found" | "import" | "pull";
+	kind: "landing" | "undo" | "restore" | "found" | "import" | "pull" | "push";
 	state: "landed" | "reverted" | "conflict" | "refused" | "lost";
 	how: "fast-forward" | "merged" | null;
 	createdAt: string;
@@ -127,7 +127,7 @@ const CALL_MS = 10_000;
 const SHA = /^[0-9a-f]{40}$/;
 const FIXED = /^[A-Z][A-Z0-9_]{2,80}$/;
 const YIELDED = "CODE_HOST_JOB_YIELDED";
-const KINDS = ["landing", "undo", "restore", "found", "import", "pull"];
+const KINDS = ["landing", "undo", "restore", "found", "import", "pull", "push"];
 const STATES = ["landed", "reverted", "conflict", "refused", "lost"];
 const CHANGES = ["added", "changed", "removed"];
 const CHECKS_STATES = ["passed", "none", "off", "inherited", "not_run"];
@@ -340,6 +340,8 @@ function kindWords(change: CodeChangeFile): string {
 			return "code brought into Qorpera";
 		case "pull":
 			return "a pull from GitHub";
+		case "push":
+			return "a push over Git HTTPS";
 		default:
 			return "a change whose record was lost";
 	}
@@ -583,6 +585,11 @@ function checksWords(change: CodeChangeFile): { head: string; section: string[] 
 					"not run",
 					"Not run: Qorpera does not check a pull from GitHub. The next change that goes in is checked with these files.",
 				);
+			if (change.kind === "push")
+				return said(
+					"not run",
+					"Not run: Qorpera does not check a push over Git HTTPS. The next change that goes in is checked with these files.",
+				);
 			return change.kind === "restore" ? said("not run", "Not run: Qorpera does not check a restore.") : UNKNOWN;
 		default:
 			return UNKNOWN;
@@ -597,6 +604,7 @@ const SAID: Readonly<Record<CodeChangeFile["kind"], string>> = {
 	found: "What was said",
 	import: "What was said",
 	pull: "What was pulled",
+	push: "What was pushed",
 };
 
 /** The record's text for one change of `qorpera.code-change-files/v1`: Markdown, UTF-8, at most 24 KiB. Pure. With

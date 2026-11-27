@@ -995,6 +995,18 @@ describe("codeChangeIndexText", () => {
 		expect(intermediateBatchRecord).toContain(
 			"Not run on this intermediate commit: checks ran and passed on the combined batch tip.",
 		);
+		const gitHttpPushRecord = codeChangeRecordText(
+			change({
+				kind: "push",
+				state: "landed",
+				checksState: "not_run",
+				checks: null,
+				summary: "Pushed via Git HTTPS token qgit_abc1234.",
+			}),
+		);
+		expect(gitHttpPushRecord).toContain("- What: a push over Git HTTPS");
+		expect(gitHttpPushRecord).toContain("## What was pushed");
+		expect(gitHttpPushRecord).toContain("Not run: Qorpera does not check a push over Git HTTPS.");
 	});
 });
 

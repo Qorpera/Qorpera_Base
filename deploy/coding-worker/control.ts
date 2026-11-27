@@ -1,5 +1,6 @@
 import { readBoundedCloudResponse, supabaseServiceHeaders } from "../../packages/cloud-client/src/cloud-request.ts";
 import { CODE_CHANGE_RPCS } from "../../packages/runner-orchestrator/src/code-change-records.ts";
+import { CODE_GIT_HTTP_RPCS } from "../../packages/runner-orchestrator/src/code-git-http.ts";
 import { CODE_HOST_DELETION_RPCS } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_CARE_RPCS } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import { CODE_REQUEST_RPCS } from "../../packages/runner-orchestrator/src/code-host-requests.ts";
@@ -15,7 +16,7 @@ import { withTimeoutSignal } from "./timeout-signal.ts";
 
 /** The executor's closed RPC set (exported for the tests, which run the routes and the host against it: F33 of #1661). */
 export const CODING_CONTROL_METHODS: ReadonlySet<string> = new Set<string>([...CODING_EXECUTOR_RPCS, ...CODING_HOST_RPCS, ...CODING_SNAPSHOT_RPCS, ...COMPANY_MACHINE_HOST_RPCS, ...CODE_HOST_RPCS,
-	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
+	...CODE_HOST_DELETION_RPCS, ...CODE_CARE_RPCS, ...CODE_CHANGE_RPCS, ...CODE_GIT_HTTP_RPCS, ...CODE_REQUEST_RPCS, ...CODE_SITE_RPCS,
 	...NATIVE_WEB_HOSTING_RPCS, ...SURFACE_CODE_HOST_RPCS,
 	"qorpera_authorize_coding_command", "qorpera_authorize_coding_command_v2", "qorpera_route_coding_command",
 	"qorpera_authorize_machine_command", "qorpera_authorize_machine_coding_value", "qorpera_authorize_machine_account_fill",

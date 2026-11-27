@@ -271,6 +271,15 @@ export type RunnerOrchestratorRequest =
 			publishedHeadSha?: string;
 			errorDetail?: string;
 			leaseToken?: string;
+	  }
+	| {
+			action: "surface_execute_ops_action";
+			orchestratorId: string;
+			profileId: string;
+			jobId: string;
+			changeId: string;
+			actionKind: string;
+			actionPayload?: Record<string, unknown>;
 	  };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -789,6 +798,23 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.leaseToken === null || input.leaseToken === undefined
 					? {}
 					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
+		case "surface_execute_ops_action": {
+			const actionKind = text(input.actionKind, "surface ops action kind", 80).trim();
+			if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(actionKind)) {
+				throw new Error("Invalid surface ops action kind");
+			}
+			return {
+				action: input.action,
+				orchestratorId,
+				profileId: uuid(input.profileId, "surface ops profile id"),
+				jobId: uuid(input.jobId, "surface ops job id"),
+				changeId: uuid(input.changeId, "surface ops change id"),
+				actionKind,
+				...(input.actionPayload === null || input.actionPayload === undefined
+					? {}
+					: { actionPayload: boundedRecord(input.actionPayload, "surface ops action payload", 64 * 1024) }),
 			};
 		}
 		default:

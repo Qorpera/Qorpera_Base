@@ -653,6 +653,37 @@ describe("runner orchestrator boundary", () => {
 				status: "publishing",
 			}),
 		);
+
+		assert.deepEqual(
+			parseRunnerOrchestratorRequest({
+				action: "surface_execute_ops_action",
+				orchestratorId,
+				profileId,
+				jobId,
+				changeId: conflictChangeId,
+				actionKind: "mail.archive",
+				actionPayload: { threadIds: ["t".repeat(43)] },
+			}),
+			{
+				action: "surface_execute_ops_action",
+				orchestratorId,
+				profileId,
+				jobId,
+				changeId: conflictChangeId,
+				actionKind: "mail.archive",
+				actionPayload: { threadIds: ["t".repeat(43)] },
+			},
+		);
+		assert.throws(() =>
+			parseRunnerOrchestratorRequest({
+				action: "surface_execute_ops_action",
+				orchestratorId,
+				profileId,
+				jobId,
+				changeId: conflictChangeId,
+				actionKind: "bad kind with spaces",
+			}),
+		);
 	});
 });
 
@@ -972,6 +1003,29 @@ describe("the edge function's route for the one call", () => {
 				p_published_head_sha: sha2,
 				p_error_detail: null,
 				p_lease_token: leaseToken,
+			},
+		]);
+
+		calls.length = 0;
+		answer = answers(true, { data: { status: "landed", replayed: false, actionKind: "noop" } });
+		const opsRes = await post({
+			action: "surface_execute_ops_action",
+			orchestratorId,
+			profileId,
+			jobId,
+			changeId: conflictChangeId,
+			actionKind: "noop",
+			actionPayload: {},
+		});
+		assert.equal(opsRes.status, 200);
+		assert.deepEqual(calls[2], [
+			"qorpera_execute_surface_ops_action",
+			{
+				p_profile_id: profileId,
+				p_job_id: jobId,
+				p_change_id: conflictChangeId,
+				p_action_kind: "noop",
+				p_action_payload: {},
 			},
 		]);
 

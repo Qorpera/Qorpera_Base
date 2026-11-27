@@ -297,6 +297,16 @@ Deno.serve(async (request) => {
 					p_lease_token: action.leaseToken ?? null,
 				};
 				break;
+			case "surface_execute_ops_action":
+				rpc = "qorpera_execute_surface_ops_action";
+				args = {
+					p_profile_id: action.profileId,
+					p_job_id: action.jobId,
+					p_change_id: action.changeId,
+					p_action_kind: action.actionKind,
+					p_action_payload: action.actionPayload ?? {},
+				};
+				break;
 		}
 		if (action.action !== "rotate_control") {
 			const { data: dispatched, error: dispatchError } = await withAbortSignal(

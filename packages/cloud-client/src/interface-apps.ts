@@ -42,7 +42,7 @@ export const APP_NUMBERS_DATABASE = "qorpera";
  * a name that is neither, which is no question there. */
 export function appNumbersRead(question: string): "money" | "site" | null {
 	if (/^money-[a-z0-9]/.test(question)) return "money";
-	if (question === "sites" || /^site-[a-z0-9]/.test(question)) return "site";
+	if (question === "sites" || /^site-[a-z0-9]/.test(question) || /^app-[a-z0-9]/.test(question)) return "site";
 	return null;
 }
 /** The folders at the top of the Company File that the platform writes or keeps (the agents' prompt: "the platform

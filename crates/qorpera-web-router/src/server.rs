@@ -25,6 +25,7 @@ use crate::security::{
     sign_surface_preview_cookie, verify_preview_cookie, verify_session_cookie,
     verify_surface_preview_cookie, HSTS_HEADER, INSPECTOR_PATH, SITE_SESSION_COOKIE,
 };
+use crate::telemetry::AppTelemetryTracker;
 use bytes::Bytes;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Limited};
@@ -609,6 +610,7 @@ pub struct RouterState {
     pub unlock_limiter: Arc<RateLimiter>,
     pub member_limiter: Arc<RateLimiter>,
     pub activity: Arc<ActivityTracker>,
+    pub telemetry: Arc<AppTelemetryTracker>,
     pub waker: Arc<WakeCoordinator>,
     pub proxy_client: PooledProxyClient,
     pub control_token: String,
@@ -660,6 +662,7 @@ impl RouterState {
             )),
             member_limiter: Arc::new(RateLimiter::new(10.0, 40.0, 32_768)),
             activity: Arc::new(ActivityTracker::new()),
+            telemetry: Arc::new(AppTelemetryTracker::new()),
             waker: Arc::new(WakeCoordinator::with_client(
                 cfg.app_host_url.clone(),
                 cfg.control_token.clone(),
@@ -1182,6 +1185,10 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
 
     if method == Method::GET && path == "/_internal/metrics/activity" {
         return json_response(StatusCode::OK, state.activity.snapshot());
+    }
+
+    if method == Method::GET && path == "/_internal/metrics/app-telemetry" {
+        return json_response(StatusCode::OK, state.telemetry.snapshot());
     }
 
     if method == Method::POST && path == "/_internal/domains/verify" {
@@ -1740,6 +1747,16 @@ async fn handle_public(
     drop(route_table);
 
     state.activity.record(&deployment.id);
+    let telemetry_started = Instant::now();
+    let record_telemetry = |status: StatusCode| {
+        let elapsed_ms = telemetry_started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        state
+            .telemetry
+            .record(&site.id, &deployment.id, status.as_u16(), elapsed_ms);
+    };
 
     let wake_deployment = || WakeRequest {
         deployment_id: deployment.id.clone(),
@@ -1757,6 +1774,7 @@ async fn handle_public(
         None => match wake_and_record(&state, wake_deployment()).await {
             Ok(addr) => (addr, false),
             Err(_) => {
+                record_telemetry(StatusCode::SERVICE_UNAVAILABLE);
                 let mut res = html_response(
                     StatusCode::SERVICE_UNAVAILABLE,
                     render_app_unavailable_page(),
@@ -1805,11 +1823,17 @@ async fn handle_public(
     )
     .await
     {
-        Ok(res) => res,
-        Err(ProxyError::Overloaded) => text_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "too many websocket connections",
-        ),
+        Ok(res) => {
+            record_telemetry(res.status());
+            res
+        }
+        Err(ProxyError::Overloaded) => {
+            record_telemetry(StatusCode::SERVICE_UNAVAILABLE);
+            text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "too many websocket connections",
+            )
+        }
         Err(ProxyError::ConnectFailed(_)) => {
             let existing_replacement = state.routes.update(|table| {
                 if table.clear_upstream_if_matches(&deployment.id, &upstream) {
@@ -1839,10 +1863,12 @@ async fn handle_public(
                     )
                     .await
                     {
+                        record_telemetry(res.status());
                         return res;
                     }
                 }
             }
+            record_telemetry(StatusCode::BAD_GATEWAY);
             let mut res = html_response(
                 StatusCode::BAD_GATEWAY,
                 render_app_unavailable_page(),
@@ -1855,6 +1881,7 @@ async fn handle_public(
             res
         }
         Err(ProxyError::UpstreamFailed(_)) => {
+            record_telemetry(StatusCode::BAD_GATEWAY);
             let mut res = html_response(
                 StatusCode::BAD_GATEWAY,
                 render_app_unavailable_page(),

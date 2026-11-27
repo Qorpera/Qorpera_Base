@@ -530,6 +530,26 @@ export interface CloudRunnerOrchestratorControlPlane {
 		input: CompleteSurfacePublishInput,
 		signal?: AbortSignal,
 	): Promise<CompleteSurfacePublishResult>;
+	executeSurfaceOpsAction?(
+		input: ExecuteSurfaceOpsActionInput,
+		signal?: AbortSignal,
+	): Promise<ExecuteSurfaceOpsActionResult>;
+}
+
+export interface ExecuteSurfaceOpsActionInput {
+	readonly profileId: string;
+	readonly jobId: string;
+	readonly changeId: string;
+	readonly actionKind: string;
+	readonly actionPayload?: Readonly<Record<string, unknown>>;
+}
+
+export interface ExecuteSurfaceOpsActionResult {
+	readonly status: "landed" | "failed";
+	readonly replayed?: boolean;
+	readonly actionKind?: string;
+	readonly receipt?: Readonly<Record<string, unknown>>;
+	readonly errorDetail?: string;
 }
 
 /** One pass's answer to "which lists have anything?": the drains by name, `materialize` and `routine_heads`. A list may
@@ -839,6 +859,15 @@ type CloudRunnerOrchestratorRequest =
 			publishedHeadSha?: string;
 			errorDetail?: string;
 			leaseToken?: string;
+	  }
+	| {
+			action: "surface_execute_ops_action";
+			orchestratorId: string;
+			profileId: string;
+			jobId: string;
+			changeId: string;
+			actionKind: string;
+			actionPayload?: Readonly<Record<string, unknown>>;
 	  };
 
 function requiredUuid(value: string, label: string): void {
@@ -5088,6 +5117,47 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				signal,
 			),
 		);
+	}
+
+	async executeSurfaceOpsAction(
+		input: ExecuteSurfaceOpsActionInput,
+		signal?: AbortSignal,
+	): Promise<ExecuteSurfaceOpsActionResult> {
+		requiredUuid(input.profileId, "Surface ops profile id");
+		requiredUuid(input.jobId, "Surface ops job id");
+		requiredUuid(input.changeId, "Surface ops change id");
+		const actionKind = validateSurfaceShortText(input.actionKind, "Surface ops action kind", 80);
+		if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(actionKind)) {
+			throw new Error("Surface ops action kind is invalid");
+		}
+		const raw = await this.#request(
+			{
+				action: "surface_execute_ops_action",
+				orchestratorId: this.#orchestratorId,
+				profileId: input.profileId,
+				jobId: input.jobId,
+				changeId: input.changeId,
+				actionKind,
+				...(input.actionPayload !== undefined ? { actionPayload: input.actionPayload } : {}),
+			},
+			signal,
+		);
+		const record = responseRecord(raw, "surface ops action result");
+		const status = record.status === "landed" ? "landed" : "failed";
+		const replayed = typeof record.replayed === "boolean" ? record.replayed : undefined;
+		const returnedKind = typeof record.actionKind === "string" ? record.actionKind : undefined;
+		const receipt =
+			record.receipt && typeof record.receipt === "object" && !Array.isArray(record.receipt)
+				? (record.receipt as Readonly<Record<string, unknown>>)
+				: undefined;
+		const errorDetail = typeof record.errorDetail === "string" ? record.errorDetail : undefined;
+		return {
+			status,
+			...(replayed !== undefined ? { replayed } : {}),
+			...(returnedKind !== undefined ? { actionKind: returnedKind } : {}),
+			...(receipt !== undefined ? { receipt } : {}),
+			...(errorDetail !== undefined ? { errorDetail } : {}),
+		};
 	}
 
 	#assertIdentity(orchestratorId: string): void {

@@ -3,6 +3,7 @@ import { UUID_ANY_CASE_PATTERN } from "@qorpera/contracts";
 import { FileRunnerOrchestratorControlTokenStore } from "./control-token-store.ts";
 import type { ServiceHttpFetch } from "./http-transport.ts";
 import { nodeHttpFetch } from "./node-http-fetch.ts";
+import { createOpsActionExecutor } from "./ops-action-executor.ts";
 import { CloudRunnerOrchestrator, SupabaseCloudRunnerOrchestratorControlPlane } from "./orchestrator.ts";
 import { RealtimeOrchestratorWake, type RealtimeOrchestratorWakeState } from "./orchestrator-wake.ts";
 import { CloudRunnerProviderRequestError, HttpCloudRunnerProviderAdapter } from "./provider-http.ts";
@@ -86,27 +87,10 @@ export function createDefaultSurfaceWorkerConfig(
 				}),
 			);
 		});
-	const defaultRunOpsActionJob: NonNullable<SurfaceExecutionBridgePorts["runOpsActionJob"]> = async (job) => {
-		const changes = job.approvedChanges ?? [];
-		for (const change of changes) {
-			const manifest =
-				change.patchManifest && typeof change.patchManifest === "object" && !Array.isArray(change.patchManifest)
-					? (change.patchManifest as Record<string, unknown>)
-					: null;
-			const actionKind = typeof manifest?.actionKind === "string" ? manifest.actionKind.trim() : "";
-			if (!actionKind) {
-				return { status: "failed", errorDetail: `Missing actionKind on ops change ${change.changeId}` };
-			}
-			if (actionKind === "noop") {
-				continue;
-			}
-			return {
-				status: "failed",
-				errorDetail: `Ops action kind "${actionKind}" is not enabled on this orchestrator`,
-			};
-		}
-		return { status: "landed" };
-	};
+	const defaultRunOpsActionJob = createOpsActionExecutor({
+		controlPlane: context.controlPlane,
+		...(overrides.folder ? { folder: overrides.folder } : {}),
+	});
 	const handlers = createSurfaceExecutionHandlers({
 		controlPlane: context.controlPlane,
 		...(overrides.resolveRepository ? { resolveRepository: overrides.resolveRepository } : {}),

@@ -12,6 +12,7 @@ import { createNativeEdgeAutoRedeploy } from "../../packages/runner-orchestrator
 import { type CodeHostEvent, type CodeHostPolicy, controlCodeHostDeletions, LxdCodeHosts, parseCodeHostPolicy } from "../../packages/runner-orchestrator/src/code-host.ts";
 import { CODE_BUNDLE_FOLDER, type CodeBundleStore, createCodeBundleStore } from "../../packages/runner-orchestrator/src/code-bundle-store.ts";
 import { CodeChangeRecords } from "../../packages/runner-orchestrator/src/code-change-records.ts";
+import { CodeGitHttpServer } from "../../packages/runner-orchestrator/src/code-git-http.ts";
 import { CodeGitHubSync } from "../../packages/runner-orchestrator/src/code-github-sync.ts";
 import { CodeHostCare } from "../../packages/runner-orchestrator/src/code-host-care.ts";
 import {
@@ -147,6 +148,7 @@ interface Config {
 	 * member listener, so it needs `memberScreens`. Absent: no stream is taken here (the peer listener still serves the
 	 * ones another executor asks of it). */
 	memberStreams: { port: number } | null;
+	gitHttp: { port: number } | null;
 	/** Desktops watched for members' live pictures, each in a process of its own: the unix socket of
 	 * `qorpera-desktop-stream.socket` (deploy/coding-worker/), which systemd answers with one instance of
 	 * `qorpera-desktop-stream@.service` per connection. Absent: members' live pictures of this node's desktops are refused. */
@@ -173,7 +175,7 @@ interface Config {
 interface PinnedFile { path: string; sha256: string }
 const RESERVED_CREDENTIALS = new Set(["qorpera-coding-executor-config", "qorpera-coding-registry", "qorpera-coding-command", "qorpera-coding-peer-command"]);
 const CONFIG_KEYS = "commandPeers,commandPort,guest,owner,peerCommandPort,repositories,schema,storagePolicy,supabaseUrl,vmPolicy";
-const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "machines", "memberScreens", "memberStreams", "snapshots", "standbyPoolSize", "webHosting"]);
+const OPTIONAL_CONFIG_KEYS = new Set(["broker", "codeHost", "desktopStreams", "folder", "gitHttp", "machines", "memberScreens", "memberStreams", "snapshots", "standbyPoolSize", "webHosting"]);
 function object(value: unknown): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return value as Record<string, unknown>;
@@ -227,6 +229,14 @@ function memberStreamsConfig(value: unknown, screens: Config["memberScreens"], t
 	const input = object(value);
 	if (!screens || Object.keys(input).join() !== "port" || !Number.isSafeInteger(input.port) || Number(input.port) < 1024 ||
 		Number(input.port) > 65535 || taken.includes(Number(input.port)) || Number(input.port) === screens.port)
+		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+	return { port: Number(input.port) };
+}
+function gitHttpConfig(value: unknown, taken: readonly number[]): Config["gitHttp"] {
+	if (value === undefined) return null;
+	const input = object(value);
+	if (Object.keys(input).join() !== "port" || !Number.isSafeInteger(input.port) ||
+		Number(input.port) < 1024 || Number(input.port) > 65535 || taken.includes(Number(input.port)))
 		throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 	return { port: Number(input.port) };
 }
@@ -418,6 +428,16 @@ export function parseCodingExecutorConfiguration(value: unknown): Config {
 		memberStreams: memberStreamsConfig(config.memberStreams,
 			memberScreensConfig(config.memberScreens, [Number(config.commandPort), Number(config.peerCommandPort)]),
 			[Number(config.commandPort), Number(config.peerCommandPort)]),
+		gitHttp: gitHttpConfig(config.gitHttp, [
+			Number(config.commandPort),
+			Number(config.peerCommandPort),
+			...(config.memberScreens && typeof (config.memberScreens as Record<string, unknown>).port === "number"
+				? [Number((config.memberScreens as Record<string, unknown>).port)]
+				: []),
+			...(config.memberStreams && typeof (config.memberStreams as Record<string, unknown>).port === "number"
+				? [Number((config.memberStreams as Record<string, unknown>).port)]
+				: []),
+		]),
 		desktopStreams: desktopStreamsConfig(config.desktopStreams),
 		webHosting: webHostingConfig(config.webHosting),
 		snapshots: snapshotsConfig(config.snapshots),
@@ -959,6 +979,13 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		host: "127.0.0.1", port: config.memberStreams.port,
 		admit: (ticket, origin) => machineRouter.admitMemberStream(ticket, origin),
 	}) : undefined;
+	const gitHttp = config.gitHttp && codeHostJobs ? new CodeGitHttpServer({
+		host: "127.0.0.1",
+		port: config.gitHttp.port,
+		control,
+		hosts: codeHostJobs,
+		report: (event) => console.error(JSON.stringify(event)),
+	}) : undefined;
 	let executor: CloudCodingExecutor | undefined;
 	let memberStreamsClosing: Promise<void> | undefined;
 	const closeMemberStreams = (): Promise<void> | undefined => {
@@ -975,6 +1002,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await peerCommands.start(stop.signal);
 		await memberScreens?.start(stop.signal);
 		await memberStreams?.listen();
+		await gitHttp?.start(stop.signal);
 		if (memberStreams) {
 			if (stop.signal.aborted) onStopStreams();
 			else stop.signal.addEventListener("abort", onStopStreams, { once: true });
@@ -1255,6 +1283,7 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 		await closeStep("commands", () => commands.close());
 		await closeStep("peer-commands", () => peerCommands.close());
 		await closeStep("member-screens", () => memberScreens?.close());
+		await closeStep("git-http", () => gitHttp?.close());
 		process.off("SIGTERM", shutdown);
 		process.off("SIGINT", shutdown);
 	}
