@@ -1963,10 +1963,10 @@ export class SurfaceCodeHostWorker {
 
 			const rollbackDeployedContainer = async (
 				verifyLiveFirst: boolean,
-			): Promise<{ readonly promotedLive: boolean }> => {
+			): Promise<{ readonly promotedLive: boolean; readonly uncertain: boolean }> => {
 				if (registered.deploymentState === "live") {
 					await recordUpstreamFallback();
-					return { promotedLive: false };
+					return { promotedLive: false, uncertain: false };
 				}
 				if (verifyLiveFirst) {
 					let claim: { claimed?: unknown; isLive?: unknown } | null = null;
@@ -1986,20 +1986,20 @@ export class SurfaceCodeHostWorker {
 							break;
 						} catch {
 							if (attempt < 2) {
-								await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+								await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
 							}
 						}
 					}
 					if (!claimResolved) {
 						await recordUpstreamFallback();
-						return { promotedLive: false };
+						return { promotedLive: false, uncertain: true };
 					}
 					if (claim?.isLive === true) {
-						return { promotedLive: true };
+						return { promotedLive: true, uncertain: false };
 					}
 					if (claim?.claimed !== true) {
 						await recordUpstreamFallback();
-						return { promotedLive: false };
+						return { promotedLive: false, uncertain: false };
 					}
 				}
 				try {
@@ -2023,7 +2023,7 @@ export class SurfaceCodeHostWorker {
 				} catch {
 					await recordUpstreamFallback();
 				}
-				return { promotedLive: false };
+				return { promotedLive: false, uncertain: false };
 			};
 
 			if (input.promoteLive) {
@@ -2058,6 +2058,9 @@ export class SurfaceCodeHostWorker {
 							siteSlug: registered.siteSlug,
 							deploymentId,
 						};
+					}
+					if (rollback.uncertain) {
+						return { yielded: true };
 					}
 					throw error;
 				}

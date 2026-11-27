@@ -378,6 +378,7 @@ begin
 		(select upstream_addr is null from public.qorpera_company_site_deployments where id = v_dep_prev_2),
 		'non-live register with p_check_public_promote=true clears stale upstream_addr on ready row'
 	);
+	update public.qorpera_company_site_deployments set updated_at = clock_timestamp() - interval '3 minutes' where id = v_dep_prev_2;
 	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
 	perform pg_temp.sahs_assert(
 		not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_2),

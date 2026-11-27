@@ -80,7 +80,7 @@ create function public.qorpera_surface_site_deployment_register(
 	p_check_public_promote boolean default false
 )
 returns jsonb
-language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' set statement_timeout = '8s' as $$
+language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
 declare
 	v_surface public.qorpera_surfaces%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
@@ -378,7 +378,7 @@ create function public.qorpera_surface_site_deployment_set_upstream(
 	p_upstream_addr text
 )
 returns jsonb
-language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' set statement_timeout = '8s' as $$
+language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
 declare
 	v_upstream text := nullif(btrim(coalesce(p_upstream_addr, '')), '');
 	v_dep public.qorpera_company_site_deployments%rowtype;
@@ -508,7 +508,7 @@ create function public.qorpera_surface_app_deployment_mark_stopped(
 	p_claim_only boolean default false
 )
 returns jsonb
-language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' set statement_timeout = '8s' as $$
+language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
 declare
 	v_dep public.qorpera_company_site_deployments%rowtype;
 	v_site public.qorpera_company_sites%rowtype;
