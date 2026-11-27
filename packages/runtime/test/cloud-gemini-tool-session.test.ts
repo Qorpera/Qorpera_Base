@@ -1823,5 +1823,63 @@ describe("runCloudGeminiToolSession", () => {
 			{ text: "On the consumer side, IKEA Kreativ uses one catalog. One store, and stagers pay every week." },
 		]);
 		expect(askMessages).toEqual([{ text: "Should we prioritize pros?" }]);
+
+		const ungroundedSent: JsonValue[] = [];
+		const ungroundedSendTool: CloudNativeTool = {
+			...sendTool,
+			execute: vi.fn<CloudNativeTool["execute"]>(async (args) => {
+				ungroundedSent.push(args);
+				return { kind: "text", value: "ok" };
+			}),
+		};
+		let ungroundedTurn = 0;
+		const ungroundedMock = await startMockGemini(() => {
+			ungroundedTurn += 1;
+			if (ungroundedTurn === 1) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{ executableCode: { language: "PYTHON", code: "print(1)" } },
+										{
+											functionCall: {
+												id: "call_ip",
+												name: "send_message",
+												args: { text: "The staging box is [10.0.0.5]." },
+											},
+										},
+									],
+								},
+								finishReason: "STOP",
+							},
+						],
+						usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 8 },
+					},
+				};
+			}
+			return {
+				body: {
+					candidates: [{ content: { role: "model", parts: [{ text: "Done." }] }, finishReason: "STOP" }],
+					usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3 },
+				},
+			};
+		});
+		await runCloudGeminiToolSession({
+			boundary: makeBoundary([ungroundedSendTool]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: ungroundedMock.baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Report staging IP",
+			runtimeInstructions: "Be concise.",
+			signal: AbortSignal.timeout(10_000),
+		});
+		expect(ungroundedSent).toEqual([{ text: "The staging box is [10.0.0.5]." }]);
 	});
 });

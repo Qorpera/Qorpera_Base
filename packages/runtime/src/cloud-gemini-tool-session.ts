@@ -213,11 +213,11 @@ export function stripGeminiGroundingCitations(text: string, includeTwoPart = fal
 	return output;
 }
 
-function sanitizeGeminiToolCallArgs(callName: string, args: JsonValue, includeTwoPart: boolean): JsonValue {
-	if (!CITATION_TEXT_TOOLS.has(callName) || !isPlainObject(args) || typeof args.text !== "string") {
+function sanitizeGeminiToolCallArgs(callName: string, args: JsonValue, sawGrounding: boolean): JsonValue {
+	if (!sawGrounding || !CITATION_TEXT_TOOLS.has(callName) || !isPlainObject(args) || typeof args.text !== "string") {
 		return args;
 	}
-	const cleaned = stripGeminiGroundingCitations(args.text, includeTwoPart);
+	const cleaned = stripGeminiGroundingCitations(args.text, true);
 	if (!cleaned.trim() || cleaned === args.text) return args;
 	return { ...args, text: cleaned };
 }
@@ -1474,12 +1474,7 @@ export async function runCloudGeminiToolSession(options: {
 				});
 				const visibleText = extractVisibleText(response.parts);
 				if (visibleText) options.boundary.runLog?.agentText(visibleText);
-				if (
-					response.groundingMetadata !== undefined ||
-					response.parts.some(
-						(part) => part.executableCode !== undefined || part.codeExecutionResult !== undefined,
-					)
-				) {
+				if (response.groundingMetadata !== undefined) {
 					sawGrounding = true;
 				}
 

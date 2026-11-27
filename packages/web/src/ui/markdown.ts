@@ -509,7 +509,7 @@ function renderTokens(
 	links = true,
 	sites?: FoundSites,
 	surfaces: FoundSurfaces = foundSurfaces(),
-	stripCitations = true,
+	stripCitations = false,
 ): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
@@ -775,6 +775,7 @@ export interface MarkdownOptions {
 	 * found in the text behind it (`markdownSourceOffset`). */
 	readonly sourceRanges?: boolean;
 	readonly surfaceRow?: boolean;
+	readonly stripGroundingCitations?: boolean;
 }
 
 export function markdown(source: string, options: MarkdownOptions = {}): HTMLElement {
@@ -789,7 +790,14 @@ export function markdown(source: string, options: MarkdownOptions = {}): HTMLEle
 			tokens = first ? [first] : [];
 		}
 		const surfaces = foundSurfaces();
-		const drawnTokens = renderTokens(tokens, 0, options.links !== false, undefined, surfaces);
+		const drawnTokens = renderTokens(
+			tokens,
+			0,
+			options.links !== false,
+			undefined,
+			surfaces,
+			Boolean(options.stripGroundingCitations),
+		);
 		const row = options.surfaceRow ? namedSurfacesRow(surfaces) : undefined;
 		return h("div", { class: "message-prose" }, row ? [...drawnTokens, row] : drawnTokens);
 	} catch {
@@ -827,8 +835,13 @@ export function markdownSourceOffset(node: Node, offset: number): number | undef
  * is display grouping only: all admitted text stays in its canonical message.
  * `site`: the company's site a link leads to, in a thread: its card stands in a row of its own under the words that
  * link it, as an app's card does, once per site in the message. */
-export function markdownBubbles(source: string, site?: (href: string) => LinkedSite | undefined): HTMLElement[] {
+export function markdownBubbles(
+	source: string,
+	site?: (href: string) => LinkedSite | undefined,
+	options?: { readonly stripGroundingCitations?: boolean },
+): HTMLElement[] {
 	try {
+		const stripCitations = Boolean(options?.stripGroundingCitations);
 		const tokens = Lexer.lex(source, { gfm: true, breaks: true }) as MarkedToken[];
 		const groups: MarkedToken[][] = [];
 		let boundary = false;
@@ -844,7 +857,7 @@ export function markdownBubbles(source: string, site?: (href: string) => LinkedS
 			else previous.push(token);
 			boundary = /\n[\t ]*\n[\t ]*$/.test(token.raw);
 		}
-		if (!groups.length) return [markdown(source)];
+		if (!groups.length) return [markdown(source, { stripGroundingCitations: stripCitations })];
 		// A row of app cards is a part of its own, after the words it followed: the thread draws it without a bubble. So is
 		// the row of the sites the words link.
 		const parts: HTMLElement[] = [];
@@ -856,7 +869,7 @@ export function markdownBubbles(source: string, site?: (href: string) => LinkedS
 				if (prose.length) parts.push(h("div", { class: "message-prose" }, prose));
 				prose = [];
 			};
-			for (const node of renderTokens(group, 0, true, sites, surfaces)) {
+			for (const node of renderTokens(group, 0, true, sites, surfaces, stripCitations)) {
 				if (node instanceof HTMLElement && node.classList.contains("app-cards")) {
 					words();
 					parts.push(node);

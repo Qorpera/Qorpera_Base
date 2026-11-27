@@ -442,7 +442,7 @@ begin
 	)
 	values (
 		v_other_receipt_id, v_run_2.id, v_job_2.id, (v_start_2 ->> 'assignmentId')::uuid,
-		'sirah-ambiguous-file-op', 'company_file_mutation', repeat('a', 64), repeat('b', 64), 'ambiguous', false, clock_timestamp()
+		'coding_run_command:other-cmd:1', 'cloud_tool', repeat('a', 64), repeat('b', 64), 'ambiguous', false, clock_timestamp()
 	);
 	set local session_replication_role = replica;
 	update public.qorpera_runner_jobs
@@ -460,7 +460,7 @@ begin
 
 	perform pg_temp.sirah_assert(
 		pg_temp.sirah_activity_hints(v_company) > 0,
-		'failed surface coding run with ambiguous non-coding receipt still emits activity hint for recovery'
+		'failed surface coding run with ambiguous non-inspect coding_run_command receipt still emits activity hint for recovery'
 	);
 	v_activity := pg_temp.sirah_activity(v_owner, v_env);
 	perform pg_temp.sirah_assert(
@@ -469,7 +469,7 @@ begin
 			where (item ->> 'run_id')::uuid = v_run_2.id
 				and item ->> 'activity' = 'needs_attention'
 		),
-		'failed surface coding run with ambiguous non-coding receipt surfaces in Co-Founder activity: '
+		'failed surface coding run with ambiguous non-inspect coding_run_command receipt surfaces in Co-Founder activity: '
 			|| coalesce(v_activity::text, 'null')
 	);
 

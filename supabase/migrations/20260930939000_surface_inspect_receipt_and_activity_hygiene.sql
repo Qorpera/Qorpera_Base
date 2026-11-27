@@ -57,11 +57,11 @@ select pg_temp.sirah_patch(
 	array[
 $old$								and not exists (select 1 from public.qorpera_run_operation_receipts as receipt
 									where receipt.run_id = run.id and receipt.status in ('executing', 'ambiguous'))$old$,
-$new$								-- WHY: 20260930939000 ignores VM-local coding_run_command receipts requiring no company revision when checking activity recovery.
+$new$								-- WHY: 20260930939000 ignores VM-local studio-inspect receipts requiring no company revision when checking activity recovery.
 								and not exists (select 1 from public.qorpera_run_operation_receipts as receipt
 									where receipt.run_id = run.id and receipt.status in ('executing', 'ambiguous')
 										and not (receipt.requires_company_revision is false
-											and receipt.logical_operation_key like 'coding_run_command:%'))$new$
+											and receipt.logical_operation_key like 'coding_run_command:studio-inspect:%'))$new$
 	]
 );
 
@@ -72,12 +72,12 @@ $old$						exists (
 							select 1 from public.qorpera_run_operation_receipts as receipt
 							where receipt.run_id = run.id and receipt.status in ('executing', 'ambiguous')
 						)$old$,
-$new$						-- WHY: 20260930939000 ignores VM-local coding_run_command receipts requiring no company revision for activity hints.
+$new$						-- WHY: 20260930939000 ignores VM-local studio-inspect receipts requiring no company revision for activity hints.
 						exists (
 							select 1 from public.qorpera_run_operation_receipts as receipt
 							where receipt.run_id = run.id and receipt.status in ('executing', 'ambiguous')
 								and not (receipt.requires_company_revision is false
-									and receipt.logical_operation_key like 'coding_run_command:%')
+									and receipt.logical_operation_key like 'coding_run_command:studio-inspect:%')
 						)$new$
 	]
 );
