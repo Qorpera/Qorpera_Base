@@ -3636,6 +3636,13 @@ describe("Digital Post", () => {
 		);
 
 		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector(".confirm-dialog")!, "Cancel")!.click();
+		expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(0);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector(".confirm-dialog")!, "Block sender")!.click();
 		await vi.waitFor(() =>
 			expect(calls(fake, "qorpera_member_mail_block_sender").at(-1)).toMatchObject({
 				p_sender: "web@promo.example",
@@ -3646,6 +3653,38 @@ describe("Digital Post", () => {
 		tab(main, "Trash");
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
 		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Web-only newsletter");
+		button(lines(main)[0]!, "Restore to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(2)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Archive")).toBeDefined());
+		button(main, "Archive")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "archive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		tab(main, "Archived");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Weekly digest");
+		button(lines(main)[0]!, "Move back to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(1)],
+				p_action: "unarchive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
 
 		tab(main, "Addresses");
 		await vi.waitFor(() =>
@@ -3660,8 +3699,86 @@ describe("Digital Post", () => {
 		await vi.waitFor(() => expect(main.querySelector(".mailbox-blocked")).toBeNull());
 	});
 
-	it("hides star, trash, unsubscribe, and block controls for viewers", async () => {
-		const { main } = await mailbox((mail) => {
+	it("rolls back only the failed thread action without clobbering concurrent mutations and shows inline browser_required links", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "a@outside.example", subject: "Alpha" }),
+				summary(2, { fromAddress: "b@outside.example", subject: "Beta" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "a@outside.example", subject: "Alpha" })],
+				more: false,
+				waiting: [],
+				unsubscribe: {
+					deliveryId: id(915),
+					oneClick: true,
+					webUrl: "https://outside.example/unsub-portal",
+					urls: ["https://outside.example/unsub-portal"],
+				},
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(2));
+
+		let rejectStar!: (err: Error) => void;
+		const starPending = new Promise<never>((_resolve, reject) => {
+			rejectStar = reject;
+		});
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_update_threads" && args.p_action === "star") {
+				return starPending;
+			}
+			if (fn === "qorpera_member_mail_unsubscribe") {
+				const targetThread = String(args.p_thread);
+				const read = fake.reads[targetThread];
+				if (read?.unsubscribe) {
+					read.unsubscribe = {
+						...(read.unsubscribe as Record<string, unknown>),
+						status: "browser_required",
+						method: "browser",
+					};
+				}
+				return {
+					unsubscribeId: id(981),
+					thread: targetThread,
+					method: "browser",
+					status: "browser_required",
+					urls: ["https://outside.example/unsub-portal"],
+				};
+			}
+			return baseRpc(fn, args);
+		});
+
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(lines(main)[0]!.querySelector(".mailbox-star")?.classList.contains("is-starred")).toBe(true),
+		);
+		button(lines(main)[1]!, "Move to Trash")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+
+		rejectStar(new Error("transient network error"));
+		await vi.waitFor(() =>
+			expect(lines(main)[0]!.querySelector(".mailbox-star")?.classList.contains("is-starred")).toBe(false),
+		);
+		expect(lines(main)).toHaveLength(1);
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Alpha");
+
+		const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Unsubscribe")).toBeDefined());
+		button(main, "Unsubscribe")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector('a[href="https://outside.example/unsub-portal"]')?.textContent).toContain(
+				"Open unsubscribe page",
+			),
+		);
+		expect(openSpy).not.toHaveBeenCalled();
+	});
+
+	it("hides star, trash, unsubscribe, and block controls for viewers and handles denied blocked-senders reads", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
 			mail.threads = [summary(1, { starred: true })];
 			mail.reads[thread(1)] = {
 				thread: thread(1),
@@ -3678,6 +3795,15 @@ describe("Digital Post", () => {
 			};
 		}, "viewer");
 
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_blocked_senders") {
+				fake.calls.push({ fn, args });
+				throw Object.assign(new Error("permission denied"), { code: "42501", denied: true });
+			}
+			return baseRpc(fn, args);
+		});
+
 		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
 		expect(main.querySelector(".mailbox-star")).toBeNull();
 		expect(main.querySelector(".mailbox-row-tools")).toBeNull();
@@ -3687,5 +3813,10 @@ describe("Digital Post", () => {
 		expect(button(main, "Move to Trash")).toBeUndefined();
 		expect(button(main, "Unsubscribe")).toBeUndefined();
 		expect(button(main, "Block sender")).toBeUndefined();
+
+		button(main, "Back to Inbox")!.click();
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(1));
+		expect(main.querySelector(".mailbox-blocked")).toBeNull();
 	});
 });

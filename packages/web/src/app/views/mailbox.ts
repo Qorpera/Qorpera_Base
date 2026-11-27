@@ -33,7 +33,17 @@ import type { HostedStaffAgent } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { isUnnamed } from "../../ui/company-name.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
-import { fmtTime, formatPresentationDate, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import {
+	confirmDialog,
+	fmtTime,
+	formatPresentationDate,
+	h,
+	icon,
+	notice,
+	personAvatar,
+	replace,
+	spinner,
+} from "../../ui/dom.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
@@ -93,10 +103,11 @@ import { type HookAction, type HooksClient, HooksView } from "./settings-hooks.t
  * carries the title that says so. Account mail shows only that it is account mail, for which site, who used the
  * account and when. */
 
-type Tab = "inbox" | "starred" | "sent" | "trash" | "addresses";
+type Tab = "inbox" | "starred" | "archived" | "sent" | "trash" | "addresses";
 
 const INBOX: MailListRequest = {};
 const STARRED: MailListRequest = { view: "starred" };
+const ARCHIVED: MailListRequest = { view: "archived" };
 const SENT: MailListRequest = { direction: "sent" };
 const TRASH: MailListRequest = { view: "trash" };
 const TOAST_MS = 4000;
@@ -104,6 +115,7 @@ const TOAST_MS = 4000;
 function tabRequest(tab: Tab): MailListRequest {
 	if (tab === "sent") return SENT;
 	if (tab === "starred") return STARRED;
+	if (tab === "archived") return ARCHIVED;
 	if (tab === "trash") return TRASH;
 	return INBOX;
 }
@@ -154,6 +166,7 @@ interface MailboxUi {
 	/** Words on how an agent answers that were typed and not yet saved or let go, by `hookId:agent` (`add` for the Add
 	 * form's): a menu that closes without Save keeps them, and the panel opens on them again. */
 	howDrafts: Record<string, HowDraft>;
+	unsubscribeLinks: Record<string, string>;
 	acting: string | null;
 	busy: boolean;
 	error: string | null;
@@ -527,6 +540,7 @@ export function renderMailbox(
 			googleLinking: null,
 			googleError: null,
 			howDrafts: {},
+			unsubscribeLinks: {},
 			acting: null,
 			busy: false,
 			error: null,
@@ -631,7 +645,7 @@ export function renderMailbox(
 		ui.pendingFocus = waitingForThread && !drawn ? { target: targetFocus, carried: document.activeElement } : null;
 	}
 	CompanyMail.of(company)?.watch(lists, threads, stillShown, letters);
-	if (ui.tab === "addresses" && mail && mail.blockedSenders === undefined) {
+	if (ui.tab === "addresses" && mail && mail.blockedSenders === undefined && !mail.blockedSendersFailed) {
 		void CompanyMail.of(company)?.readBlockedSenders();
 	}
 }
@@ -807,6 +821,7 @@ function side(page: Page): HTMLElement {
 	const tabs: readonly [Tab, string, string][] = [
 		["inbox", t("Inbox"), "inbox"],
 		["starred", t("Starred"), "star"],
+		["archived", t("Archived"), "archive"],
 		// The paper plane is drawn once, under the name the approval settings gave it.
 		["sent", t("Sent"), "external_communication"],
 		["trash", t("Trash"), "trash"],
@@ -1111,6 +1126,7 @@ function listView(page: Page): HTMLElement {
 		if (ui.search.trim()) return h("p", { class: "mailbox-none" }, t("No mail matches."));
 		if (ui.tab === "sent") return h("p", { class: "mailbox-none" }, t("Nothing has been sent yet."));
 		if (ui.tab === "starred") return h("p", { class: "mailbox-none" }, t("No starred emails."));
+		if (ui.tab === "archived") return h("p", { class: "mailbox-none" }, t("No archived emails."));
 		if (ui.tab === "trash") return h("p", { class: "mailbox-none" }, t("Trash is empty."));
 		const empty = fresh(page, mail?.addresses ?? []);
 		return google ? h("div", { class: "mailbox-list" }, google, empty) : empty;
@@ -1120,9 +1136,11 @@ function listView(page: Page): HTMLElement {
 			? t("Sent")
 			: ui.tab === "starred"
 				? t("Starred")
-				: ui.tab === "trash"
-					? t("Trash")
-					: t("Everything else");
+				: ui.tab === "archived"
+					? t("Archived")
+					: ui.tab === "trash"
+						? t("Trash")
+						: t("Everything else");
 	return h(
 		"div",
 		{ class: "mailbox-list" },
@@ -1261,7 +1279,7 @@ async function runThreadAction(
 				label: t("Undo"),
 				run: () => void runThreadAction(page, thread, "restore"),
 			});
-		} else if (action === "restore") {
+		} else if (action === "restore" || action === "unarchive") {
 			say(page, t("Moved back to Inbox"), null);
 		} else if (action === "archive") {
 			say(page, t("Archived"), null, undefined, {
@@ -1284,9 +1302,10 @@ async function runUnsubscribe(page: Page, thread: string, deliveryId?: string): 
 	try {
 		const outcome = await reader.unsubscribe(thread, deliveryId);
 		page.ui.acting = null;
-		if (outcome.status === "browser_required" && outcome.urls?.[0]) {
-			window.open(outcome.urls[0], "_blank", "noopener,noreferrer");
-			page.redraw();
+		if (outcome.status === "browser_required") {
+			const link = outcome.urls?.[0] ?? outcome.url;
+			if (link) page.ui.unsubscribeLinks = { ...page.ui.unsubscribeLinks, [thread]: link };
+			say(page, t("Open the sender's page to finish unsubscribing"), null);
 			return;
 		}
 		say(page, t("Unsubscribe requested"), null);
@@ -1300,6 +1319,18 @@ async function runUnsubscribe(page: Page, thread: string, deliveryId?: string): 
 async function runBlockSender(page: Page, sender: string, block: boolean, closeThread?: string): Promise<void> {
 	const reader = CompanyMail.of(page.company);
 	if (!reader || page.ui.acting) return;
+	if (block) {
+		const confirmed = await confirmDialog(
+			t("Block {sender}? Future emails from this sender go to Trash, and existing conversations move to Trash.", {
+				sender,
+			}),
+			t("Block sender"),
+			true,
+			undefined,
+			page.company.signal,
+		);
+		if (!confirmed || page.company.signal.aborted) return;
+	}
 	page.ui.acting = `block:${sender}`;
 	page.ui.error = null;
 	page.redraw();
@@ -1308,7 +1339,15 @@ async function runBlockSender(page: Page, sender: string, block: boolean, closeT
 			await reader.blockSender(sender, true);
 			page.ui.acting = null;
 			if (closeThread && page.ui.open === closeThread) page.ui.open = null;
-			say(page, t("Blocked {sender}", { sender }), null);
+			say(page, t("Blocked {sender}", { sender }), null, undefined, {
+				label: t("Undo"),
+				run: () => {
+					void (async () => {
+						await runBlockSender(page, sender, false);
+						if (closeThread) await runThreadAction(page, closeThread, "restore");
+					})();
+				},
+			});
 		} else {
 			await reader.unblockSender(sender);
 			page.ui.acting = null;
@@ -1324,6 +1363,7 @@ async function runBlockSender(page: Page, sender: string, block: boolean, closeT
 function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 	const sent = page.ui.tab === "sent";
 	const inTrash = page.ui.tab === "trash" || Boolean(summary.trashedAt);
+	const inArchived = !inTrash && (page.ui.tab === "archived" || Boolean(summary.archivedAt));
 	const writable = canWrite(page);
 	const starred = summary.starred === true;
 	const agentId = summary.handledBy?.staffAgentId;
@@ -1403,6 +1443,22 @@ function threadLine(page: Page, summary: MailThreadSummary): HTMLElement {
 			? h(
 					"span",
 					{ class: "mailbox-row-tools" },
+					inArchived
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "mailbox-icon",
+									"aria-label": t("Move back to Inbox"),
+									title: t("Move back to Inbox"),
+									onclick: (event: MouseEvent) => {
+										event.stopPropagation();
+										void runThreadAction(page, summary.thread, "unarchive");
+									},
+								},
+								icon("restore"),
+							)
+						: null,
 					h(
 						"button",
 						{
@@ -1609,9 +1665,11 @@ function threadView(page: Page, thread: string): HTMLElement {
 			? t("Back to Sent")
 			: ui.tab === "starred"
 				? t("Back to Starred")
-				: ui.tab === "trash"
-					? t("Back to Trash")
-					: t("Back to Inbox");
+				: ui.tab === "archived"
+					? t("Back to Archived")
+					: ui.tab === "trash"
+						? t("Back to Trash")
+						: t("Back to Inbox");
 	const back = h(
 		"button",
 		{
@@ -1632,11 +1690,13 @@ function threadView(page: Page, thread: string): HTMLElement {
 	const archived = Boolean(readyThread?.archivedAt ?? summary?.archivedAt);
 	const senderBlocked = readyThread?.senderBlocked === true;
 	const unsubscribe = !account ? readyThread?.unsubscribe : undefined;
+	const browserUnsubscribeUrl =
+		ui.unsubscribeLinks[thread] ?? (unsubscribe?.status === "browser_required" ? unsubscribe.webUrl : undefined);
+	const receivedFromAddress = [...(readyThread?.messages ?? [])]
+		.reverse()
+		.find((message) => message.kind === "received" && message.fromAddress)?.fromAddress;
 	const senderAddress = !account
-		? (summary?.fromAddress ??
-			[...(readyThread?.messages ?? [])]
-				.reverse()
-				.find((message) => message.kind === "received" && message.fromAddress)?.fromAddress)
+		? (receivedFromAddress ?? (summary?.direction === "received" ? summary.fromAddress : undefined))
 		: undefined;
 	const actingHere = ui.acting !== null;
 	const toolbarActions =
@@ -1656,17 +1716,20 @@ function threadView(page: Page, thread: string): HTMLElement {
 						},
 						icon("star"),
 					),
-					!trashed && !archived
+					!trashed
 						? h(
 								"button",
 								{
 									type: "button",
 									class: "mailbox-icon",
-									"aria-label": t("Archive"),
-									title: t("Archive"),
-									onclick: () => void runThreadAction(page, thread, "archive", { closeAfter: true }),
+									"aria-label": archived ? t("Move back to Inbox") : t("Archive"),
+									title: archived ? t("Move back to Inbox") : t("Archive"),
+									onclick: () =>
+										void runThreadAction(page, thread, archived ? "unarchive" : "archive", {
+											closeAfter: !archived,
+										}),
 								},
-								icon("archive"),
+								icon(archived ? "restore" : "archive"),
 							)
 						: null,
 					h(
@@ -1681,36 +1744,49 @@ function threadView(page: Page, thread: string): HTMLElement {
 						},
 						icon(trashed ? "restore" : "trash"),
 					),
-					unsubscribe
-						? unsubscribe.status === "queued" || unsubscribe.status === "succeeded"
-							? h("span", { class: "mailbox-unsubscribe-status" }, t("Unsubscribed"))
-							: unsubscribe.oneClick || unsubscribe.mailto
-								? h(
-										"button",
-										{
-											type: "button",
-											class: "mailbox-text",
-											disabled: actingHere,
-											onclick: () => void runUnsubscribe(page, thread, unsubscribe.deliveryId),
-										},
-										icon("unsubscribe"),
-										ui.acting === `unsub:${thread}` ? t("Unsubscribing…") : t("Unsubscribe"),
-									)
-								: unsubscribe.webUrl
+					browserUnsubscribeUrl
+						? h(
+								"a",
+								{
+									href: browserUnsubscribeUrl,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									class: "mailbox-text",
+									title: t("Opens the sender's unsubscribe page"),
+								},
+								icon("external"),
+								t("Open unsubscribe page"),
+							)
+						: unsubscribe
+							? unsubscribe.status === "queued" || unsubscribe.status === "succeeded"
+								? h("span", { class: "mailbox-unsubscribe-status" }, t("Unsubscribed"))
+								: unsubscribe.oneClick || unsubscribe.mailto
 									? h(
-											"a",
+											"button",
 											{
-												href: unsubscribe.webUrl,
-												target: "_blank",
-												rel: "noopener noreferrer",
+												type: "button",
 												class: "mailbox-text",
-												title: t("Opens the sender's unsubscribe page"),
+												disabled: actingHere,
+												onclick: () => void runUnsubscribe(page, thread, unsubscribe.deliveryId),
 											},
 											icon("unsubscribe"),
-											t("Unsubscribe"),
+											ui.acting === `unsub:${thread}` ? t("Unsubscribing…") : t("Unsubscribe"),
 										)
-									: null
-						: null,
+									: unsubscribe.webUrl
+										? h(
+												"a",
+												{
+													href: unsubscribe.webUrl,
+													target: "_blank",
+													rel: "noopener noreferrer",
+													class: "mailbox-text",
+													title: t("Opens the sender's unsubscribe page"),
+												},
+												icon("unsubscribe"),
+												t("Unsubscribe"),
+											)
+										: null
+							: null,
 					senderAddress
 						? h(
 								"button",

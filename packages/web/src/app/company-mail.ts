@@ -143,6 +143,7 @@ export interface MailState {
 	/** Unset until the controller first reads it. */
 	readonly digitalPost?: DigitalPostState;
 	readonly blockedSenders?: readonly MailBlockedSender[];
+	readonly blockedSendersFailed?: boolean;
 }
 
 const NO_DIGITAL_POST: DigitalPostState = { letters: [], open: {} };
@@ -235,6 +236,7 @@ export class CompanyMail {
 	#companyTimer: ReturnType<typeof setInterval> | undefined;
 	#pageTimer: ReturnType<typeof setInterval> | undefined;
 	#reading = new Set<string>();
+	#rerun = new Map<string, () => Promise<void>>();
 	/** The address reads begun, and the first of them whose answer still counts: one begun before it is let go. */
 	#addressReads = 0;
 	#addressesSince = 0;
@@ -345,7 +347,21 @@ export class CompanyMail {
 			await read();
 		} finally {
 			this.#reading.delete(name);
+			const next = this.#rerun.get(name);
+			if (next) {
+				this.#rerun.delete(name);
+				if (!this.#closed) void next();
+			}
 		}
+	}
+
+	#refreshKey(name: string, run: () => Promise<void>): Promise<void> {
+		if (this.#closed) return Promise.resolve();
+		if (this.#reading.has(name)) {
+			this.#rerun.set(name, run);
+			return Promise.resolve();
+		}
+		return run();
 	}
 
 	async #fetchAddresses(afterChange = false): Promise<{ read: number; addresses: MailAddress[] } | null> {
@@ -1002,33 +1018,66 @@ export class CompanyMail {
 		return tellAgent(this.#company, this.#accounts, agentId, note, () => this.#closed);
 	}
 
-	async readBlockedSenders(): Promise<readonly MailBlockedSender[]> {
+	#refreshWatchedAfterMutation(): Promise<void> {
+		return Promise.all([
+			...[...this.#watched.lists].map(([key, listed]) =>
+				this.#refreshKey(`list:${key}`, () => this.#readFirst(key, listed)),
+			),
+			...[...this.#watched.threads].map((id) => this.#refreshKey(`thread:${id}`, () => this.#readThread(id))),
+		]).then(() => undefined);
+	}
+
+	async readBlockedSenders(requeue = false): Promise<readonly MailBlockedSender[]> {
 		if (this.#closed) return [];
-		let senders: MailBlockedSender[] = [];
-		try {
-			senders = await this.#withRpcScope((signal) =>
-				readMailBlockedSenders(this.#cloud, this.#environmentId, signal),
-			);
-		} catch (error) {
-			if (error instanceof CloudRpcError && (error.missing || error.denied)) {
-				this.#set((state) => (state.blockedSenders?.length === 0 ? state : { ...state, blockedSenders: [] }));
-				return [];
-			}
-			return this.#state?.blockedSenders ?? [];
-		}
-		this.#set((state) =>
-			JSON.stringify(state.blockedSenders ?? null) === JSON.stringify(senders)
-				? state
-				: { ...state, blockedSenders: senders },
-		);
-		return senders;
+		const read = () =>
+			this.#once("blocked", async () => {
+				try {
+					const senders = await this.#withRpcScope((signal) =>
+						readMailBlockedSenders(this.#cloud, this.#environmentId, signal),
+					);
+					this.#set((state) =>
+						!state.blockedSendersFailed &&
+						JSON.stringify(state.blockedSenders ?? null) === JSON.stringify(senders)
+							? state
+							: { ...state, blockedSenders: senders, blockedSendersFailed: false },
+					);
+				} catch (error) {
+					if (error instanceof CloudRpcError && (error.missing || error.denied)) {
+						this.#set((state) =>
+							!state.blockedSendersFailed && state.blockedSenders?.length === 0
+								? state
+								: { ...state, blockedSenders: [], blockedSendersFailed: false },
+						);
+						return;
+					}
+					this.#set((state) => (state.blockedSendersFailed ? state : { ...state, blockedSendersFailed: true }));
+				}
+			});
+		await (requeue ? this.#refreshKey("blocked", read) : read());
+		return this.#state?.blockedSenders ?? [];
 	}
 
 	async updateThreads(threads: readonly string[], action: MailThreadAction): Promise<void> {
 		const target = new Set(threads);
 		if (target.size === 0 || this.#closed) return;
-		const previous = this.#state;
 		const now = new Date().toISOString();
+		const priorLists = new Map<string, { readonly item: MailThreadSummary; readonly index: number }[]>();
+		const priorThreads = new Map<string, MailThread>();
+		const snapshot = this.#state;
+		if (snapshot) {
+			for (const [key, list] of Object.entries(snapshot.lists)) {
+				const captured: { readonly item: MailThreadSummary; readonly index: number }[] = [];
+				for (let i = 0; i < list.threads.length; i += 1) {
+					const item = list.threads[i]!;
+					if (target.has(item.thread)) captured.push({ item, index: i });
+				}
+				if (captured.length > 0) priorLists.set(key, captured);
+			}
+			for (const id of target) {
+				const read = snapshot.threads[id];
+				if (read?.status === "ready") priorThreads.set(id, read.thread);
+			}
+		}
 		const patchSummary = (item: MailThreadSummary): MailThreadSummary => {
 			if (!target.has(item.thread)) return item;
 			if (action === "star") return { ...item, starred: true };
@@ -1092,20 +1141,52 @@ export class CompanyMail {
 				updateMailThreads(this.#cloud, this.#environmentId, [...target], action, signal),
 			);
 		} catch (error) {
-			if (previous) this.#set(() => previous);
+			this.#set((state) => {
+				const lists = Object.fromEntries(
+					Object.entries(state.lists).map(([key, list]) => {
+						const captured = priorLists.get(key);
+						if (!captured) return [key, list];
+						const byId = new Map(captured.map((entry) => [entry.item.thread, entry.item]));
+						const nextThreads = list.threads.map((item) => byId.get(item.thread) ?? item);
+						const present = new Set(nextThreads.map((item) => item.thread));
+						for (const entry of captured) {
+							if (present.has(entry.item.thread)) continue;
+							const atIndex = Math.min(entry.index, nextThreads.length);
+							nextThreads.splice(atIndex, 0, entry.item);
+							present.add(entry.item.thread);
+						}
+						return [key, { ...list, threads: nextThreads }];
+					}),
+				);
+				const openThreads = Object.fromEntries(
+					Object.entries(state.threads).map(([id, read]) => {
+						const saved = priorThreads.get(id);
+						if (!saved || read.status !== "ready") return [id, read];
+						const restored: MailThread = {
+							...read.thread,
+							...(saved.starred ? { starred: true } : {}),
+							...(saved.archivedAt ? { archivedAt: saved.archivedAt } : {}),
+							...(saved.trashedAt ? { trashedAt: saved.trashedAt } : {}),
+						};
+						if (!saved.starred) Reflect.deleteProperty(restored, "starred");
+						if (!saved.archivedAt) Reflect.deleteProperty(restored, "archivedAt");
+						if (!saved.trashedAt) Reflect.deleteProperty(restored, "trashedAt");
+						return [id, { ...read, thread: restored }];
+					}),
+				);
+				return { ...state, lists, threads: openThreads };
+			});
+			void this.#refreshWatchedAfterMutation();
 			throw error;
 		}
-		await Promise.all([
-			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
-			...[...this.#watched.threads].map((id) => this.#readThread(id)),
-		]);
+		await this.#refreshWatchedAfterMutation();
 	}
 
 	async unsubscribe(thread: string, deliveryId?: string): Promise<MailUnsubscribeOutcome> {
 		const outcome = await this.#withRpcScope((signal) =>
 			unsubscribeMailThread(this.#cloud, this.#environmentId, thread, deliveryId, signal),
 		);
-		await this.#readThread(thread);
+		await this.#refreshKey(`thread:${thread}`, () => this.#readThread(thread));
 		return outcome;
 	}
 
@@ -1116,16 +1197,12 @@ export class CompanyMail {
 		const result = await this.#withRpcScope((signal) =>
 			blockMailSender(this.#cloud, this.#environmentId, sender, trashExisting, signal),
 		);
-		await Promise.all([
-			...[...this.#watched.lists].map(([key, listed]) => this.#readFirst(key, listed)),
-			...[...this.#watched.threads].map((id) => this.#readThread(id)),
-			this.readBlockedSenders(),
-		]);
+		await Promise.all([this.#refreshWatchedAfterMutation(), this.readBlockedSenders(true)]);
 		return result;
 	}
 
 	async unblockSender(sender: string): Promise<void> {
 		await this.#withRpcScope((signal) => unblockMailSender(this.#cloud, this.#environmentId, sender, signal));
-		await Promise.all([...[...this.#watched.threads].map((id) => this.#readThread(id)), this.readBlockedSenders()]);
+		await Promise.all([this.#refreshWatchedAfterMutation(), this.readBlockedSenders(true)]);
 	}
 }
