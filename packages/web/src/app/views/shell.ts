@@ -1667,23 +1667,25 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 		return row(`${keyPrefix}${href}`, href, roomModel(session, roomId), activeSessionId === session.sessionId, build);
 	};
 	// The member's pinned contacts stand among the pinned agents and group chats, each after the one it was put after.
-	const pinnedElements = weave(pinned, contactsIn("pinned")).flatMap((itemId) => {
-		const contact = contactOf.get(itemId);
-		if (contact) return contactShown(contact) ? [memberElement(itemId, "pin:", memberCard)] : [];
-		if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId, "pin:", groupPinCard)] : [];
-		const agent = company.staffById(itemId);
-		return shown(agent)
-			? [
-					row(
-						`pin:#/c/${profileId}/staff/${agent.id}`,
-						`#/c/${profileId}/staff/${agent.id}`,
-						agentModel(agent),
-						isActive(agent.id),
-						pinCard,
-					),
-				]
-			: [];
-	});
+	const pinnedElements = surfaceRail
+		? []
+		: weave(pinned, contactsIn("pinned")).flatMap((itemId) => {
+				const contact = contactOf.get(itemId);
+				if (contact) return contactShown(contact) ? [memberElement(itemId, "pin:", memberCard)] : [];
+				if (placedRooms.has(itemId)) return roomShown(itemId) ? [roomElement(itemId, "pin:", groupPinCard)] : [];
+				const agent = company.staffById(itemId);
+				return shown(agent)
+					? [
+							row(
+								`pin:#/c/${profileId}/staff/${agent.id}`,
+								`#/c/${profileId}/staff/${agent.id}`,
+								agentModel(agent),
+								isActive(agent.id),
+								pinCard,
+							),
+						]
+					: [];
+			});
 	// A container's rows: the company's order of its agents and group chats, with the member's contacts woven in
 	// before the pinned and hidden ones are left out, so a contact keeps its place beside one that is pinned or hidden.
 	const inContainer = (sectionId: string | undefined) =>
@@ -1702,14 +1704,16 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	// The Members group: the contacts their member has put nowhere else, the dragged ones first, then as they joined.
 	const memberIds = weave([], contactsIn(MEMBERS_ZONE)).filter((userId) => contactShown(contactOf.get(userId)!));
 	const memberRows = memberIds.map((userId) => memberElement(userId));
-	const sectionGroups = (sidebar?.sections ?? []).map((item) => {
-		let group = parts.sections.get(item.sectionId);
-		if (!group) {
-			group = sectionParts(`section:${item.sectionId}`, item.sectionId);
-			parts.sections.set(item.sectionId, group);
-		}
-		return { group, name: item.name, rows: inContainer(item.sectionId) };
-	});
+	const sectionGroups = surfaceRail
+		? []
+		: (sidebar?.sections ?? []).map((item) => {
+				let group = parts.sections.get(item.sectionId);
+				if (!group) {
+					group = sectionParts(`section:${item.sectionId}`, item.sectionId);
+					parts.sections.set(item.sectionId, group);
+				}
+				return { group, name: item.name, rows: inContainer(item.sectionId) };
+			});
 	for (const [sectionId] of parts.sections) if (!sectionIdSet.has(sectionId)) parts.sections.delete(sectionId);
 	const hiddenItems = roster.filter((itemId) => hidden.has(itemId));
 	// With them, the pages an owner or admin hid, for owners and admins: from here they show them again.
@@ -1750,46 +1754,47 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 			]
 		: [];
 	const activeStaffIds = new Set(active.map((agent) => agent.id));
-	const unassignedRows = [
-		...inContainer(undefined),
-		// Conversations that are not one agent's own thread and that the sidebar does not
-		// place: group chats on a cloud that places agents only, and group work.
-		...state.sessions
-			.filter(
-				(session) =>
-					session.status === "open" &&
-					// A pair transcript is reached from the chips in the agents' threads, never from the rail.
-					!isAgentPairSession(session) &&
-					!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
-					(!session.staffAgentId ||
-						!activeStaffIds.has(session.staffAgentId) ||
-						(session.executionScope &&
-							("group" in session.executionScope ||
-								("roomId" in session.executionScope && session.executionScope.agentThread !== true)))),
-			)
-			.map((session) => {
-				const roomId = isGroupChat(session) ? String(session.executionScope?.roomId).toLowerCase() : undefined;
-				const href = `#/c/${profileId}/chat/${session.sessionId}`;
-				return row(
-					href,
-					href,
-					roomId && UUID_PATTERN.test(roomId)
-						? roomModel(session, roomId)
-						: {
-								title: session.title,
-								subtitle: isGroupChat(session)
-									? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? t("Group chat"))
-									: t("company"),
-								kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
-								agents: company.groupAgents(session.sessionId),
-								selected: activeSessionId === session.sessionId,
-								mentioned: mentionedIn(session.sessionId),
-							},
-					activeSessionId === session.sessionId,
-					sessionRow,
-				);
-			}),
-	];
+	const unassignedRows = surfaceRail
+		? []
+		: [
+				...inContainer(undefined),
+				...state.sessions
+					.filter(
+						(session) =>
+							session.status === "open" &&
+							!isAgentPairSession(session) &&
+							!placedRooms.has(String(session.executionScope?.roomId).toLowerCase()) &&
+							(!session.staffAgentId ||
+								!activeStaffIds.has(session.staffAgentId) ||
+								(session.executionScope &&
+									("group" in session.executionScope ||
+										("roomId" in session.executionScope && session.executionScope.agentThread !== true)))),
+					)
+					.map((session) => {
+						const roomId = isGroupChat(session)
+							? String(session.executionScope?.roomId).toLowerCase()
+							: undefined;
+						const href = `#/c/${profileId}/chat/${session.sessionId}`;
+						return row(
+							href,
+							href,
+							roomId && UUID_PATTERN.test(roomId)
+								? roomModel(session, roomId)
+								: {
+										title: session.title,
+										subtitle: isGroupChat(session)
+											? (state.groups?.[String(session.executionScope?.roomId)]?.subtitle ?? t("Group chat"))
+											: t("company"),
+										kind: isGroupChat(session) ? ("Group chat" as const) : ("company" as const),
+										agents: company.groupAgents(session.sessionId),
+										selected: activeSessionId === session.sessionId,
+										mentioned: mentionedIn(session.sessionId),
+									},
+							activeSessionId === session.sessionId,
+							sessionRow,
+						);
+					}),
+			];
 	// An error notice is built again only when its text changes, so it is not announced again.
 	const notices = new Map<string, { text: string; element: HTMLElement }>();
 	const errorNotice = (about: string, text: string | undefined, retry: () => HTMLElement) => {
@@ -2247,7 +2252,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		]),
 	]);
 	if (workingKey !== hub.workingKey || hub.workingList.querySelector("[data-motion-unavailable]")) {
-		hub.workingKey = workingKey;
 		const workingRows: HTMLElement[] = [
 			...input.workingStaff.map((agent) => {
 				const look = AGENT_LOOK[company.agentState(agent.id)];
@@ -2334,6 +2338,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		];
 		hub.workingList.replaceChildren(...workingRows);
 		hub.workingCrew.settle();
+		hub.workingKey = workingKey;
 	}
 
 	hub.scheduledTitle.textContent = t("Scheduled");
@@ -2362,7 +2367,6 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
 	]);
 	if (scheduledKey !== hub.scheduledKey || hub.scheduledList.querySelector("[data-motion-unavailable]")) {
-		hub.scheduledKey = scheduledKey;
 		const scheduledRows: HTMLElement[] = [
 			...automations.map((automation) => {
 				const targetTitle = automation.targetSurfaceSlug
@@ -2479,13 +2483,13 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 		];
 		hub.scheduledList.replaceChildren(...scheduledRows);
 		hub.scheduledCrew.settle();
+		hub.scheduledKey = scheduledKey;
 	}
 
 	hub.idleTitle.textContent = t("Ready");
 	hub.idleWrap.hidden = !hasIdle;
 	const idleKey = JSON.stringify([locale, input.idleStaff.map((agent) => [agent.id, agent.displayName, agent.role])]);
 	if (idleKey !== hub.idleKey || hub.idleList.querySelector("[data-motion-unavailable]")) {
-		hub.idleKey = idleKey;
 		const idleRows = input.idleStaff.map((agent) =>
 			h(
 				"a",
@@ -2509,6 +2513,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			),
 		);
 		hub.idleList.replaceChildren(...idleRows);
+		hub.idleKey = idleKey;
 	}
 
 	for (const row of hub.body.querySelectorAll<HTMLElement>("[data-agent-id]")) {

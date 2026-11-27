@@ -110,9 +110,9 @@ export function loadFigureMotion(): Promise<typeof MotionData> {
 const MAX_SURFACES = 48;
 const MAX_SCRATCH_POOL = 6;
 const prepared = new Map<string, Promise<void>>();
-const surfaces = new Map<string, { body: HTMLCanvasElement; source: CanvasImageSource }>();
+const surfaces = new Map<string, HTMLCanvasElement>();
 
-function touchSurface(key: string): { body: HTMLCanvasElement; source: CanvasImageSource } | undefined {
+function touchSurface(key: string): HTMLCanvasElement | undefined {
 	const hit = surfaces.get(key);
 	if (!hit) return undefined;
 	surfaces.delete(key);
@@ -120,7 +120,7 @@ function touchSurface(key: string): { body: HTMLCanvasElement; source: CanvasIma
 	return hit;
 }
 
-function storeSurface(key: string, surface: { body: HTMLCanvasElement; source: CanvasImageSource }): void {
+function storeSurface(key: string, body: HTMLCanvasElement): void {
 	if (surfaces.size >= MAX_SURFACES) {
 		const inUse = new Set<string>();
 		for (const item of live) inUse.add(item.id + item.shown);
@@ -129,10 +129,10 @@ function storeSurface(key: string, surface: { body: HTMLCanvasElement; source: C
 			if (inUse.has(oldest)) continue;
 			const evicted = surfaces.get(oldest);
 			surfaces.delete(oldest);
-			if (evicted) evicted.body.width = evicted.body.height = 0;
+			if (evicted) evicted.width = evicted.height = 0;
 		}
 	}
-	surfaces.set(key, surface);
+	surfaces.set(key, body);
 }
 
 function pooledCanvas(pool: Map<number, HTMLCanvasElement>, side: number): HTMLCanvasElement {
@@ -299,9 +299,11 @@ async function prepare(entry: LiveMotion): Promise<void> {
 		pc.drawImage(plate, 0, 0, 512, 512);
 		pc.globalCompositeOperation = "destination-in";
 		pc.drawImage(source, 0, 0, 512, 512);
+		ctx.globalCompositeOperation = "source-atop";
 		ctx.drawImage(patch, 0, 0);
+		ctx.globalCompositeOperation = "source-over";
 		patch.width = patch.height = 0;
-		storeSurface(key, { body, source });
+		storeSurface(key, body);
 	}
 }
 
@@ -558,7 +560,7 @@ function shapeFor(entry: LiveMotion): Shape {
 	let shape = shapes.get(entry.id);
 	if (!shape) {
 		const surface = surfaces.get(entry.id + entry.shown);
-		shape = shapeOf(surface?.body ?? entry.fallback, entry.artwork.faces[entry.id] ?? []);
+		shape = shapeOf(surface ?? entry.fallback, entry.artwork.faces[entry.id] ?? []);
 		if (surface) shapes.set(entry.id, shape);
 	}
 	return shape;
@@ -607,7 +609,7 @@ function air(entry: LiveMotion, body: Act["body"]): void {
 		paintLayers(oc, work.over, k);
 		oc.globalCompositeOperation = "destination-in";
 		applyBody(oc, body);
-		oc.drawImage(surface.body, 0, 0, 100, 100);
+		oc.drawImage(surface, 0, 0, 100, 100);
 		oc.globalCompositeOperation = "source-over";
 		front.setTransform(1, 0, 0, 1, 0, 0);
 		front.drawImage(overCanvas, 0, 0);
@@ -879,8 +881,8 @@ function paint(entry: LiveMotion): void {
 	const frameStr = String(sample);
 	if (canvas.dataset.frame !== frameStr) canvas.dataset.frame = frameStr;
 	if (entry.painted === key) return;
-	const asset = touchSurface(entry.id + entry.shown);
-	if (!asset) return;
+	const body = touchSurface(entry.id + entry.shown);
+	if (!body || body.width === 0 || body.height === 0) return;
 	entry.painted = key;
 	const ctx = canvas.getContext("2d")!;
 	if (canvas.width !== side) {
@@ -943,6 +945,7 @@ function paint(entry: LiveMotion): void {
 			size = [width, tall];
 		}
 		const k = scale / 512;
+		const bodyLevel = level(`${surface}:body`, body, bucket);
 		if (layer) {
 			const lc = layer.getContext("2d")!;
 			lc.save();
@@ -953,17 +956,7 @@ function paint(entry: LiveMotion): void {
 			lc.rect(0, 0, size[0], size[1]);
 			lc.clip();
 			lc.globalCompositeOperation = "destination-in";
-			lc.drawImage(
-				level(`${surface}:source`, asset.source, bucket),
-				at[0] * k,
-				at[1] * k,
-				size[0],
-				size[1],
-				0,
-				0,
-				size[0],
-				size[1],
-			);
+			lc.drawImage(bodyLevel, at[0] * k, at[1] * k, size[0], size[1], 0, 0, size[0], size[1]);
 			lc.restore();
 		}
 		ctx.save();
@@ -973,7 +966,7 @@ function paint(entry: LiveMotion): void {
 		ctx.translate(-50, -50);
 		// No feather: the edge comes from the artwork's own (tightened)
 		// coverage, smoothed by the halving (Jonas, 20 Oct).
-		ctx.drawImage(level(`${surface}:body`, asset.body, bucket), 0, 0, 100, 100);
+		ctx.drawImage(bodyLevel, 0, 0, 100, 100);
 		ctx.globalAlpha = p.eyes;
 		if (layer)
 			ctx.drawImage(
@@ -1084,15 +1077,17 @@ function deskLight(
 function recolor(entry: LiveMotion): void {
 	if (!entry.ready || shownColor(entry) === entry.shown) return;
 	entry.ready = false;
-	void prepare(entry).then(() => {
-		if (!live.has(entry)) return;
-		entry.ready = true;
-		entry.painted = "";
-		paint(entry);
-		if (!entry.visible) entry.painted = "";
-		schedule();
-		recolor(entry);
-	});
+	void prepare(entry)
+		.then(() => {
+			if (!live.has(entry)) return;
+			entry.ready = true;
+			entry.painted = "";
+			paint(entry);
+			if (!entry.visible) entry.painted = "";
+			schedule();
+			recolor(entry);
+		})
+		.catch(() => undefined);
 }
 
 function moving(entry: LiveMotion, now = performance.now()): boolean {
@@ -1363,6 +1358,12 @@ export function mountFigureMotion(
 		// The theme may have changed while the artwork loaded.
 		recolor(entry);
 	};
+	const showFallback = () => {
+		if (!live.has(entry)) return;
+		if (!fallback.src) fallback.src = new URL(`${id}.webp`, base()).href;
+		fallback.hidden = false;
+		if (!motionFailed) host.dataset.motionUnavailable = "true";
+	};
 	const shown = shownColor(entry);
 	// WHY: Still avatars (other than Waiting) use deterministic static poses and never need the 118 KB motion chunk.
 	const needsMotion = !(entry.still && studio(activity) !== "Waiting");
@@ -1371,7 +1372,13 @@ export function mountFigureMotion(
 		// its first frame is drawn now, before the view is shown, so its place is never empty for a frame. It moves
 		// only once the observer says it is in view.
 		entry.shown = shown;
-		begin();
+		try {
+			begin();
+		} catch {
+			entry.ready = false;
+			entry.painted = "";
+			showFallback();
+		}
 	} else {
 		// Until the motion's code and the artwork in this colour are both here the figure's place stays empty, and
 		// the figure then fades in.
@@ -1390,12 +1397,7 @@ export function mountFigureMotion(
 			.then(() => {
 				if (live.has(entry)) begin();
 			})
-			.catch(() => {
-				if (!live.has(entry)) return;
-				if (!fallback.src) fallback.src = new URL(`${id}.webp`, base()).href;
-				fallback.hidden = false;
-				if (!motionFailed) host.dataset.motionUnavailable = "true";
-			});
+			.catch(showFallback);
 	}
 	return {
 		dispose() {
