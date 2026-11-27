@@ -974,8 +974,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   anything else is refused (22023 "A new address is the company's handle or a name, a dot and the handle, like acme or
   sales.acme"). An agent's `manage_hook` mailbox requires `<box>.<handle>` (22023 "A new address is a name, a dot and
   the company's handle, like hello.acme") under a handle the company already owns (42501 "Only a member can choose the
-  company's email handle"). The reserved names and names that read as Qorpera are refused for the box and the handle
-  each (22023, the messages above). A handle belongs to one company across the platform and stays its own while the
+  company's email handle"). The reserved RFC 2142 operations names and names that read as Qorpera are refused for both
+  the box and the handle, and generic platform/business names (`support`, `help`, `billing`, `info`, `team`, `contact`,
+  `hello`, `sales`, etc.) are reserved for handles so no company can claim them as bare addresses on the shared domain
+  while still allowing them as `<box>.<handle>` prefixes (22023, the messages above). A handle belongs to one company across the platform and stays its own while the
   company exists, also when its mailboxes are removed. An owner's or admin's `qorpera_create_company_mailbox` with a
   free handle claims it for the company, up to 3 handles a company (54000 "A company has at most 3 email handles";
   removing mailboxes frees none); a handle another company owns, or that another company's live mailbox ends in or

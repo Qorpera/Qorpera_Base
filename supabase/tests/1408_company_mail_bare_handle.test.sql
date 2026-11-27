@@ -39,6 +39,19 @@ begin
 	perform pg_temp.base_error(pg_temp.bh_box('co-'), '22023',
 		'A mailbox name is 1 to 64 lowercase letters, digits, dots, hyphens and underscores');
 	perform pg_temp.base_error(pg_temp.bh_box('admin'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('support'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('help'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('billing'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('info'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('team'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('contact'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('hello'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_error(pg_temp.bh_box('team.support'), '22023', 'This mailbox name is reserved');
+	perform pg_temp.base_assert(public.qorpera_company_mail_handle_status('92400000-0000-4000-8000-000000000010', 'support') = 'invalid'
+		and public.qorpera_company_mail_handle_status('92400000-0000-4000-8000-000000000010', 'billing') = 'invalid'
+		and public.qorpera_company_mail_handle_status('92400000-0000-4000-8000-000000000010', 'hello') = 'invalid'
+		and public.qorpera_company_mail_handle_status('92400000-0000-4000-8000-000000000010', 'contact') = 'invalid',
+		'platform-sounding handles report invalid');
 	perform pg_temp.base_error(pg_temp.bh_box('q0rpera'), '22023', 'A mailbox name that reads as Qorpera is reserved');
 	perform pg_temp.base_assert(not exists (select 1 from public.qorpera_company_mail_handles
 		where profile_id = '92400000-0000-4000-8000-000000000010'), 'refused bare handles claim nothing');
@@ -59,6 +72,10 @@ begin
 		'92400000-0000-4000-8000-000000000020', 'invoices.namah', 'Invoices');
 	perform pg_temp.base_assert(v_box ->> 'email' = 'invoices.namah@mail.example.test',
 		'member adds dotted address under bare-claimed handle: ' || v_box::text);
+	v_box := public.qorpera_create_company_mailbox('92400000-0000-4000-8000-000000000010',
+		'92400000-0000-4000-8000-000000000020', 'billing.namah', 'Billing');
+	perform pg_temp.base_assert(v_box ->> 'email' = 'billing.namah@mail.example.test',
+		'business names remain allowed as the box prefix under an owned handle: ' || v_box::text);
 
 	perform public.qorpera_set_event_hook_status((select hook_id from public.qorpera_company_mailboxes
 		where local_part = 'namah' and removed_at is null), 'removed');
@@ -109,6 +126,7 @@ select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-00000000000
 set local role authenticated;
 select pg_temp.base_error($$select public.qorpera_mail_admit_local_part('92400000-0000-4000-8000-000000000010', 'namah', auth.uid())$$,
 	'42501');
+select pg_temp.base_error($$select public.qorpera_mail_handle_reserved('support')$$, '42501');
 reset role;
 
 rollback;
