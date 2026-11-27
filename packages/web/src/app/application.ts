@@ -2780,13 +2780,9 @@ export function mountApplication(
 			);
 			// The pages' reader and the apps' share one hint channel.
 			const hints = sharedFolderHints(files);
-			try {
-				surfaceFolderHints = hints(() => {
-					surfacesOf(controller)?.onFolderHint();
-				});
-			} catch {
-				surfaceFolderHints = undefined;
-			}
+			surfaceFolderHints = hints(() => {
+				surfacesOf(controller)?.onFolderHint();
+			});
 			const shared = {
 				signal: files.signal,
 				current: () => files.current(),
