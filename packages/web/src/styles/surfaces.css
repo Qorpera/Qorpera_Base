@@ -3063,36 +3063,75 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 	position: absolute; z-index: 20; top: 14px; left: 16px; display: inline-flex; align-items: center; gap: 6px;
 	box-shadow: var(--surface-glass-shadow);
 }
+.frame.rail-hidden-desktop .workbench-return-btn { left: 60px; }
 .workbench-return-btn[hidden] { display: none; }
 .workbench-return-btn .icon { width: 14px; height: 14px; }
 .workbench-bar {
-	flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px;
-	padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg);
+	flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 52px;
+	padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--bg); container-type: inline-size;
 }
-.frame.rail-hidden-desktop .workbench-bar { padding-left: 54px; }
+.frame:has(.surface-page.is-workbench) .rail-reopen-btn { top: 9px; left: 12px; }
+.frame.rail-hidden-desktop .workbench-bar { padding-left: 56px; }
 .workbench-bar-left, .workbench-bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.workbench-bar-right { flex: none; }
+.workbench-tracks-toggle {
+	display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 7px; border: 1px solid transparent;
+	border-radius: 8px; background: none; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 600;
+	cursor: default; flex: none;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.workbench-tracks-toggle:hover { background: var(--hover); color: var(--text); }
+.workbench-tracks-toggle.is-active { background: var(--hover); border-color: var(--border); color: var(--text); }
+.workbench-tracks-toggle .icon { width: 16px; height: 16px; }
 .workbench-title {
-	margin: 0; font-size: 15px; font-weight: 680; letter-spacing: -0.015em; white-space: nowrap;
-	overflow: hidden; text-overflow: ellipsis;
+	flex: 0 0 auto; margin: 0; font-size: 15px; font-weight: 680; letter-spacing: -0.015em; white-space: nowrap;
 }
+.workbench-bar-left > .surface-pill-address {
+	display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 196px;
+	height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: transparent;
+	color: var(--text); font: inherit; font-size: 12.5px; font-weight: 580; white-space: nowrap; cursor: default;
+	transition: background-color var(--motion-fast) ease, border-color var(--motion-fast) ease;
+}
+.workbench-bar-left > .surface-pill-address:hover,
+.workbench-bar-left > .surface-pill-address[aria-expanded="true"] {
+	background: var(--hover); border-color: var(--border-strong);
+}
+.workbench-bar-left > .surface-pill-address .surface-address-host {
+	min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.workbench-bar-left > .surface-pill-address .surface-address-dot { flex: none; }
+.workbench .surface-address-sheet { z-index: 30; }
 .workbench-repo-chip {
-	display: inline-flex; align-items: center; gap: 5px; max-width: 240px; height: 26px; padding: 0 9px;
-	border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); font-size: 12px; font-weight: 550;
-	white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 190px; height: 28px;
+	padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: transparent;
+	color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 550; white-space: nowrap;
+	overflow: hidden; text-overflow: ellipsis; cursor: default;
+	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease, border-color var(--motion-fast) ease;
 }
+button.workbench-repo-chip:hover { background: var(--hover); border-color: var(--border-strong); color: var(--text); }
+.workbench-repo-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .workbench-repo-chip .icon { flex: none; width: 13px; height: 13px; }
+.workbench-bar-divider { flex: none; width: 1px; height: 18px; background: var(--border); }
 .workbench-tab-group {
 	display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 10px;
 	background: color-mix(in srgb, var(--text) 3%, transparent);
 }
 .workbench-tab-btn {
-	display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
-	background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; font-weight: 580; cursor: default;
+	display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; border: 0; border-radius: 8px;
+	background: none; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 580; white-space: nowrap; cursor: default;
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .workbench-tab-btn:hover { color: var(--text); }
 .workbench-tab-btn.is-active { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 8%); }
-.workbench-tab-btn .icon { width: 14px; height: 14px; }
+.workbench-tab-btn .icon { flex: none; width: 13.5px; height: 13.5px; }
+@container (max-width: 57.5em) {
+	.workbench-repo-chip { display: none; }
+}
+@container (max-width: 46.25em) {
+	.workbench-bar-left > .surface-pill-address { max-width: 148px; }
+	.workbench-tab-btn { padding: 0 7px; }
+	.workbench-tab-label { display: none; }
+}
 .workbench-count-badge {
 	min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px;
 	background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); font-size: 11px; font-weight: 650;
@@ -3122,9 +3161,10 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .workbench-banner-close .icon { width: 14px; height: 14px; }
 .workbench-body { flex: 1 1 0; display: flex; min-height: 0; overflow: hidden; }
 .workbench-tracks {
-	flex: none; width: 268px; display: flex; flex-direction: column; min-height: 0;
+	flex: none; width: 236px; display: flex; flex-direction: column; min-height: 0;
 	border-right: 1px solid var(--border); background: color-mix(in srgb, var(--text) 1.5%, var(--bg));
 }
+.workbench-tracks[hidden] { display: none; }
 .workbench-tracks-top { flex: none; display: grid; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
 .workbench-tracks-actions { display: flex; align-items: center; gap: 6px; }
 .workbench-new-track-btn { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
@@ -3198,9 +3238,12 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .workbench-thread {
 	flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg);
 }
+@media (min-width: 721px) {
+	.workbench-thread { min-width: 340px; }
+}
 .workbench-track-head {
 	flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
-	padding: 12px 20px; border-bottom: 1px solid var(--border);
+	padding: 10px 18px; border-bottom: 1px solid var(--border);
 }
 .workbench-track-head[hidden] { display: none; }
 .workbench-track-head-info, .workbench-track-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
@@ -3342,17 +3385,6 @@ button.studio-svg-stage:focus-visible { outline: 2px solid var(--accent); outlin
 .workbench-panel-resizer:hover, .workbench-panel-resizer:focus-visible {
 	background: color-mix(in srgb, var(--primary) 24%, transparent);
 }
-.workbench-panel-head {
-	flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
-	padding: 8px 12px; border-bottom: 1px solid var(--border);
-}
-.workbench-panel-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; }
-.workbench-panel-tab {
-	display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border: 0; border-radius: 8px;
-	background: none; color: var(--text-muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: default;
-}
-.workbench-panel-tab:hover { color: var(--text); background: var(--hover); }
-.workbench-panel-tab.is-active { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
 .workbench-panel-content { flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .workbench-preview-pane, .workbench-artifact-pane {
 	flex: 1 1 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
