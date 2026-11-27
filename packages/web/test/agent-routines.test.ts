@@ -3364,11 +3364,7 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 		changeReason: null,
 		...overrides,
 	});
-	const withPayer = (
-		fake: FolderFake,
-		getPayer: () => unknown = () => payerRow(),
-		rows: () => unknown[] = () => [],
-	) =>
+	const withPayer = (fake: FolderFake, getPayer: () => unknown = () => payerRow(), rows: () => unknown[] = () => []) =>
 		writer(fake, rows, (name) => {
 			if (name === PAYER_RPC) return getPayer();
 			throw new Error(`Unexpected call ${name}`);
@@ -3383,6 +3379,7 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 		fake.folder.commit.mockImplementation(async (key, units, signal) => {
 			if (!conflicted) {
 				conflicted = true;
+				w.log.push("commit");
 				fake.put(PATH, routineText({ status: "active", instructions: "Updated by agent meanwhile." }));
 				return {
 					commitId: "10000000-0000-4000-8000-0000000000c1",
@@ -3423,7 +3420,7 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 		const planAccount = {
 			...account,
 			provider: "openai-codex",
-			authenticationMode: "chatgpt_subscription",
+			loginKind: "chatgpt_plan",
 			allowAutonomous: false,
 		} as unknown as NativeMemberConnection;
 		const pausedFake = seeded({
@@ -3508,11 +3505,15 @@ describe("WebRoutines.rename and WebRoutines.delete", () => {
 		expect(waitingFake.folder.commit).not.toHaveBeenCalled();
 
 		const missingRpcFake = seeded({ text: routineText({ status: "active" }) });
-		const missingRpcWriter = writer(missingRpcFake, () => [], (name) => {
-			if (name === PAYER_RPC)
-				throw new CloudRpcError(PAYER_RPC, { message: "Could not find the function", code: "PGRST202" }, 404);
-			throw new Error(`Unexpected call ${name}`);
-		});
+		const missingRpcWriter = writer(
+			missingRpcFake,
+			() => [],
+			(name) => {
+				if (name === PAYER_RPC)
+					throw new CloudRpcError(PAYER_RPC, { message: "Could not find the function", code: "PGRST202" }, 404);
+				throw new Error(`Unexpected call ${name}`);
+			},
+		);
 		await expect(
 			missingRpcWriter.routines.rename(ROUTINE_ID, FILE_ID, "Old cloud", {
 				userId: VIEWER_ID,
