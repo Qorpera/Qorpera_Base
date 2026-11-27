@@ -35,7 +35,13 @@ afterEach(async () => {
 });
 
 /** Enable Banking as the vault sees it: one Danish bank, its sign-in page, and a session with one account. */
-function enableBanking(options: { accounts?: unknown[] } = {}) {
+function enableBanking(
+	options: {
+		accounts?: unknown[];
+		aspspsResponse?: () => Response | Promise<Response>;
+		authResponse?: () => Response | Promise<Response>;
+	} = {},
+) {
 	const calls: { method: string; path: string; body: unknown; authorization: string | null }[] = [];
 	const fetchImplementation = vi.fn<typeof fetch>(async (target, init) => {
 		const url = new URL(String(target));
@@ -48,17 +54,21 @@ function enableBanking(options: { accounts?: unknown[] } = {}) {
 		});
 		if (url.origin !== "https://api.enablebanking.com") throw new Error(`unexpected ${url.href}`);
 		if (url.pathname === "/aspsps")
-			return Response.json({
-				aspsps: [
-					{ name: "Danske Bank", country: "DK", maximum_consent_validity: 90 * 86400 },
-					{ name: "Nordea", country: "DK" },
-				],
-			});
+			return options.aspspsResponse
+				? options.aspspsResponse()
+				: Response.json({
+						aspsps: [
+							{ name: "Danske Bank", country: "DK", maximum_consent_validity: 90 * 86400 },
+							{ name: "Nordea", country: "DK" },
+						],
+					});
 		if (url.pathname === "/auth")
-			return Response.json({
-				url: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
-				authorization_id: "auth-1",
-			});
+			return options.authResponse
+				? options.authResponse()
+				: Response.json({
+						url: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
+						authorization_id: "auth-1",
+					});
 		if (url.pathname.startsWith("/sessions/") && init?.method === "DELETE") return Response.json({});
 		if (url.pathname === "/sessions")
 			return Response.json({
@@ -281,7 +291,7 @@ it("reads the Enable Banking application from the connectors credential, alone o
 });
 
 /** The vault's routes, end to end: a bank ticket's start names the bank; the confirm seals the session. */
-function routeFixture(connectorId = "bank") {
+function routeFixture(connectorId = "bank", bankOptions?: Parameters<typeof enableBanking>[0] | null) {
 	const identity = {
 		companyId: randomUUID(),
 		environmentId: randomUUID(),
@@ -328,12 +338,12 @@ function routeFixture(connectorId = "bank") {
 			throw new Error("not used");
 		}),
 	};
-	const bank = enableBanking();
+	const bank = bankOptions === null ? undefined : enableBanking(bankOptions);
 	const oauth = new CloudConnectorOAuthFlows({
 		clients: {},
 		callbackUrl: CALLBACK,
 		returnOrigins: [WEB],
-		bank: bank.client,
+		...(bank ? { bank: bank.client } : {}),
 	});
 	const service = new HttpCloudSecretBrokerService(
 		new CloudSecretBroker({ authority, keyring, adapters: [] }),
@@ -373,7 +383,7 @@ it("starts a bank ticket only with a bank choice, returns through the shared cal
 			})
 		).status,
 	).not.toBe(200);
-	expect(f.bank.calls).toEqual([]);
+	expect(f.bank?.calls).toEqual([]);
 	const started = await post(port, startPath, {
 		...startBody,
 		bank: { name: "Danske Bank", country: "DK", psuType: "business" },
@@ -384,7 +394,7 @@ it("starts a bank ticket only with a bank choice, returns through the shared cal
 		connectorId: "bank",
 		authorizationUrl: "https://tilisy.enablebanking.com/ais/start?sessionid=abc",
 	});
-	const state = (f.bank.calls[1]?.body as Record<string, string>).state as string;
+	const state = (f.bank?.calls[1]?.body as Record<string, string>).state as string;
 	const callback = await fetch(
 		`http://127.0.0.1:${port}/v1/oauth/callback?state=${encodeURIComponent(state)}&code=bank-code`,
 		{ redirect: "manual" },
@@ -427,5 +437,105 @@ it("refuses a bank choice on any other connector's ticket", async () => {
 		bank: { name: "Danske Bank", country: "DK", psuType: "business" },
 	});
 	expect(response.status).not.toBe(200);
-	expect(f.bank.calls).toEqual([]);
+	expect(f.bank?.calls).toEqual([]);
+});
+
+it("reports classified bank start failures with non-secret logging while keeping foreign return origins opaque", async () => {
+	const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const inactive = routeFixture("bank", {
+			aspspsResponse: () => Response.json({ code: 403, message: "Application is not active" }, { status: 403 }),
+		});
+		const inactivePort = await inactive.service.start();
+		const inactivePath = `/v1/oauth/${inactive.ticketId}/start?company=${inactive.identity.companyId}`;
+		const inactiveStart = await post(inactivePort, inactivePath, {
+			schema: "qorpera.cloud-connector-oauth-start/v2",
+			captureCapability: inactive.capability,
+			returnTo: `${WEB}/`,
+			browserProofSha256: proofHash(inactive.proof),
+			bank: { name: "Nordea", country: "DK", psuType: "business" },
+		});
+		expect(inactiveStart.status).toBe(403);
+		expect(await inactiveStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "bank_service_inactive",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith(
+			"Bank sign-in start failed (reason: bank_service_inactive, provider: inactive).",
+		);
+
+		const unknownBank = routeFixture("bank");
+		const unknownPort = await unknownBank.service.start();
+		const unknownStart = await post(
+			unknownPort,
+			`/v1/oauth/${unknownBank.ticketId}/start?company=${unknownBank.identity.companyId}`,
+			{
+				schema: "qorpera.cloud-connector-oauth-start/v2",
+				captureCapability: unknownBank.capability,
+				returnTo: `${WEB}/`,
+				browserProofSha256: proofHash(unknownBank.proof),
+				bank: { name: "Unknown Bank", country: "DK", psuType: "business" },
+			},
+		);
+		expect(unknownStart.status).toBe(403);
+		expect(await unknownStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "bank_unavailable",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith("Bank sign-in start failed (reason: bank_unavailable).");
+
+		const rateLimited = routeFixture("bank", {
+			authResponse: () => Response.json({ error: "ASPSP_RATE_LIMIT_EXCEEDED" }, { status: 429 }),
+		});
+		const ratePort = await rateLimited.service.start();
+		const rateStart = await post(
+			ratePort,
+			`/v1/oauth/${rateLimited.ticketId}/start?company=${rateLimited.identity.companyId}`,
+			{
+				schema: "qorpera.cloud-connector-oauth-start/v2",
+				captureCapability: rateLimited.capability,
+				returnTo: `${WEB}/`,
+				browserProofSha256: proofHash(rateLimited.proof),
+				bank: { name: "Nordea", country: "DK", psuType: "business" },
+			},
+		);
+		expect(rateStart.status).toBe(403);
+		expect(await rateStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "rate_limited",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith(
+			"Bank sign-in start failed (reason: rate_limited, provider: rate_limited).",
+		);
+
+		const unconfigured = routeFixture("bank", null);
+		const unconfiguredPort = await unconfigured.service.start();
+		const unconfiguredPath = `/v1/oauth/${unconfigured.ticketId}/start?company=${unconfigured.identity.companyId}`;
+		const foreign = await post(unconfiguredPort, unconfiguredPath, {
+			schema: "qorpera.cloud-connector-oauth-start/v2",
+			captureCapability: unconfigured.capability,
+			returnTo: "https://evil.example/",
+			browserProofSha256: proofHash(unconfigured.proof),
+			bank: { name: "Nordea", country: "DK", psuType: "business" },
+		});
+		expect(foreign.status).toBe(403);
+		expect(await foreign.json()).toEqual({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" });
+		const unconfiguredStart = await post(unconfiguredPort, unconfiguredPath, {
+			schema: "qorpera.cloud-connector-oauth-start/v2",
+			captureCapability: unconfigured.capability,
+			returnTo: `${WEB}/`,
+			browserProofSha256: proofHash(unconfigured.proof),
+			bank: { name: "Nordea", country: "DK", psuType: "business" },
+		});
+		expect(unconfiguredStart.status).toBe(403);
+		expect(await unconfiguredStart.json()).toEqual({
+			schema: "qorpera.cloud-connector-oauth-failed/v1",
+			reason: "bank_service_inactive",
+		});
+		expect(errorSpy).toHaveBeenLastCalledWith(
+			"Bank sign-in start failed (reason: bank_service_inactive, provider: unconfigured).",
+		);
+	} finally {
+		errorSpy.mockRestore();
+	}
 });
