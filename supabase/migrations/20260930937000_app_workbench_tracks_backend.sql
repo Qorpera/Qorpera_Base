@@ -344,9 +344,39 @@ $new$		auto_approve_after = false,
 select pg_temp.awtb_patch(
 	'public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)'::regprocedure,
 	array[
+$old$	v_auto_approve boolean := coalesce(p_auto_approve_after, false);
+	v_now timestamptz := clock_timestamp();$old$,
+$new$	v_auto_approve boolean := coalesce(p_auto_approve_after, false);
+	v_auto_publish boolean := false;
+	v_now timestamptz := clock_timestamp();$new$,
+$old$		select r.id as rec_id, r.session_id, r.status as rec_status, r.auto_approve_after as rec_auto_approve
+		from public.qorpera_surface_reconciliations r$old$,
+$new$		select r.id as rec_id, r.session_id, r.status as rec_status, r.auto_approve_after as rec_auto_approve,
+			r.auto_publish_after as rec_auto_publish
+		from public.qorpera_surface_reconciliations r$new$,
+$old$		v_auto_approve := v_auto_approve or coalesce(v_sup.rec_auto_approve, false);$old$,
+$new$		v_auto_approve := v_auto_approve or coalesce(v_sup.rec_auto_approve, false);
+		v_auto_publish := v_auto_publish or coalesce(v_sup.rec_auto_publish, false);$new$,
+$old$				error_detail = 'Superseded by updated change revision',
+				auto_approve_after = false,$old$,
+$new$				error_detail = 'Superseded by updated change revision',
+				auto_approve_after = false,
+				auto_publish_after = false,$new$,
 $old$			auto_approve_after = v_auto_approve,$old$,
 $new$			auto_approve_after = v_auto_approve,
-			auto_publish_after = false,$new$
+			auto_publish_after = v_auto_publish,$new$,
+$old$			selected_change_ids, status, conflict_paths, auto_approve_after,
+			created_by_user_id, updated_at, expires_at
+		)
+		values (
+			v_surface.profile_id, p_surface_id, v_comp_key, v_base_fp,
+			v_ordered_ids, 'queued', v_paths, v_auto_approve,$old$,
+$new$			selected_change_ids, status, conflict_paths, auto_approve_after, auto_publish_after,
+			created_by_user_id, updated_at, expires_at
+		)
+		values (
+			v_surface.profile_id, p_surface_id, v_comp_key, v_base_fp,
+			v_ordered_ids, 'queued', v_paths, v_auto_approve, v_auto_publish,$new$
 	]
 );
 

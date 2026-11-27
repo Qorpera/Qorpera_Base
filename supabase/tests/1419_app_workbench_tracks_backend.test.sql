@@ -32,6 +32,8 @@ declare
 	v_track_d uuid;
 	v_track_guard uuid;
 	v_track_dep uuid;
+	v_track_sup uuid;
+	v_track_ready_retry uuid;
 	v_track_stop uuid;
 	v_track_empty uuid;
 	v_track_internal uuid;
@@ -43,6 +45,8 @@ declare
 	v_lease_d uuid := extensions.gen_random_uuid();
 	v_lease_guard uuid := extensions.gen_random_uuid();
 	v_lease_dep uuid := extensions.gen_random_uuid();
+	v_lease_sup uuid := extensions.gen_random_uuid();
+	v_lease_ready_retry uuid := extensions.gen_random_uuid();
 	v_lease_stop uuid := extensions.gen_random_uuid();
 	v_ch_a1 uuid;
 	v_ch_a2 uuid;
@@ -52,6 +56,8 @@ declare
 	v_ch_d1 uuid;
 	v_ch_guard uuid;
 	v_ch_dep uuid;
+	v_ch_sup uuid;
+	v_ch_ready_retry uuid;
 	v_art jsonb;
 	v_art_v2 jsonb;
 	v_art_full jsonb;
@@ -66,6 +72,14 @@ declare
 	v_rec_id uuid;
 	v_rec_session_id uuid;
 	v_rec_lease uuid := extensions.gen_random_uuid();
+	v_sup_rec_id uuid;
+	v_sup_rec_session_id uuid;
+	v_sup_rec_lease uuid := extensions.gen_random_uuid();
+	v_retry_rec_id uuid;
+	v_ready_rec_id uuid;
+	v_ready_rec_session_id uuid;
+	v_ready_rec_lease uuid := extensions.gen_random_uuid();
+	v_ready_job_payload jsonb;
 	v_dep_job_id uuid;
 	v_dep_job_lease uuid := extensions.gen_random_uuid();
 	v_dep_job_payload jsonb;
@@ -166,6 +180,8 @@ begin
 	v_track_d := (public.qorpera_start_surface_session(v_app_id, 'Export CSV reports', 'CSV export') ->> 'id')::uuid;
 	v_track_guard := (public.qorpera_start_surface_session(v_app_id, 'Guard active merge job', 'Active job guard') ->> 'id')::uuid;
 	v_track_dep := (public.qorpera_start_surface_session(v_app_id, 'Add CSV charts on top of CSV export', 'CSV charts') ->> 'id')::uuid;
+	v_track_sup := (public.qorpera_start_surface_session(v_app_id, 'Add CSV filters on top of CSV export', 'CSV filters') ->> 'id')::uuid;
+	v_track_ready_retry := (public.qorpera_start_surface_session(v_app_id, 'Add CSV summary on top of CSV export', 'CSV summary') ->> 'id')::uuid;
 	v_track_stop := (public.qorpera_start_surface_session(v_app_id, 'Refactor auth middleware', 'Auth refactor') ->> 'id')::uuid;
 	v_track_empty := (public.qorpera_start_surface_session(v_app_id, 'Discuss roadmap only', 'Roadmap chat') ->> 'id')::uuid;
 	v_web_session := (public.qorpera_start_surface_session(v_website_id, 'Update hero copy', 'Hero copy') ->> 'id')::uuid;
@@ -196,6 +212,14 @@ begin
 	set state = 'running', lease_token = v_lease_dep, lease_expires_at = clock_timestamp() + interval '10 minutes',
 		track_branch = 'qorpera/coding/track-dep'
 	where id = v_track_dep;
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_sup, lease_expires_at = clock_timestamp() + interval '10 minutes',
+		track_branch = 'qorpera/coding/track-sup'
+	where id = v_track_sup;
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_ready_retry, lease_expires_at = clock_timestamp() + interval '10 minutes',
+		track_branch = 'qorpera/coding/track-ready-retry'
+	where id = v_track_ready_retry;
 	update public.qorpera_surface_sessions
 	set state = 'ready', has_active_chat = true, lease_token = null
 	where id = v_track_empty;
@@ -343,9 +367,17 @@ begin
 		v_profile, v_track_dep, 'CSV charts', 'Depends on CSV export preview', 'git_range',
 		v_sha_6, v_sha_8, '{}'::uuid[], array['src/csv-charts.ts'], null, null, false, v_lease_dep
 	) ->> 'changeId')::uuid;
+	v_ch_sup := (public.qorpera_native_surface_record_change(
+		v_profile, v_track_sup, 'CSV filters', 'Depends on CSV export preview', 'git_range',
+		v_sha_6, repeat('c', 40), '{}'::uuid[], array['src/csv-filters.ts'], null, null, false, v_lease_sup
+	) ->> 'changeId')::uuid;
+	v_ch_ready_retry := (public.qorpera_native_surface_record_change(
+		v_profile, v_track_ready_retry, 'CSV summary', 'Depends on CSV export preview', 'git_range',
+		v_sha_6, repeat('d', 40), '{}'::uuid[], array['src/csv-summary.ts'], null, null, false, v_lease_ready_retry
+	) ->> 'changeId')::uuid;
 	update public.qorpera_surface_changes
 	set preview_base_change_ids = array[v_ch_d1]
-	where id = v_ch_dep;
+	where id in (v_ch_dep, v_ch_sup, v_ch_ready_retry);
 
 	perform public.qorpera_surface_complete_session_turn(v_track_a, 'ready', 'Billing mockup and changes ready.', null, null, null, v_lease_a);
 	perform public.qorpera_surface_complete_session_turn(v_track_b, 'ready', 'Shortcuts ready.', null, null, null, v_lease_b);
@@ -353,6 +385,8 @@ begin
 	perform public.qorpera_surface_complete_session_turn(v_track_d, 'ready', 'CSV ready.', null, null, null, v_lease_d);
 	perform public.qorpera_surface_complete_session_turn(v_track_guard, 'ready', 'Guard ready.', null, null, null, v_lease_guard);
 	perform public.qorpera_surface_complete_session_turn(v_track_dep, 'ready', 'Charts ready.', null, null, null, v_lease_dep);
+	perform public.qorpera_surface_complete_session_turn(v_track_sup, 'ready', 'Filters ready.', null, null, null, v_lease_sup);
+	perform public.qorpera_surface_complete_session_turn(v_track_ready_retry, 'ready', 'Summary ready.', null, null, null, v_lease_ready_retry);
 
 	select public.qorpera_surface_session_json(s) into v_sess_json
 	from public.qorpera_surface_sessions s where s.id = v_track_a;
@@ -636,6 +670,94 @@ begin
 	);
 	delete from public.qorpera_surface_jobs where surface_id = v_app_id and kind = 'publish_surface';
 	update public.qorpera_surfaces set publish_status = 'idle', site_id = null where id = v_app_id;
+
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_ship_surface_track(v_track_sup, true);
+	reset role;
+	update public.qorpera_surfaces set live_head_sha = repeat('e', 40) where id = v_app_id;
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	v_sup_rec_id := (public.qorpera_ensure_surface_reconciliation(v_app_id, array[v_ch_sup], '{}'::text[], false) ->> 'id')::uuid;
+	reset role;
+	select session_id into strict v_sup_rec_session_id from public.qorpera_surface_reconciliations where id = v_sup_rec_id;
+	perform pg_temp.awtb_assert(
+		(select auto_approve_after and auto_publish_after from public.qorpera_surface_reconciliations where id = v_sup_rec_id),
+		'Superseding a queued deferred-publish reconciliation must preserve auto_approve_after and auto_publish_after'
+	);
+
+	update public.qorpera_surface_sessions
+	set state = 'reconciling_running', lease_token = v_sup_rec_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_sup_rec_session_id;
+	update public.qorpera_surfaces set live_head_sha = repeat('f', 40) where id = v_app_id;
+	perform pg_temp.as_service();
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_sup_rec_session_id, 'Standalone CSV filters', 'Reconciled against older head', 'git_range',
+		repeat('e', 40), repeat('0', 40), '{}'::uuid[], array['src/csv-filters.ts'], null, null, false, v_sup_rec_lease
+	);
+	reset role;
+	select r.id into v_retry_rec_id
+	from public.qorpera_surface_reconciliations r
+	where r.surface_id = v_app_id
+		and r.status in ('queued', 'running')
+		and v_ch_sup = any(r.selected_change_ids)
+		and r.id <> v_sup_rec_id
+	order by r.created_at desc
+	limit 1;
+	perform pg_temp.awtb_assert(
+		v_retry_rec_id is not null
+		and (select auto_approve_after and auto_publish_after from public.qorpera_surface_reconciliations where id = v_retry_rec_id),
+		'Queued reconciliation retry after head moved must preserve auto_publish_after'
+	);
+
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_ship_surface_track(v_track_ready_retry, true);
+	reset role;
+	select r.id, r.session_id into strict v_ready_rec_id, v_ready_rec_session_id
+	from public.qorpera_surface_reconciliations r
+	where r.surface_id = v_app_id
+		and r.status in ('queued', 'running')
+		and v_ch_ready_retry = any(r.selected_change_ids)
+	limit 1;
+	update public.qorpera_surface_sessions
+	set state = 'reconciling_running', lease_token = v_ready_rec_lease, lease_expires_at = clock_timestamp() + interval '5 minutes',
+		origin_ref = origin_ref - 'omittedBaseChanges'
+	where id = v_ready_rec_session_id;
+	update public.qorpera_surfaces set live_head_sha = repeat('b', 40) where id = v_app_id;
+	select * into strict v_surface_row from public.qorpera_surfaces where id = v_app_id;
+	insert into public.qorpera_surface_reconciliations(
+		profile_id, surface_id, composition_key, base_fingerprint,
+		selected_change_ids, status, conflict_paths, auto_approve_after, auto_publish_after,
+		reconciled_commit_sha, created_by_user_id, updated_at, expires_at
+	)
+	values (
+		v_profile, v_app_id,
+		(public.qorpera_surface_reconciliation_key(v_surface_row, array[v_ch_ready_retry]) ->> 'compositionKey'),
+		public.qorpera_surface_base_fingerprint(v_surface_row),
+		array[v_ch_ready_retry], 'ready', '{}'::text[], false, false,
+		repeat('7', 40), v_owner, clock_timestamp(), clock_timestamp() + interval '1 hour'
+	);
+	perform pg_temp.as_service();
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_ready_rec_session_id, 'Standalone CSV summary', 'Reconciled against older head', 'git_range',
+		repeat('f', 40), repeat('1', 40), '{}'::uuid[], array['src/csv-summary.ts'], null, null, false, v_ready_rec_lease
+	);
+	reset role;
+	select j.payload into v_ready_job_payload
+	from public.qorpera_surface_jobs j
+	where j.surface_id = v_app_id
+		and j.kind = 'land_change'
+		and j.status = 'queued'
+		and (j.payload -> 'changeIds') ? v_ch_ready_retry::text
+	order by j.created_at desc
+	limit 1;
+	perform pg_temp.awtb_assert(
+		v_ready_job_payload is not null
+		and (v_ready_job_payload ->> 'reconciliationId') is not null
+		and coalesce((v_ready_job_payload ->> 'autoPublish')::boolean, false) = true,
+		'Immediate ready-retry reconciliation hit after head moved must carry auto_publish_after into land_change.autoPublish'
+	);
 
 	perform pg_temp.awtb_as(v_owner);
 	set local role authenticated;
