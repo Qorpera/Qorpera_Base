@@ -258,6 +258,10 @@ begin
 		(v_stopped ->> 'claimed')::boolean = true and (v_stopped ->> 'stopped')::boolean = false,
 		'claim_only atomically claims stale deployment before app-host stop: ' || v_stopped::text
 	);
+	perform pg_temp.sahs_assert(
+		(select last_stop_attempt_at is not null and rollback_claimed_at is null from public.qorpera_company_site_deployments where id = v_dep_prev_1),
+		'stale sweep claim sets last_stop_attempt_at without setting rollback_claimed_at'
+	);
 	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
 	perform pg_temp.sahs_assert(
 		(v_stopped ->> 'claimed')::boolean = false,
@@ -282,7 +286,7 @@ begin
 	exception when others then
 		perform pg_temp.sahs_assert(sqlerrm = 'DEPLOYMENT_STOP_CLAIMED', 'Expected DEPLOYMENT_STOP_CLAIMED, got: ' || sqlerrm);
 	end;
-	update public.qorpera_company_site_deployments set last_stop_attempt_at = null where id = v_dep_prev_1;
+	update public.qorpera_company_site_deployments set last_stop_attempt_at = null, rollback_claimed_at = null where id = v_dep_prev_1;
 
 	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
 	perform pg_temp.sahs_assert(

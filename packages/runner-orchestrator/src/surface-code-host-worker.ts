@@ -1971,7 +1971,7 @@ export class SurfaceCodeHostWorker {
 				if (verifyLiveFirst) {
 					let claim: { claimed?: unknown; isLive?: unknown } | null = null;
 					let claimResolved = false;
-					for (let attempt = 0; attempt < 2; attempt += 1) {
+					for (let attempt = 0; attempt < 3; attempt += 1) {
 						try {
 							claim = (await this.#control.call(
 								"qorpera_surface_app_deployment_mark_stopped",
@@ -1980,13 +1980,13 @@ export class SurfaceCodeHostWorker {
 									p_force: true,
 									p_claim_only: true,
 								},
-								AbortSignal.timeout(5_000),
+								AbortSignal.timeout(10_000),
 							)) as { claimed?: unknown; isLive?: unknown } | null;
 							claimResolved = true;
 							break;
 						} catch {
-							if (attempt === 0) {
-								await new Promise((resolve) => setTimeout(resolve, 250));
+							if (attempt < 2) {
+								await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
 							}
 						}
 					}

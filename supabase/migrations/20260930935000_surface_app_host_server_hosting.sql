@@ -20,7 +20,8 @@ alter table public.qorpera_surface_preview_builds
 
 alter table public.qorpera_company_site_deployments
 	add column updated_at timestamptz not null default now(),
-	add column last_stop_attempt_at timestamptz;
+	add column last_stop_attempt_at timestamptz,
+	add column rollback_claimed_at timestamptz;
 
 create temp table sahs_before as
 select oid, to_jsonb(p) - 'prosrc' as fields
@@ -271,7 +272,7 @@ begin
 		if coalesce(p_promote_live, false)
 			and v_kind in ('server', 'hybrid')
 			and v_dep.state <> 'live'
-			and (v_dep.last_stop_attempt_at is not null or v_dep.state = 'stopped') then
+			and (v_dep.rollback_claimed_at is not null or v_dep.state = 'stopped') then
 			raise exception 'DEPLOYMENT_STOP_CLAIMED' using errcode = '55000';
 		end if;
 		update public.qorpera_company_site_deployments
@@ -293,7 +294,11 @@ begin
 			memory_mb = v_memory_mb,
 			vcpu_limit = v_vcpu_limit,
 			has_credential_inputs = coalesce(p_has_credential_inputs, false),
-			upstream_addr = coalesce(v_upstream_addr, upstream_addr),
+			upstream_addr = case
+				when v_upstream_addr is not null then v_upstream_addr
+				when coalesce(p_check_public_promote, false) and state <> 'live' then null
+				else upstream_addr
+			end,
 			env_spec = v_env_spec,
 			live_at = case
 				when coalesce(p_promote_live, false) or v_site.current_version_id = v_version.id then coalesce(live_at, v_now)
@@ -304,7 +309,8 @@ begin
 				else stopped_at
 			end,
 			updated_at = v_now,
-			last_stop_attempt_at = null
+			last_stop_attempt_at = null,
+			rollback_claimed_at = null
 		where id = v_dep.id
 		returning * into v_dep;
 	end if;
@@ -391,7 +397,8 @@ begin
 	set
 		upstream_addr = v_upstream,
 		updated_at = clock_timestamp(),
-		last_stop_attempt_at = null
+		last_stop_attempt_at = null,
+		rollback_claimed_at = null
 	where id = p_deployment_id
 		and kind in ('server', 'hybrid')
 		and state <> 'stopped'
@@ -538,7 +545,7 @@ begin
 				or (v_dep.version_id is not null and v_dep.version_id = v_site.current_version_id);
 			if (not v_is_live) and v_dep.kind in ('server', 'hybrid') and v_dep.state <> 'stopped' then
 				update public.qorpera_company_site_deployments
-				set last_stop_attempt_at = v_now
+				set rollback_claimed_at = v_now
 				where id = v_dep.id;
 				return jsonb_build_object(
 					'claimed', true,
@@ -640,7 +647,8 @@ begin
 		upstream_addr = null,
 		stopped_at = coalesce(dep.stopped_at, v_now),
 		updated_at = v_now,
-		last_stop_attempt_at = null
+		last_stop_attempt_at = null,
+		rollback_claimed_at = null
 	from public.qorpera_company_sites site
 	where dep.id = p_deployment_id
 		and site.id = dep.site_id
