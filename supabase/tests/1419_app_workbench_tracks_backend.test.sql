@@ -63,6 +63,12 @@ declare
 	v_comb jsonb;
 	v_comb_job_id uuid;
 	v_comb_lease uuid := extensions.gen_random_uuid();
+	v_rec_id uuid;
+	v_rec_session_id uuid;
+	v_rec_lease uuid := extensions.gen_random_uuid();
+	v_dep_job_id uuid;
+	v_dep_job_lease uuid := extensions.gen_random_uuid();
+	v_dep_job_payload jsonb;
 	v_synth_job_id uuid;
 	v_stopped jsonb;
 	v_summary jsonb;
@@ -560,21 +566,76 @@ begin
 
 	perform pg_temp.awtb_as(v_owner);
 	set local role authenticated;
-	perform public.qorpera_ship_surface_track(v_track_dep, false);
+	perform public.qorpera_select_surface_track_preview(v_app_id, v_track_dep, null, '/charts');
+	perform public.qorpera_ship_surface_track(v_track_dep, true);
 	reset role;
 	perform pg_temp.awtb_assert(
 		(select status from public.qorpera_surface_changes where id = v_ch_dep) = 'staged',
 		'Shipping track with omitted preview base change must defer merge to silent reconciliation'
 	);
 	perform pg_temp.awtb_assert(
-		exists (
-			select 1 from public.qorpera_surface_reconciliations r
-			where r.surface_id = v_app_id
-				and r.status in ('queued', 'running')
-				and v_ch_dep = any(r.selected_change_ids)
-		),
-		'Deferred track ship must enqueue silent standalone reconciliation'
+		(select selected_session_id is null and preview_scope = 'combined' and v_ch_dep = any(toggled_change_ids)
+		 from public.qorpera_member_surface_state
+		 where user_id = v_owner and surface_id = v_app_id),
+		'Deferred track ship must unpin selected_session_id while preserving toggled_change_ids'
 	);
+	select r.id, r.session_id into v_rec_id, v_rec_session_id
+	from public.qorpera_surface_reconciliations r
+	where r.surface_id = v_app_id
+		and r.status in ('queued', 'running')
+		and v_ch_dep = any(r.selected_change_ids)
+	limit 1;
+	perform pg_temp.awtb_assert(
+		v_rec_id is not null and v_rec_session_id is not null
+		and (select auto_approve_after and auto_publish_after from public.qorpera_surface_reconciliations where id = v_rec_id),
+		'Deferred track ship with publish=true must persist auto_approve_after and auto_publish_after on reconciliation'
+	);
+
+	update public.qorpera_surface_sessions
+	set state = 'reconciling_running', lease_token = v_rec_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_rec_session_id;
+	perform pg_temp.as_service();
+	perform public.qorpera_native_surface_record_change(
+		v_profile, v_rec_session_id, 'Standalone CSV charts', 'Reconciled without CSV export base', 'git_range',
+		v_sha_5, repeat('9', 40), '{}'::uuid[], array['src/csv-charts.ts'], null, null, false, v_rec_lease
+	);
+	reset role;
+
+	select j.id, j.payload into v_dep_job_id, v_dep_job_payload
+	from public.qorpera_surface_jobs j
+	where j.surface_id = v_app_id
+		and j.kind = 'land_change'
+		and j.status = 'queued'
+		and (j.payload -> 'changeIds') ? v_ch_dep::text
+	order by j.created_at desc
+	limit 1;
+	perform pg_temp.awtb_assert(
+		v_dep_job_id is not null and coalesce((v_dep_job_payload ->> 'autoPublish')::boolean, false) = true,
+		'Reconciliation completion must carry deferred publish intent into land_change.autoPublish'
+	);
+	perform pg_temp.awtb_assert(
+		(select not auto_approve_after and not auto_publish_after from public.qorpera_surface_reconciliations where id = v_rec_id),
+		'Reconciliation completion must clear auto_approve_after and auto_publish_after'
+	);
+
+	update public.qorpera_surface_jobs
+	set status = 'running', lease_token = v_dep_job_lease, lease_expires_at = clock_timestamp() + interval '5 minutes'
+	where id = v_dep_job_id;
+	perform pg_temp.as_service();
+	perform public.qorpera_surface_complete_merge(
+		v_dep_job_id, 'landed', v_sha_5, repeat('9', 40), null, null, null, null, v_dep_job_lease
+	);
+	reset role;
+	perform pg_temp.awtb_assert(
+		(select state from public.qorpera_surface_sessions where id = v_track_dep) = 'completed'
+		and exists (
+			select 1 from public.qorpera_surface_jobs j
+			where j.surface_id = v_app_id and j.kind = 'publish_surface' and j.status = 'queued'
+		),
+		'Completing deferred land_change with carried publish intent must close track and queue publish_surface'
+	);
+	delete from public.qorpera_surface_jobs where surface_id = v_app_id and kind = 'publish_surface';
+	update public.qorpera_surfaces set publish_status = 'idle', site_id = null where id = v_app_id;
 
 	perform pg_temp.awtb_as(v_owner);
 	set local role authenticated;
@@ -722,7 +783,7 @@ begin
 	);
 
 	update public.qorpera_surface_sessions set state = 'needs_input' where id in (v_track_stop, v_web_session, v_id_session);
-	update public.qorpera_surface_changes set status = 'conflicted' where id = v_ch_dep;
+	update public.qorpera_surface_changes set status = 'conflicted' where id = v_ch_guard;
 	select * into strict v_surface_row from public.qorpera_surfaces where id = v_app_id;
 	v_summary := public.qorpera_surface_summary_json(v_surface_row);
 	perform pg_temp.awtb_assert(

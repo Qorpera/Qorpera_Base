@@ -20,6 +20,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_terminalize_runner_attempt(uuid,text,text,boolean)') is null
 		or to_regprocedure('public.qorpera_surface_needs_standalone_reconciliation(public.qorpera_surfaces,uuid[])') is null
 		or to_regprocedure('public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)') is null
+		or to_regprocedure('public.qorpera_surface_fail_reconciliation(uuid,text,uuid)') is null
+		or to_regprocedure('public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid,text)') is null
 		or to_regprocedure('public.qorpera_publish_surface(uuid)') is null
 		or to_regprocedure('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)') is null then
 		raise exception 'App workbench tracks backend (20260930937000) requires prior surface and coding migrations';
@@ -37,6 +39,9 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_surface_summary_json(public.qorpera_surfaces)'::regprocedure,
 		'public.qorpera_surface_complete_session_turn(uuid,text,text,jsonb,text[],text,uuid)'::regprocedure,
 		'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
+		'public.qorpera_surface_fail_reconciliation(uuid,text,uuid)'::regprocedure,
+		'public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)'::regprocedure,
+		'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid,text)'::regprocedure,
 		'public.qorpera_discard_surface_session(uuid)'::regprocedure,
 		'public.qorpera_surface_enqueue_session_run(uuid,uuid)'::regprocedure,
 		'public.qorpera_begin_native_coding_execution(jsonb,text,text,text,text,text,integer)'::regprocedure,
@@ -114,6 +119,9 @@ alter table public.qorpera_surface_sessions
 alter table public.qorpera_member_surface_state
 	add column selected_session_id uuid references public.qorpera_surface_sessions(id) on delete set null,
 	add column preview_scope text not null default 'combined' check (preview_scope in ('combined', 'track', 'explicit'));
+
+alter table public.qorpera_surface_reconciliations
+	add column auto_publish_after boolean not null default false;
 
 select pg_temp.awtb_patch(
 	'public.qorpera_surface_session_json(public.qorpera_surface_sessions)'::regprocedure,
@@ -319,6 +327,56 @@ $new$		end if;
 			perform public.qorpera_evaluate_surface_session_lifecycle(v_eval_sid);
 		end loop;
 	elsif v_job.kind = 'undo_change' then$new$
+	]
+);
+
+select pg_temp.awtb_patch(
+	'public.qorpera_surface_fail_reconciliation(uuid,text,uuid)'::regprocedure,
+	array[
+$old$		auto_approve_after = false,
+		updated_at = v_now$old$,
+$new$		auto_approve_after = false,
+		auto_publish_after = false,
+		updated_at = v_now$new$
+	]
+);
+
+select pg_temp.awtb_patch(
+	'public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)'::regprocedure,
+	array[
+$old$			auto_approve_after = v_auto_approve,$old$,
+$new$			auto_approve_after = v_auto_approve,
+			auto_publish_after = false,$new$
+	]
+);
+
+select pg_temp.awtb_patch(
+	'public.qorpera_record_surface_change(uuid,text,text,text,text,text,uuid[],text[],jsonb,jsonb,boolean,text,text,uuid,text)'::regprocedure,
+	array[
+$old$				update public.qorpera_surface_reconciliations
+				set auto_approve_after = false, updated_at = v_now
+				where id = v_rec.id;$old$,
+$new$				update public.qorpera_surface_reconciliations
+				set auto_approve_after = false, auto_publish_after = false, updated_at = v_now
+				where id = v_rec.id;$new$,
+$old$						'reconciliationId', v_rec.id,
+						'autoPublish', v_surface.auto_publish$old$,
+$new$						'reconciliationId', v_rec.id,
+						'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
+$old$						'changeIds', to_jsonb(v_rec.selected_change_ids),
+						'autoPublish', v_surface.auto_publish$old$,
+$new$						'changeIds', to_jsonb(v_rec.selected_change_ids),
+						'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
+$old$				error_detail = case when status in ('queued', 'running') then 'Change updated' else error_detail end,
+				auto_approve_after = false,$old$,
+$new$				error_detail = case when status in ('queued', 'running') then 'Change updated' else error_detail end,
+				auto_approve_after = false,
+				auto_publish_after = false,$new$,
+$old$					error_detail = case when status in ('queued', 'running') then 'Change superseded' else error_detail end,
+					auto_approve_after = false,$old$,
+$new$					error_detail = case when status in ('queued', 'running') then 'Change superseded' else error_detail end,
+					auto_approve_after = false,
+					auto_publish_after = false,$new$
 	]
 );
 
@@ -643,6 +701,11 @@ begin
 			end if;
 			if v_rec.id is not null and v_rec.status in ('queued', 'running') then
 				v_deferred_for_reconcile := true;
+				if v_auto_publish then
+					update public.qorpera_surface_reconciliations
+					set auto_publish_after = true, updated_at = v_now
+					where id = v_rec.id;
+				end if;
 			end if;
 		end if;
 		if not v_deferred_for_reconcile then
@@ -704,6 +767,13 @@ begin
 			selected_session_id = nullif(selected_session_id, p_session_id),
 			preview_scope = case when selected_session_id = p_session_id then 'combined' else preview_scope end
 		where surface_id = v_session.surface_id;
+	elsif v_deferred_for_reconcile then
+		update public.qorpera_member_surface_state
+		set
+			selected_session_id = null,
+			preview_scope = 'combined'
+		where surface_id = v_session.surface_id
+			and selected_session_id = p_session_id;
 	end if;
 
 	update public.qorpera_surface_sessions
@@ -918,6 +988,13 @@ begin
 			selected_session_id = case when selected_session_id = any(v_session_ids) then null else selected_session_id end,
 			preview_scope = case when selected_session_id = any(v_session_ids) then 'combined' else preview_scope end
 		where surface_id = p_surface_id;
+	else
+		update public.qorpera_member_surface_state
+		set
+			selected_session_id = null,
+			preview_scope = 'combined'
+		where surface_id = p_surface_id
+			and selected_session_id = any(v_session_ids);
 	end if;
 
 	update public.qorpera_surface_sessions
@@ -976,7 +1053,7 @@ begin
 		raise exception 'Surface session not found' using errcode = 'P0002';
 	end if;
 	if v_session.worker_id is distinct from v_peek.worker_id then
-		raise exception 'Track worker changed concurrently; retry stopping the turn' using errcode = '40001';
+		raise exception 'Track worker changed concurrently; retry stopping the turn' using errcode = '55000';
 	end if;
 	if v_session.is_internal then
 		raise exception 'Cannot cancel an internal reconciliation session' using errcode = '55000';
