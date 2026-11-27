@@ -927,6 +927,15 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 			foreach v_superseded_sid in array v_superseded_session_ids loop
 				if v_superseded_sid = any(v_locked_idle_session_ids) then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_superseded_sid);
+				else
+					perform 1
+					from public.qorpera_surface_sessions ps
+					where ps.id = v_superseded_sid
+						and ps.state not in ('queued', 'running', 'reconciling', 'reconciling_running')
+					for update of ps skip locked;
+					if found then
+						perform public.qorpera_evaluate_surface_session_lifecycle(v_superseded_sid);
+					end if;
 				end if;
 			end loop;
 		end if;
