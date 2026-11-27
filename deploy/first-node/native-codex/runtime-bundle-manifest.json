@@ -25,7 +25,7 @@
     "wakeAndSilence": "029656fbde5eff9fd3b4f48c5aa126ca3b64a72d83af19b6cb2fca31020bb767",
     "contextComposer": "2bb36f05f60d86f0f8e19c3af8ecd6f48bdc16ce09e20252f4f6d036c9cc2889",
     "providerBootstrap": "b8c9db472f90cd5831060cfdd4bcdfdb50c121bec45c37b597b62d15dbf9557c",
-    "authorization": "f412b31efcc3001aa23f043720a20858a8ea2466578ff40b81a61fcc7e6d18bb",
+    "authorization": "c072216cfc60718b5f32b513734715450fb13ea176c2cba06c814d4aa1533471",
     "inboundSafety": "174716df3a4c3d83a93bcc19d2ac326422e4d7d477b55a890aa10c93523acf2c",
     "outboundSafety": "37ad93709a7dbf71ce083e332f9a968a2de1f623a366dc021f06e784cad8b9e9",
     "interactionSurfaces": "cb948341e7eb96df1f8487d1b56c2a87111bd9fe52b2b5d449ca0b5ea35f1fc1",
@@ -511,6 +511,6 @@
     "scripts/package-lxd-runner-guest.mjs": "1f8d6b729000a3f41b36702d8997c9a05d6b0a15df68d1ed1c25018389eb45d3",
     "scripts/package-service.mjs": "19841bce1e996d1a2c63ef4966c83cd831a15cff1f617b91e124759ce75b756e",
     "scripts/runtime-assets-plugin.mjs": "169ce941c1066b62159aa58df486e2893d7bb39897967dc0f9dadc34a5e21466",
-    "supabase/migrations": "f412b31efcc3001aa23f043720a20858a8ea2466578ff40b81a61fcc7e6d18bb"
+    "supabase/migrations": "c072216cfc60718b5f32b513734715450fb13ea176c2cba06c814d4aa1533471"
   }
 }
