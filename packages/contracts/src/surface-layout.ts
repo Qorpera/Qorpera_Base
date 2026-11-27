@@ -1,3 +1,4 @@
+import { SURFACE_REPORT_FORMAT } from "./surface-report.ts";
 import { WireValueError } from "./wire-values.ts";
 
 export const SURFACE_LAYOUT_PATH = "layout.json";
@@ -1995,9 +1996,6 @@ export const SURFACE_STARTER_LAYOUTS: Readonly<Record<SurfaceStarterKind, Surfac
 export function starterSurfaceLayout(kind: SurfaceStarterKind): SurfaceLayout {
 	return structuredClone(SURFACE_STARTER_LAYOUTS[kind]);
 }
-
-export const SURFACE_REPORT_FORMAT =
-	'A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}.';
 
 export const SURFACE_PLAYS_FORMAT =
 	'A plays file (plays.json) is {"summary","verdict","plays":[{"id","name","thesis","status":"recommended"|"active"|"exploring"|"parked"|"rejected","revenueModel","whoPays","unitMargin","capacityCeiling","moat","killRisk","nextMove","pros":["..."],"cons":["..."],"tier":"verified"|"benchmark"|"hypothesis","source"}]}.';

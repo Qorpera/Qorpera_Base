@@ -818,4 +818,73 @@ describe("stage_surface_patch and the layout", () => {
 			"submit one `stage_surface_patch` call covering every overlapping file listed below",
 		);
 	});
+
+	it("stages a research post only when a second reader has checked every source, and a post from before as it did", () => {
+		const day = new Date().toISOString().slice(0, 10);
+		const source = (n: number, checked: string | undefined) => ({
+			n,
+			title: "White label",
+			publisher: "Northband",
+			url: `https://northband.example/white-label/${n}`,
+			opened: day,
+			backs: "Built under another brand from 50 units. Price on request.",
+			kind: "Maker's own page",
+			...(checked ? { checked } : {}),
+		});
+		const research = (sources: readonly object[]) =>
+			JSON.stringify({
+				headline: "Nothing on sale does what our band must",
+				question: "Can we buy the electronics for the band today instead of building them?",
+				theme: "Hardware",
+				cover: { src: "research/covers/sensor-places.svg", alt: "A head from above with four sensor places" },
+				shortAnswer: ["One maker offers to build under our name, from 50 units. [1]"],
+				changes: [{ page: "Money", line: "Electronics for one band", now: "Not quoted yet. [2]" }],
+				sources,
+				method: ["One research run. Every price was read on the page named in the sources."],
+				notFound: [{ what: "What the maker charges for 50 units", note: "A written quote closes it." }],
+				related: ["research/our-name-makes-us-the-maker.report.json"],
+				sections: [
+					{ id: "close", heading: "One that comes close", paragraphs: ["Its offer starts at 50 units. [1]"] },
+				],
+			});
+		const stage = (content: string) => () =>
+			checkStagedSurfaceDeliverables([{ op: "write_text", path: "research/nothing-on-sale.report.json", content }]);
+		const before = JSON.stringify({
+			headline: "Where 299 kr goes",
+			keyMetrics: [{ label: "Left after costs", value: "74 kr" }],
+			sections: [{ id: "costs", heading: "What one candle costs", paragraphs: ["Wax and wick come to 41 kr [1]."] }],
+		});
+
+		expect(stage(research([source(1, day), source(2, day)]))).not.toThrow();
+		expect(stage(before)).not.toThrow();
+		expect(stage(research([source(1, day), source(2, undefined)]))).toThrow(
+			'research/nothing-on-sale.report.json would not render as a report: sources[1] has no "checked" day: a second reader opens every source again before a post is staged, and only their result sets it (read_skill research-check). Fix it',
+		);
+		expect(stage(research([source(1, day)]))).toThrow(
+			"changes[0].now marks source [2], which is not in sources. Fix it to match the *.report.json format and stage again; nothing was staged.",
+		);
+		expect(stage(JSON.stringify({ ...JSON.parse(before), question: "Where does 299 kr go?" }))).toThrow(
+			'theme is missing: a post that names its "question" is a research post and needs it',
+		);
+
+		const merge = (patch: Record<string, unknown>) => () =>
+			checkStagedSurfaceDeliverables([{ op: "merge_json", path: "research/nothing-on-sale.report.json", patch }]);
+		expect(merge({ sources: [source(1, day)], method: null })).toThrow(
+			"sources, method cannot be merged: a research post's question, short answer, sources, method and not-found list are written whole, with write_text",
+		);
+		expect(merge({ theme: "Money", cover: null, related: ["research/sleeve-prices.report.json"] })).not.toThrow();
+		expect(merge({ related: ["research/nothing-on-sale.report.json"] })).toThrow("related[0] is this post itself");
+		expect(merge({ headline: "A plainer headline" })).not.toThrow();
+	});
+
+	it("tells every folder interface session where the vision is and that evidence means a research post", async () => {
+		for (const surface of [STRATEGY, PRODUCT, CUSTOM]) {
+			const text = await instructionsFor(surface);
+			expect(text).toContain(
+				"The company's vision, the text its founders approved, is QorperaOS/vision/vision.md: read it whole with company_read",
+			);
+			expect(text).toContain("read_skill research-posts (scope platform) before you research");
+		}
+		expect(await instructionsFor(STRATEGY)).toContain("## Start from the vision");
+	});
 });
