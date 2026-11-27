@@ -241,6 +241,14 @@ const SURFACE_PRESETS: readonly SurfacePreset[] = [
 		archetype: "studio",
 	},
 	{
+		id: "analytics",
+		slug: "analytics",
+		kind: "dashboard",
+		title: phrase("Analytics"),
+		line: phrase("Sales, money and visitors as they happen"),
+		archetype: "studio",
+	},
+	{
 		id: "dashboard",
 		slug: "dashboard",
 		kind: "dashboard",

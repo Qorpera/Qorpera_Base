@@ -3,14 +3,17 @@ import {
 	resolveSurfaceSource,
 	type StudioBinaryRef,
 	type SurfaceAskSource,
+	type SurfaceJsonReader,
 	type SurfaceLiveSource,
+	type SurfaceResolvedColors,
 	type SurfaceSourceChoice,
 	type SurfaceSummary,
 	surfaceCompanyPath,
 	surfaceGlobMatches,
 } from "@qorpera/contracts";
-import { h } from "../../../ui/dom.ts";
+import { h, icon } from "../../../ui/dom.ts";
 import { phrase, t } from "../../../ui/preferences.ts";
+import type { SurfaceAskHandle } from "./live.ts";
 
 export interface StudioSectionTask {
 	readonly heavy?: boolean;
@@ -33,6 +36,12 @@ export interface SurfaceBlockRead {
 	readonly binding?: string;
 }
 
+export interface SurfacePageColors {
+	readonly light: SurfaceResolvedColors;
+	readonly dark: SurfaceResolvedColors;
+	readonly own: boolean;
+}
+
 export interface SurfaceFolderFile {
 	readonly path: string;
 	readonly relative?: string;
@@ -53,6 +62,10 @@ export interface SurfaceBlockContext extends SurfaceFileLayer {
 	readonly renderSignal?: AbortSignal;
 	readonly words: (text: string) => string;
 	readonly read: (source: SurfaceLiveSource | undefined) => SurfaceBlockRead;
+	readonly readJson: SurfaceJsonReader;
+	readonly colors?: SurfacePageColors;
+	readonly ask?: (source: SurfaceAskSource) => SurfaceAskHandle;
+	readonly askAfter?: (source: SurfaceAskSource, parent: string) => SurfaceAskHandle;
 	readonly companyPath: (bindingPath: string) => string | undefined;
 	readonly text: (path: string) => { readonly value: string | undefined; readonly base: string | undefined };
 	readonly binary: (path: string) => {
@@ -74,6 +87,9 @@ export interface SurfaceBlockContextInput extends SurfaceFileLayer {
 	readonly renderSignal?: AbortSignal;
 	readonly fromStarter: boolean;
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
+	readonly colors?: (readJson: SurfaceJsonReader) => SurfacePageColors;
+	readonly ask?: (source: SurfaceAskSource) => SurfaceAskHandle;
+	readonly askAfter?: (source: SurfaceAskSource, parent: string) => SurfaceAskHandle;
 }
 
 const STARTER_WORDS: ReadonlySet<string> = new Set([
@@ -118,6 +134,31 @@ const STARTER_WORDS: ReadonlySet<string> = new Set([
 	phrase("Video breakdowns"),
 	phrase("Written breakdowns"),
 	phrase("Deep dives"),
+	phrase("Now"),
+	phrase("Sales"),
+	phrase("Money"),
+	phrase("Visitors"),
+	phrase("Questions"),
+	phrase("Numbers"),
+	phrase("Orders today"),
+	phrase("Sales today"),
+	phrase("To pack"),
+	phrase("In the bank"),
+	phrase("Are more people buying?"),
+	phrase("Refunds, 30 days"),
+	phrase("On the way"),
+	phrase("Open disputes"),
+	phrase("Are refunds eating sales?"),
+	phrase("How long does the money last?"),
+	phrase("Do we earn more than we spend?"),
+	phrase("Are more people visiting?"),
+	phrase("What do they read?"),
+	phrase("Page"),
+	phrase("Views"),
+	phrase("Visits"),
+	phrase("Number"),
+	phrase("What it counts"),
+	phrase("Leaves out"),
 ]);
 
 export function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -184,6 +225,14 @@ export function sectionHead(title: string, changed: boolean, action?: HTMLElemen
 
 export function homeEmpty(line: string): HTMLElement {
 	return h("p", { class: "studio-home-empty" }, line);
+}
+
+export function homeLocked(): HTMLElement {
+	return h("p", { class: "studio-home-locked" }, icon("lock"), h("span", null, t("Not shared with you")));
+}
+
+export function homeUnknown(): HTMLElement {
+	return h("p", { class: "studio-home-unknown" }, "?");
 }
 
 function isChoiceList(source: SurfaceLiveSource): source is readonly SurfaceSourceChoice[] {
@@ -273,6 +322,7 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 	};
 	const readPreview = reader((layer) => layer.files);
 	const readBase = reader((layer) => layer.baseFiles);
+	const colors = input.colors?.(readPreview);
 	const seenPaths = new Set<string>([
 		...Object.keys(input.files),
 		...Object.keys(input.binaries),
@@ -312,6 +362,10 @@ export function createBlockContext(input: SurfaceBlockContextInput): SurfaceBloc
 				...(typeof binding === "string" ? { binding } : {}),
 			};
 		},
+		readJson: readPreview,
+		...(colors ? { colors } : {}),
+		...(input.ask ? { ask: input.ask } : {}),
+		...(input.askAfter ? { askAfter: input.askAfter } : {}),
 		companyPath,
 		text: (path) => {
 			const layer = layerOf(path);

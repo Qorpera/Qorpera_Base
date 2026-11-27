@@ -45,6 +45,7 @@ import {
 	type StudioSectionTask,
 	type SurfaceFileLayer,
 } from "./surface-blocks/context.ts";
+import type { SurfaceLiveHosts } from "./surface-blocks/live.ts";
 import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
@@ -72,6 +73,7 @@ export interface SurfaceStudioOptions {
 	readonly patches?: Readonly<Record<string, readonly StudioPatchOp[]>>;
 	readonly loadFiles?: (surface: SurfaceSummary, signal: AbortSignal) => Promise<Readonly<Record<string, string>>>;
 	readonly timeSlice?: boolean;
+	readonly live?: SurfaceLiveHosts;
 }
 
 interface SpecSection {
@@ -1478,6 +1480,7 @@ export class SurfaceStudioView {
 			...(this.#options.readBinary ? { readBinary: this.#options.readBinary } : {}),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),
+			...(this.#options.live ? { live: this.#options.live } : {}),
 		});
 		const plan = this.#layout.plan({
 			surface: params.surface,

@@ -1,9 +1,17 @@
-import { SURFACE_MODEL_GROUPS, type SurfaceSpecListBlock, type SurfaceTableBlock } from "@qorpera/contracts";
+import {
+	isSurfaceAskSource,
+	SURFACE_MODEL_GROUPS,
+	type SurfaceAskSource,
+	type SurfaceSpecListBlock,
+	type SurfaceTableBlock,
+} from "@qorpera/contracts";
 import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import { COLOR_VALUE } from "./colours.ts";
 import {
 	formatScalar,
+	homeLocked,
+	homeUnknown,
 	isPlainRecord,
 	isShownScalar,
 	lookupPath,
@@ -15,6 +23,7 @@ import {
 	sourceFile,
 } from "./context.ts";
 import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
+import { answerAge, answerRecords, figureText, type SurfaceAskState } from "./live.ts";
 
 export interface SpecTable {
 	readonly title: string;
@@ -247,11 +256,118 @@ export function prepareSpecList(block: SurfaceSpecListBlock, ctx: SurfaceBlockCo
 	};
 }
 
+function paleTable(columns: readonly { readonly key: string; readonly label: string }[] | undefined, live = false) {
+	return h(
+		"div",
+		{ class: "studio-table-wrap" },
+		h(
+			"table",
+			{ class: `studio-table is-empty${live ? " is-loading" : ""}`, "aria-hidden": "true" },
+			columns
+				? h(
+						"thead",
+						null,
+						h(
+							"tr",
+							null,
+							columns.map((column) => h("th", null, column.label)),
+						),
+					)
+				: null,
+			h(
+				"tbody",
+				null,
+				EMPTY_ROWS.map(() =>
+					h(
+						"tr",
+						null,
+						(columns ?? EMPTY_ROWS).map(() => h("td", null, paleBar())),
+					),
+				),
+			),
+		),
+	);
+}
+
+function liveTable(
+	block: SurfaceTableBlock,
+	source: SurfaceAskSource,
+	ctx: SurfaceBlockContext,
+	fullscreen: StudioFullscreen,
+): HTMLElement {
+	const columns = block.columns?.map((column) => ({ key: column.key, label: ctx.words(column.label) }));
+	const heading = block.heading ? ctx.words(block.heading) : "";
+	const title = heading || ctx.surface.title;
+	const caption = block.caption ? ctx.words(block.caption) : "";
+	const head = heading ? sectionHead(heading, false) : h("div", { class: "studio-section-head is-actions-only" });
+	const body = h("div", { class: "studio-table-live" });
+	const section = h(
+		"section",
+		{ class: "studio-section", "data-block": "table", "data-live": "loading" },
+		head,
+		body,
+		caption ? h("p", { class: "studio-caption" }, caption) : null,
+	);
+	let expand: HTMLElement | undefined;
+	const draw = (state: SurfaceAskState) => {
+		section.dataset.live = state.state;
+		section.removeAttribute("title");
+		expand?.remove();
+		expand = undefined;
+		if (state.state === "loading") {
+			body.replaceChildren(paleTable(columns, true));
+			return;
+		}
+		if (state.state === "refused") {
+			body.replaceChildren(homeLocked());
+			return;
+		}
+		if (state.state === "unavailable") {
+			body.replaceChildren(homeUnknown());
+			return;
+		}
+		const rows = answerRecords(state.answer).map((row) =>
+			Object.fromEntries(Object.entries(row).map(([key, value]) => [key, figureText(value, false) ?? value])),
+		);
+		if (rows.length === 0) {
+			body.replaceChildren(paleTable(columns));
+			return;
+		}
+		const table = tableOf("", rows, columns);
+		const age = answerAge(state.answer);
+		if (age) section.title = age;
+		body.replaceChildren(renderSpecTable(table, ctx.signal));
+		expand = expandButton(title, () =>
+			fullscreen.openContent(
+				title,
+				() =>
+					h(
+						"div",
+						{ class: "studio-json-body" },
+						renderSpecTable(table, ctx.signal, true),
+						caption ? h("p", { class: "studio-caption" }, caption) : null,
+					),
+				"wide",
+			),
+		);
+		head.append(expand);
+	};
+	const handle = ctx.ask?.(source);
+	if (handle) handle.follow(draw, ctx.renderSignal ?? ctx.signal);
+	else draw({ state: "unavailable" });
+	return section;
+}
+
 export function prepareTable(
 	block: SurfaceTableBlock,
 	ctx: SurfaceBlockContext,
 	fullscreen: StudioFullscreen,
 ): SurfaceBlockPrepared {
+	if (isSurfaceAskSource(block.from)) {
+		const source = block.from;
+		ctx.ask?.(source);
+		return { filled: true, pieces: [{ build: () => liveTable(block, source, ctx, fullscreen) }] };
+	}
 	const read = ctx.read(block.from);
 	const rows = Array.isArray(read.value) ? read.value.filter(isPlainRecord) : [];
 	const columns = block.columns?.map((column) => ({ key: column.key, label: ctx.words(column.label) }));
@@ -288,38 +404,7 @@ export function prepareTable(
 							: expand
 								? h("div", { class: "studio-section-head is-actions-only" }, expand)
 								: null,
-						table
-							? renderSpecTable(table, ctx.signal)
-							: h(
-									"div",
-									{ class: "studio-table-wrap" },
-									h(
-										"table",
-										{ class: "studio-table is-empty", "aria-hidden": "true" },
-										columns
-											? h(
-													"thead",
-													null,
-													h(
-														"tr",
-														null,
-														columns.map((column) => h("th", null, column.label)),
-													),
-												)
-											: null,
-										h(
-											"tbody",
-											null,
-											EMPTY_ROWS.map(() =>
-												h(
-													"tr",
-													null,
-													(columns ?? EMPTY_ROWS).map(() => h("td", null, paleBar())),
-												),
-											),
-										),
-									),
-								),
+						table ? renderSpecTable(table, ctx.signal) : paleTable(columns),
 						caption ? h("p", { class: "studio-caption" }, caption) : null,
 					);
 				},

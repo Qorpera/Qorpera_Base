@@ -39,6 +39,7 @@ import {
 	surfaceHasDeliverables,
 } from "../surfaces-store.ts";
 import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
+import type { SurfaceLiveHosts } from "./surface-blocks/live.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
 import {
 	applyIdentityTokensToFrame,
@@ -74,6 +75,7 @@ export interface SurfaceViewHost {
 	readonly siteHosting?: (surface: SurfaceSummary) => SurfaceSiteHosting | undefined;
 	readonly managesSites?: () => boolean;
 	readonly canWrite?: () => boolean;
+	readonly live?: SurfaceLiveHosts;
 }
 
 interface CompareColumn {
@@ -1767,6 +1769,7 @@ export class SurfaceView {
 								surface,
 								signal: this.#lifetime.signal,
 								loadFiles: this.#host.loadStudioFiles,
+								...(this.#host.live ? { live: this.#host.live } : {}),
 							})
 						: undefined);
 			if (
