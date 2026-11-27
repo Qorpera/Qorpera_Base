@@ -335,16 +335,24 @@ export class FolderStaging {
 		actor: FolderActor,
 		sha256: string,
 		bytes: number,
-	): Promise<{ intentId: string; present: boolean }> {
+		mediaType = "application/octet-stream",
+		executable = false,
+	): Promise<{ intentId: string; present: boolean; manifestSha256: string; manifestPresent: boolean }> {
 		const manifest = manifestText({
 			fileSha256: sha256,
 			bytes,
-			mediaType: "application/octet-stream",
-			executable: false,
+			mediaType,
+			executable,
 			chunks: [{ sha256, bytes }],
 		});
+		const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
 		const open = await this.#core.openUpload(environmentId, actor, manifest);
-		return { intentId: open.intentId, present: open.present.includes(sha256) };
+		return {
+			intentId: open.intentId,
+			present: open.present.includes(sha256),
+			manifestSha256,
+			manifestPresent: open.present.includes(manifestSha256),
+		};
 	}
 
 	/** Holds a pending chunk again under a new intent of its own, after its intent lapsed: put again from the share
@@ -355,8 +363,10 @@ export class FolderStaging {
 		profileId: string,
 		sha256: string,
 		bytes: number,
-	): Promise<string> {
-		const open = await this.openChunk(environmentId, actor, sha256, bytes);
+		mediaType = "application/octet-stream",
+		executable = false,
+	): Promise<{ intentId: string; manifestSha256: string; manifestPresent: boolean }> {
+		const open = await this.openChunk(environmentId, actor, sha256, bytes, mediaType, executable);
 		if (!open.present)
 			await this.#put(
 				environmentId,
@@ -365,7 +375,7 @@ export class FolderStaging {
 				sha256,
 				await this.#objects.chunk(profileId, sha256, bytes),
 			);
-		return open.intentId;
+		return { intentId: open.intentId, manifestSha256: open.manifestSha256, manifestPresent: open.manifestPresent };
 	}
 
 	/** Starts streaming a chunk under its intent. */
@@ -460,6 +470,11 @@ export class FolderStaging {
 		executable: boolean,
 		secrets?: SecretSet,
 		form: StoredForm = "plain",
+		existingIntent?: {
+			readonly intentId: string;
+			readonly manifestSha256: string;
+			readonly manifestPresent: boolean;
+		},
 	): Promise<{ readonly file: FileRef; readonly intentId: string }> {
 		const singleChunk = content.chunks.length === 1 && content.chunks[0]!.bytes === content.size;
 		const hash = singleChunk ? undefined : createHash("sha256");
@@ -476,6 +491,16 @@ export class FolderStaging {
 		});
 		const manifest = Buffer.from(text);
 		const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
+		if (existingIntent && existingIntent.manifestSha256 === manifestSha256) {
+			try {
+				if (!existingIntent.manifestPresent)
+					await this.#put(environmentId, actor, existingIntent.intentId, manifestSha256, manifest);
+				const seal = await this.#core.sealUpload(environmentId, actor, existingIntent.intentId);
+				if (seal.state === "sealed") return { file: seal.file, intentId: existingIntent.intentId };
+			} catch {
+				// WHY: Reuse of the chunk's upload intent is best-effort; if it lapsed or was rejected, fall back to opening a fresh intent.
+			}
+		}
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const open = await this.#core.openUpload(environmentId, actor, text);
 			const present = new Set(open.present);

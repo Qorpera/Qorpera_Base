@@ -1313,26 +1313,22 @@ describe("writes through the mount", () => {
 		const view = await open();
 		await write(view, "kept.txt", "kept");
 		const opened = [...core.intents.keys()];
-		expect(opened).toHaveLength(2);
-		const [chunkIntent, fileIntent] = opened as [string, string];
-		// A renewal that does not get through is tried again at the next round.
+		expect(opened).toHaveLength(1);
+		const [singleIntent] = opened as [string];
 		now += 10 * 60_000;
-		core.renewFailures = 2;
+		core.renewFailures = 1;
 		await service.renewIntents();
-		expect(core.renewals).toEqual([chunkIntent, fileIntent]);
+		expect(core.renewals).toEqual([singleIntent]);
 		await service.renewIntents();
-		expect(core.renewals.slice(2)).toEqual([chunkIntent, fileIntent]);
-		// Both lapse: the chunk is held again under a new intent, and the file is staged again at the next boundary.
+		expect(core.renewals.slice(1)).toEqual([singleIntent]);
 		now += 10 * 60_000;
-		core.lapsed.add(chunkIntent);
-		core.lapsed.add(fileIntent);
+		core.lapsed.add(singleIntent);
 		await service.renewIntents();
 		const held = [...core.intents.keys()].filter((id) => !opened.includes(id));
 		expect(held).toHaveLength(1);
 		expect(core.intents.get(held[0]!)?.objects.has(hashOf("kept"))).toBe(true);
 		expect((await view.publish()).paths).toEqual([{ path: "kept.txt", outcome: "saved" }]);
-		// The commit named a file sealed under an intent of its own, opened after the lapse.
-		expect(core.intents.size).toBe(4);
+		expect(core.intents.size).toBe(2);
 		now += 10 * 60_000;
 		const before = core.renewals.length;
 		await service.renewIntents();
@@ -1432,10 +1428,10 @@ describe("writes through the mount", () => {
 		expect(swapOpened).toHaveLength(3);
 		for (const text of ["alpha", "beta", "gamma"]) await write(view, "draft.md", text);
 		const allOpened = [...core.intents.keys()];
-		expect(allOpened).toHaveLength(9);
+		expect(allOpened).toHaveLength(6);
 		now += 10 * 60_000;
 		await service.renewIntents();
-		expect(core.renewals).toEqual([swapOpened[2], ...allOpened.slice(7)]);
+		expect(core.renewals).toEqual([swapOpened[2], allOpened[5]]);
 	});
 
 	it("cuts a file at its close, on the grid or to nothing, with no chunk sent", async () => {
@@ -3167,6 +3163,44 @@ describe("multi-batch boundary commits", () => {
 		await Promise.all([f.service.renewIntents(), f.service.renewIntents()]);
 		expect(peak).toBeGreaterThan(1);
 		expect(peak).toBeLessThanOrEqual(4);
-		expect(renewCalls).toBe(12);
+		expect(renewCalls).toBe(6);
+	});
+
+	it("reuses a single-chunk upload intent on stage and falls back cleanly when metadata changes or intent lapses", async () => {
+		const { core, open } = await fixture();
+		const openSpy = vi.spyOn(core, "openUpload");
+		const sealSpy = vi.spyOn(core, "sealUpload");
+		const view = await open();
+		await write(view, "plain.md", "# Title\n");
+		expect(openSpy).toHaveBeenCalledTimes(1);
+		const firstId = [...core.intents.keys()][0]!;
+		expect(sealSpy).toHaveBeenCalledTimes(1);
+		expect(sealSpy).toHaveBeenLastCalledWith(ENV, expect.anything(), firstId);
+		expect((await view.publish()).paths).toEqual([{ path: "plain.md", outcome: "saved" }]);
+		expect(core.entries.get("plain.md")?.mediaType).toBe("text/markdown");
+
+		openSpy.mockClear();
+		await write(view, "temp.bin", "renamed markdown");
+		await view.rename({ from: "temp.bin", to: "final.md", noReplace: false });
+		expect((await view.publish()).paths).toEqual([{ path: "final.md", outcome: "saved" }]);
+		expect(core.entries.get("final.md")?.mediaType).toBe("text/markdown");
+		expect(openSpy).toHaveBeenCalledTimes(2);
+
+		openSpy.mockClear();
+		const { handle } = await view.open({
+			path: "lapsed.txt",
+			create: true,
+			exclusive: false,
+			truncate: true,
+		});
+		const data = Buffer.from("lapsed chunk intent");
+		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
+		const chunkIntentId = [...core.intents.keys()].at(-1)!;
+		core.intents.delete(chunkIntentId);
+		await view.close(handle, data.byteLength);
+		expect((await view.publish()).paths).toEqual([{ path: "lapsed.txt", outcome: "saved" }]);
+		expect(openSpy).toHaveBeenCalledTimes(2);
+		expect([...core.intents.keys()].at(-1)).not.toBe(chunkIntentId);
+		expect(await read(view, "lapsed.txt")).toBe("lapsed chunk intent");
 	});
 });

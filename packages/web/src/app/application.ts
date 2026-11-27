@@ -3311,7 +3311,7 @@ export function mountApplication(
 				);
 			};
 			draw();
-			return { el, update: draw, dispose: close };
+			return { el, update: draw, activate: () => shown?.browser.refreshUsage(), dispose: close };
 		};
 		switch (route.section) {
 			case "new": {

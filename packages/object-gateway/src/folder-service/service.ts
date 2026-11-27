@@ -97,7 +97,7 @@ import { linearRegexAvailable, SearchPatternError } from "./regex.ts";
 import { type SearchAnswer, searchView } from "./search.ts";
 import { NativeSearchWorker, searchViewNative } from "./search-native.ts";
 import { CARRIES, SecretRefusal, type SecretSet, UNCHECKED } from "./secret-scan.ts";
-import { type FolderStaging, mediaTypeOf, type Upload } from "./staging.ts";
+import { type FolderStaging, manifestText, mediaTypeOf, type Upload } from "./staging.ts";
 import { nameOf, type TreeEntry, ViewTree } from "./view-tree.ts";
 import {
 	type Before,
@@ -269,7 +269,12 @@ interface ChunkUpload {
 interface HeldIntent {
 	renewed: number;
 	readonly node: PendingFile;
-	readonly chunk?: { readonly sha256: string; readonly bytes: number };
+	readonly chunk?: {
+		readonly sha256: string;
+		readonly bytes: number;
+		readonly manifestSha256?: string;
+		readonly manifestPresent?: boolean;
+	};
 	readonly staged?: FileRef;
 }
 
@@ -3431,12 +3436,30 @@ export class FolderService {
 			if (origin) await this.#beginFromOrigin(view, part.handle, origin);
 			let started: ChunkUpload | undefined;
 			try {
-				const intent = await staging.openChunk(view.environmentId, view.actor, part.sha256, part.bytes);
-				// The chunk counts as needed (its intent renewed) from here until it is set in the file or its put fails.
+				const node = pending.file(part.handle);
+				const expectedPath =
+					part.index === 0 ? (pending.pathOf(node) ?? pending.draftPath(part.handle)) : undefined;
+				const mediaType =
+					expectedPath !== undefined ? this.#mediaType(view, node, expectedPath) : "application/octet-stream";
+				const executable = part.index === 0 ? node.executable : false;
+				const intent = await staging.openChunk(
+					view.environmentId,
+					view.actor,
+					part.sha256,
+					part.bytes,
+					mediaType,
+					executable,
+				);
 				view.intents.set(intent.intentId, {
 					renewed: this.#now(),
-					node: pending.file(part.handle),
-					chunk: { sha256: part.sha256, bytes: part.bytes },
+					node,
+					chunk: {
+						sha256: part.sha256,
+						bytes: part.bytes,
+						...(part.index === 0
+							? { manifestSha256: intent.manifestSha256, manifestPresent: intent.manifestPresent }
+							: {}),
+					},
 				});
 				started = {
 					sha256: part.sha256,
@@ -3607,6 +3630,36 @@ export class FolderService {
 		if (!bytes) return undefined;
 		const knownSha = check ? knownFileSha256(bytes.content, node) : undefined;
 		const toCheck = check && knownSha !== undefined ? this.#cleanChecks.unchecked(knownSha, form, check) : check;
+		let reusable:
+			| { readonly intentId: string; readonly manifestSha256: string; readonly manifestPresent: boolean }
+			| undefined;
+		if (bytes.content.chunks.length === 1 && bytes.content.chunks[0]!.bytes === bytes.content.size) {
+			const single = bytes.content.chunks[0]!;
+			const expectedManifest = manifestText({
+				fileSha256: single.sha256,
+				bytes: bytes.content.size,
+				mediaType,
+				executable: node.executable,
+				chunks: bytes.content.chunks,
+			});
+			const expectedManifestSha256 = createHash("sha256").update(expectedManifest).digest("hex");
+			for (const [id, held] of view.intents) {
+				if (
+					held.node === node &&
+					!held.staged &&
+					held.chunk?.manifestSha256 === expectedManifestSha256 &&
+					held.chunk.sha256 === single.sha256 &&
+					held.chunk.bytes === single.bytes
+				) {
+					reusable = {
+						intentId: id,
+						manifestSha256: expectedManifestSha256,
+						manifestPresent: held.chunk.manifestPresent === true,
+					};
+					break;
+				}
+			}
+		}
 		let staged: { readonly file: FileRef; readonly intentId: string };
 		try {
 			staged = await staging.stageFile(
@@ -3618,6 +3671,7 @@ export class FolderService {
 				node.executable,
 				toCheck,
 				form,
+				reusable,
 			);
 		} catch (error) {
 			if (!(error instanceof SecretRefusal) || !check) throw error;
@@ -3631,7 +3685,13 @@ export class FolderService {
 		}
 		if (node.version === version) {
 			node.staged = { version, file: staged.file };
-			view.intents.set(staged.intentId, { renewed: this.#now(), node, staged: staged.file });
+			const existing = view.intents.get(staged.intentId);
+			view.intents.set(staged.intentId, {
+				renewed: existing?.renewed ?? this.#now(),
+				node,
+				...(existing?.chunk ? { chunk: existing.chunk } : {}),
+				staged: staged.file,
+			});
 		}
 		return staged.file;
 	}
@@ -5152,9 +5212,9 @@ export class FolderService {
 		const { chunks, files } = this.#neededBytes(view, pending);
 		const due: [string, HeldIntent][] = [];
 		for (const [id, held] of [...view.intents]) {
-			const needed = held.chunk
-				? chunks.has(held.chunk.sha256)
-				: held.staged !== undefined && files.has(held.staged.manifestSha256);
+			const needed =
+				(held.chunk !== undefined && chunks.has(held.chunk.sha256)) ||
+				(held.staged !== undefined && files.has(held.staged.manifestSha256));
 			if (!needed) {
 				view.intents.delete(id);
 				continue;
@@ -5183,7 +5243,7 @@ export class FolderService {
 					if (held.staged)
 						for (const node of [held.node, ...pending.nodes().values()])
 							if (node.kind === "file" && node.staged?.file === held.staged) node.staged = undefined;
-					if (held.chunk) await this.#holdAgain(view, id, held);
+					if (held.chunk && chunks.has(held.chunk.sha256)) await this.#holdAgain(view, id, held);
 				}
 			}
 		};
@@ -5219,14 +5279,37 @@ export class FolderService {
 		const chunk = held.chunk;
 		if (!staging || !chunk) return;
 		try {
-			const id = await staging.holdChunk(
+			const expectedPath = view.pending?.pathOf(held.node);
+			const singleChunk =
+				held.node.content !== undefined &&
+				held.node.content.chunks.length === 1 &&
+				held.node.content.chunks[0]?.sha256 === chunk.sha256 &&
+				held.node.content.size === chunk.bytes;
+			const mediaType =
+				singleChunk && expectedPath !== undefined
+					? this.#mediaType(view, held.node, expectedPath)
+					: "application/octet-stream";
+			const executable = singleChunk ? held.node.executable : false;
+			const replacement = await staging.holdChunk(
 				view.environmentId,
 				view.actor,
 				await this.#uploadProfile(view),
 				chunk.sha256,
 				chunk.bytes,
+				mediaType,
+				executable,
 			);
-			view.intents.set(id, { renewed: this.#now(), node: held.node, chunk });
+			view.intents.set(replacement.intentId, {
+				renewed: this.#now(),
+				node: held.node,
+				chunk: {
+					sha256: chunk.sha256,
+					bytes: chunk.bytes,
+					...(singleChunk
+						? { manifestSha256: replacement.manifestSha256, manifestPresent: replacement.manifestPresent }
+						: {}),
+				},
+			});
 		} catch (error) {
 			this.#log(
 				`folder-service: ${view.key}: a pending chunk could not be held again now: ${(error as Error).message}`,
