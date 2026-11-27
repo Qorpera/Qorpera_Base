@@ -289,6 +289,7 @@ export const WORKSPACE: Record<string, string> = {
 	"Blocked {sender}": "Blokerede {sender}",
 	"Unblocked {sender}": "Fjernede blokering af {sender}",
 	"Blocked senders": "Blokerede afsendere",
+	"Could not load blocked senders.": "Kunne ikke hente blokerede afsendere.",
 	Unblock: "Fjern blokering",
 	"Future emails from these senders go straight to Trash.":
 		"Fremtidige e-mails fra disse afsendere går direkte i papirkurven.",

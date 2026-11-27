@@ -805,7 +805,7 @@ export async function updateMailThreads(
 			: cloud.rpc("qorpera_member_mail_update_threads", args)),
 		"mail thread update",
 	);
-	return { updated: absent(answer.updated) ? 0 : count(answer.updated, "mail thread update count") };
+	return { updated: absent(answer.updatedCount) ? 0 : count(answer.updatedCount, "mail thread update count") };
 }
 
 export async function unsubscribeMailThread(
@@ -870,7 +870,12 @@ export async function blockMailSender(
 	sender: string,
 	trashExisting = true,
 	signal?: AbortSignal,
-): Promise<{ readonly sender: string; readonly trashed: number }> {
+): Promise<{
+	readonly sender: string;
+	readonly trashedCount: number;
+	readonly trashedThreads: readonly string[];
+	readonly trashedArchivedThreads: readonly string[];
+}> {
 	const args = {
 		p_environment_id: environmentId,
 		p_sender: sender,
@@ -882,9 +887,17 @@ export async function blockMailSender(
 			: cloud.rpc("qorpera_member_mail_block_sender", args)),
 		"mail block sender",
 	);
+	const trashedThreads = Array.isArray(answer.trashedThreads)
+		? answer.trashedThreads.map((entry) => threadId(entry, "mail blocked trashed thread"))
+		: [];
+	const trashedArchivedThreads = Array.isArray(answer.trashedArchivedThreads)
+		? answer.trashedArchivedThreads.map((entry) => threadId(entry, "mail blocked archived thread"))
+		: [];
 	return {
 		sender: nonEmptyString(answer.sender, "mail blocked sender", 320),
-		trashed: absent(answer.trashed) ? 0 : count(answer.trashed, "mail blocked trashed"),
+		trashedCount: absent(answer.trashedCount) ? 0 : count(answer.trashedCount, "mail blocked trashed"),
+		trashedThreads,
+		trashedArchivedThreads,
 	};
 }
 

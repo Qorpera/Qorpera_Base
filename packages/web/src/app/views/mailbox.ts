@@ -596,6 +596,7 @@ export function renderMailbox(
 						cachedJson(latestMail.waiting),
 						cachedJson(latestMail.answers),
 						cachedJson(latestMail.blockedSenders ?? null),
+						latestMail.blockedSendersFailed === true,
 						lists.map((each) => cachedJson(latestMail.lists[mailListKey(each)] ?? null)),
 						threads.map((thread) => [
 							cachedJson(latestMail.threads[thread] ?? null),
@@ -1336,15 +1337,32 @@ async function runBlockSender(page: Page, sender: string, block: boolean, closeT
 	page.redraw();
 	try {
 		if (block) {
-			await reader.blockSender(sender, true);
+			const outcome = await reader.blockSender(sender, true);
 			page.ui.acting = null;
 			if (closeThread && page.ui.open === closeThread) page.ui.open = null;
+			const exactUndo = outcome.trashedThreads.length === outcome.trashedCount;
 			say(page, t("Blocked {sender}", { sender }), null, undefined, {
-				label: t("Undo"),
+				label: exactUndo ? t("Undo") : t("Unblock"),
 				run: () => {
 					void (async () => {
-						await runBlockSender(page, sender, false);
-						if (closeThread) await runThreadAction(page, closeThread, "restore");
+						try {
+							await reader.unblockSender(sender);
+							if (exactUndo) {
+								for (let offset = 0; offset < outcome.trashedThreads.length; offset += 50) {
+									await reader.updateThreads(outcome.trashedThreads.slice(offset, offset + 50), "restore");
+								}
+								for (let offset = 0; offset < outcome.trashedArchivedThreads.length; offset += 50) {
+									await reader.updateThreads(
+										outcome.trashedArchivedThreads.slice(offset, offset + 50),
+										"archive",
+									);
+								}
+							}
+							say(page, t("Unblocked {sender}", { sender }), null);
+						} catch (error) {
+							page.ui.error = describeError(error);
+							page.redraw();
+						}
 					})();
 				},
 			});
@@ -2792,41 +2810,62 @@ function googleLine(page: Page): HTMLElement | null {
 // Addresses ---------------------------------------------------------------------------------------------------------
 
 function blockedSendersSection(page: Page): HTMLElement | null {
-	const blocked = page.company.store.get().mail?.blockedSenders ?? [];
-	if (!blocked.length) return null;
+	const mail = page.company.store.get().mail;
+	const failed = mail?.blockedSendersFailed === true;
+	const blocked = mail?.blockedSenders ?? [];
+	if (!failed && !blocked.length) return null;
 	const writable = canWrite(page);
 	return h(
 		"section",
 		{ class: "mailbox-blocked", "aria-labelledby": "mailbox-blocked-heading" },
 		h("h2", { id: "mailbox-blocked-heading", class: "mailbox-blocked-heading" }, t("Blocked senders")),
-		h(
-			"p",
-			{ class: "mailbox-muted mailbox-blocked-note" },
-			t("Future emails from these senders go straight to Trash."),
-		),
-		h(
-			"ul",
-			{ class: "mailbox-address-list" },
-			...blocked.map((entry) =>
-				h(
-					"li",
-					{ class: "mailbox-blocked-row" },
-					h("span", { class: "mailbox-blocked-sender" }, entry.sender),
-					writable
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "mailbox-text is-quiet",
-									disabled: page.ui.acting === `block:${entry.sender}`,
-									onclick: () => void runBlockSender(page, entry.sender, false),
-								},
-								t("Unblock"),
-							)
-						: null,
-				),
-			),
-		),
+		failed
+			? notice(
+					"danger",
+					h("p", null, t("Could not load blocked senders.")),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-text",
+							onclick: () => void CompanyMail.of(page.company)?.readBlockedSenders(true),
+						},
+						t("Try again"),
+					),
+				)
+			: null,
+		blocked.length
+			? h(
+					"p",
+					{ class: "mailbox-muted mailbox-blocked-note" },
+					t("Future emails from these senders go straight to Trash."),
+				)
+			: null,
+		blocked.length
+			? h(
+					"ul",
+					{ class: "mailbox-address-list" },
+					...blocked.map((entry) =>
+						h(
+							"li",
+							{ class: "mailbox-blocked-row" },
+							h("span", { class: "mailbox-blocked-sender" }, entry.sender),
+							writable
+								? h(
+										"button",
+										{
+											type: "button",
+											class: "mailbox-text is-quiet",
+											disabled: page.ui.acting === `block:${entry.sender}`,
+											onclick: () => void runBlockSender(page, entry.sender, false),
+										},
+										t("Unblock"),
+									)
+								: null,
+						),
+					),
+				)
+			: null,
 	);
 }
 

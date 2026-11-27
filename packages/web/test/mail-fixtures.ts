@@ -221,7 +221,7 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 					else if (action === "unarchive") delete read.archivedAt;
 				}
 			}
-			return { updated };
+			return { action, updatedCount: updated, threads: [...targets] };
 		}
 		if (fn === "qorpera_member_mail_unsubscribe") {
 			const targetThread = String(args.p_thread);
@@ -243,28 +243,47 @@ export function mailFake(f: ReturnType<typeof fixture>): MailFake {
 		if (fn === "qorpera_member_mail_block_sender") {
 			const sender = String(args.p_sender).trim().toLowerCase();
 			const matchKind = sender.startsWith("@") ? "domain" : "address";
-			if (!fake.blockedSenders.some((entry) => entry.sender === sender)) {
+			let entryId = id(970 + fake.blockedSenders.length);
+			const existing = fake.blockedSenders.find((entry) => entry.sender === sender);
+			if (existing) {
+				entryId = existing.id;
+			} else {
 				fake.blockedSenders.unshift({
-					id: id(970 + fake.blockedSenders.length),
+					id: entryId,
 					sender,
 					matchKind,
 					createdAt: at(0),
 				});
 			}
 			const trashExisting = args.p_trash_existing !== false;
-			let trashed = 0;
+			const trashedThreads: string[] = [];
+			const trashedArchivedThreads: string[] = [];
 			for (const item of fake.threads) {
 				const from = String(item.fromAddress ?? "").toLowerCase();
 				const matched = matchKind === "domain" ? from.endsWith(sender) : from === sender;
 				if (!matched) continue;
 				if (trashExisting && !item.trashedAt) {
+					const tid = String(item.thread);
 					item.trashedAt = at(0);
-					trashed += 1;
+					trashedThreads.push(tid);
+					if (item.archivedAt) trashedArchivedThreads.push(tid);
 				}
 				const read = fake.reads[String(item.thread)];
-				if (read) read.senderBlocked = true;
+				if (read) {
+					read.senderBlocked = true;
+					if (trashExisting && !read.trashedAt) read.trashedAt = at(0);
+				}
 			}
-			return { sender, matchKind, trashed };
+			return {
+				id: entryId,
+				sender,
+				matchKind,
+				blocked: true,
+				trashedCount: trashedThreads.length,
+				trashedThreads,
+				trashedArchivedThreads,
+				createdAt: at(0),
+			};
 		}
 		if (fn === "qorpera_member_mail_unblock_sender") {
 			const sender = String(args.p_sender).trim().toLowerCase();

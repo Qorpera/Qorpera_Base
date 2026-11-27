@@ -3819,4 +3819,182 @@ describe("Digital Post", () => {
 		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(1));
 		expect(main.querySelector(".mailbox-blocked")).toBeNull();
 	});
+
+	it("supports archived toolbar unarchive, trash row restore, block confirm + exact multi-thread Undo, rerun after in-flight list read, and blocked-senders retry", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { fromAddress: "bulk@sender.example", subject: "Inbox one" }),
+				summary(2, { fromAddress: "bulk@sender.example", subject: "Inbox two" }),
+				summary(3, { fromAddress: "bulk@sender.example", subject: "Archived three", archivedAt: at(10) }),
+				summary(4, { fromAddress: "bulk@sender.example", subject: "Already trashed four", trashedAt: at(20) }),
+				summary(5, { fromAddress: "keep@other.example", subject: "Keep five" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [received(1, { fromAddress: "bulk@sender.example", subject: "Inbox one" })],
+				more: false,
+				waiting: [],
+			};
+			mail.reads[thread(3)] = {
+				thread: thread(3),
+				address: ADDRESS.address,
+				archivedAt: at(10),
+				messages: [received(3, { fromAddress: "bulk@sender.example", subject: "Archived three" })],
+				more: false,
+				waiting: [],
+			};
+		});
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+
+		tab(main, "Trash");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		expect(lines(main)[0]!.querySelector(".mailbox-subject")?.textContent).toBe("Already trashed four");
+		button(lines(main)[0]!, "Restore to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(4)],
+				p_action: "restore",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		const restoredFour = lines(main).find(
+			(row) => row.querySelector(".mailbox-subject")?.textContent === "Already trashed four",
+		)!;
+		button(restoredFour, "Move to Trash")!.click();
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+
+		tab(main, "Archived");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Move back to Inbox")).toBeDefined());
+		button(main, "Move back to Inbox")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(3)],
+				p_action: "unarchive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(0));
+
+		tab(main, "Inbox");
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(4));
+		lines(main)
+			.find((row) => row.querySelector(".mailbox-subject")?.textContent === "Archived three")!
+			.querySelector<HTMLButtonElement>(".mailbox-open")!
+			.click();
+		await vi.waitFor(() => expect(button(main, "Archive")).toBeDefined());
+		button(main, "Archive")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(3)],
+				p_action: "archive",
+			}),
+		);
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(3));
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(button(main, "Block sender")).toBeDefined());
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector<HTMLElement>(".confirm-dialog")!, "Cancel")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).toBeNull());
+		expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(0);
+
+		button(main, "Block sender")!.click();
+		await vi.waitFor(() => expect(document.querySelector(".confirm-dialog")).not.toBeNull());
+		button(document.querySelector<HTMLElement>(".confirm-dialog")!, "Block sender")!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_block_sender")).toHaveLength(1));
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+
+		const undo = button(main, "Undo");
+		expect(undo).toBeDefined();
+		undo!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_unblock_sender")).toHaveLength(1));
+		await vi.waitFor(() =>
+			expect(
+				calls(fake, "qorpera_member_mail_update_threads").some(
+					(call) =>
+						call.p_action === "restore" &&
+						Array.isArray(call.p_threads) &&
+						call.p_threads.length === 3 &&
+						call.p_threads.includes(thread(1)) &&
+						call.p_threads.includes(thread(2)) &&
+						call.p_threads.includes(thread(3)) &&
+						!call.p_threads.includes(thread(4)),
+				),
+			).toBe(true),
+		);
+		await vi.waitFor(() =>
+			expect(
+				calls(fake, "qorpera_member_mail_update_threads").some(
+					(call) =>
+						call.p_action === "archive" &&
+						Array.isArray(call.p_threads) &&
+						call.p_threads.length === 1 &&
+						call.p_threads[0] === thread(3),
+				),
+			).toBe(true),
+		);
+
+		let releaseInflight!: () => void;
+		const inflightGate = new Promise<void>((resolve) => {
+			releaseInflight = resolve;
+		});
+		let delayedOnce = false;
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_threads" && !delayedOnce) {
+				delayedOnce = true;
+				const answer = await baseRpc(fn, args);
+				await inflightGate;
+				return answer;
+			}
+			return baseRpc(fn, args);
+		});
+
+		const threadsCallsBefore = calls(fake, "qorpera_member_mail_threads").length;
+		lines(main)[0]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_threads").length).toBe(threadsCallsBefore + 1));
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-star")!.click();
+		await vi.waitFor(() =>
+			expect(calls(fake, "qorpera_member_mail_update_threads").at(-1)).toMatchObject({
+				p_threads: [thread(2)],
+				p_action: "star",
+			}),
+		);
+		releaseInflight();
+		await vi.waitFor(() => expect(calls(fake, "qorpera_member_mail_threads").length).toBe(threadsCallsBefore + 2));
+	});
+
+	it("shows a retryable error in Addresses when loading blocked senders fails transiently", async () => {
+		const { f, main, fake } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+			mail.blockedSenders = [
+				{ id: id(975), sender: "retry@blocked.example", matchKind: "address", createdAt: at(0) },
+			];
+		});
+		let failBlockedOnce = true;
+		const baseRpc = (f.cloud.rpc as unknown as Mock).getMockImplementation()!;
+		(f.cloud.rpc as unknown as Mock).mockImplementation(async (fn: string, args: Record<string, unknown>) => {
+			if (fn === "qorpera_member_mail_blocked_senders" && failBlockedOnce) {
+				failBlockedOnce = false;
+				fake.calls.push({ fn, args });
+				throw new Error("temporary failure");
+			}
+			return baseRpc(fn, args);
+		});
+
+		await vi.waitFor(() => expect(lines(main)).toHaveLength(1));
+		tab(main, "Addresses");
+		await vi.waitFor(() => expect(main.textContent).toContain("Could not load blocked senders."));
+		expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(1);
+		button(main, "Try again")!.click();
+		await vi.waitFor(() =>
+			expect(main.querySelector(".mailbox-blocked-sender")?.textContent).toBe("retry@blocked.example"),
+		);
+		expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(2);
+	});
 });

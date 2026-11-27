@@ -1193,7 +1193,12 @@ export class CompanyMail {
 	async blockSender(
 		sender: string,
 		trashExisting = true,
-	): Promise<{ readonly sender: string; readonly trashed: number }> {
+	): Promise<{
+		readonly sender: string;
+		readonly trashedCount: number;
+		readonly trashedThreads: readonly string[];
+		readonly trashedArchivedThreads: readonly string[];
+	}> {
 		const result = await this.#withRpcScope((signal) =>
 			blockMailSender(this.#cloud, this.#environmentId, sender, trashExisting, signal),
 		);
