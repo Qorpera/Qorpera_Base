@@ -284,3 +284,9 @@
 	box-shadow: 0 0 0 2px var(--studio-accent, var(--tour-accent)),
 		0 16px 44px color-mix(in srgb, var(--studio-accent, var(--tour-accent)) 24%, transparent);
 }
+
+:root[data-theme="dark"] :is(.lib, .po-page) {
+	--lib-brand-ink: color-mix(in srgb, var(--lib-brand) 55%, #ffffff);
+	--lib-brand-soft: color-mix(in srgb, var(--lib-brand) 22%, var(--bg)); --lib-feat: #131514; --lib-feat-muted: #a9a8a3;
+}
+:root[data-theme="dark"] .po-srcpop { box-shadow: 0 12px 34px rgb(0 0 0 / 50%); }

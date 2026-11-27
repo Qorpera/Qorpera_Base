@@ -721,6 +721,81 @@ describe("Studio visual inspect & draw tools", () => {
 		}
 	});
 
+	it("previews the Strategy starter's Research tab as the page draws it: themes with their posts, newest post first", () => {
+		const post = (report: Record<string, unknown>) => JSON.stringify(report);
+		const library = JSON.stringify({
+			line: "What we have found out, and what we still have to.",
+			themes: [{ name: "Hardware" }, { name: "Hair" }],
+		});
+		const snapshot = {
+			surfaceTitle: "Strategy",
+			folderRoot: "surfaces/strategy",
+			starter: "strategy" as const,
+			files: {
+				"surfaces/strategy/research.json": library,
+				"surfaces/strategy/research/band.report.json": post({
+					headline: "Nothing on sale does what our band must",
+					theme: "hardware",
+					date: "2026-01-10",
+				}),
+				"surfaces/strategy/research/maker.report.json": post({
+					title: "Our name makes us its maker",
+					theme: "Hardware",
+					date: "2026-01-12",
+				}),
+				"surfaces/strategy/research/prepay.report.json": post({
+					headline: "No money before it ships",
+					theme: "Selling",
+					date: "2026-01-11",
+				}),
+				"surfaces/strategy/plan/old.report.json": post({ headline: "Where <299> kr goes", date: "November" }),
+				"surfaces/strategy/research/unread.report.json": post({
+					headline: "A post whose evidence does not read",
+					theme: "Hardware",
+					question: "Is this a research post?",
+					date: "2026-01-13",
+				}),
+				"surfaces/strategy/research/untitled.report.json": post({ theme: "Hardware", date: "2026-01-14" }),
+				"surfaces/strategy/research/notes.json": post({ headline: "Not a post" }),
+				"surfaces/other/research/elsewhere.report.json": post({ headline: "Another interface's post" }),
+			},
+			binaries: {},
+		};
+		const rendered = renderStudioPreviewHtml({ snapshot, tabId: "research", theme: "light" });
+		expect(rendered.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: true }]);
+		expect(rendered.warnings).toEqual([]);
+		expect(rendered.html).toContain('<p class="pv-sub">What we have found out, and what we still have to.</p>');
+		expect([...rendered.html.matchAll(/<span class="pv-pill">([^<]*)<\/span>/g)].map((match) => match[1])).toEqual([
+			"Hardware · 2 posts",
+			"Hair · no post yet",
+			"Selling · 1 post",
+		]);
+		expect(
+			[...rendered.html.matchAll(/<article class="pv-card"><strong>([^<]*)<\/strong>/g)].map((match) => match[1]),
+		).toEqual([
+			"A post whose evidence does not read",
+			"Our name makes us its maker",
+			"No money before it ships",
+			"Nothing on sale does what our band must",
+			"Where &#60;299&#62; kr goes",
+		]);
+
+		const empty = renderStudioPreviewHtml({
+			snapshot: { ...snapshot, files: {} },
+			tabId: "research",
+			theme: "light",
+		});
+		expect(empty.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: false }]);
+		expect(empty.html).toContain("No research posts staged yet");
+		const named = renderStudioPreviewHtml({
+			snapshot: { ...snapshot, files: { "surfaces/strategy/research.json": library } },
+			tabId: "research",
+			theme: "light",
+		});
+		expect(named.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: false }]);
+		expect(named.html).toContain("Hair · no post yet");
+	});
+
 	it("inspect_surface renders Studio preview HTML, bounds commands under 16KB even with 2MB PNGs, and reports scroll pagination", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-test-"));
 		try {

@@ -862,12 +862,12 @@ describe("named cards and artifacts skip", () => {
 });
 
 describe("the block registry", () => {
-	it("holds one entry per type: fourteen families and the row", () => {
+	it("holds one entry per type: fifteen families and the row", () => {
 		const types = SURFACE_BLOCKS.map((block) => block.type);
 		expect(types).toEqual([...SURFACE_BLOCK_TYPES, "row"]);
-		expect(new Set(types).size).toBe(20);
+		expect(new Set(types).size).toBe(21);
 		const families = new Set(SURFACE_BLOCKS.filter((block) => block.type !== "row").map((block) => block.family));
-		expect(families.size).toBe(14);
+		expect(families.size).toBe(15);
 	});
 
 	it("is what the parser accepts, field by field", () => {
@@ -886,9 +886,9 @@ describe("the block registry", () => {
 		}
 	});
 
-	it("describes every type for the prompt, within 3.5 KB", () => {
+	it("describes every type for the prompt, within 3.75 KB", () => {
 		const text = describeSurfaceBlocks();
-		expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(3584);
+		expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(3840);
 		expect(text).toContain(SURFACE_LAYOUT_PATH);
 		expect(text).toContain(SURFACE_LAYOUT_SCHEMA);
 		for (const block of SURFACE_BLOCKS) {

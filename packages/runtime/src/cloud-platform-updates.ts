@@ -622,6 +622,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Research posts: sources, a plan first, a second reader",
 		text: "A question that needs evidence now becomes a research post: one question, a plan the founder approves first, every source saved with its link and the day it was opened, the short answer first, and what could not be found. A second reader opens every source again before the founder sees the post. When a session asks the founder to approve a research plan, or for a fact only they know, pass it on in your own voice and never answer it yourself. When a session says a post needs its second reader, dispatch a worker with manage_worker whose brief is the research-check skill (read_skill), tell no member, and steer the session with the worker's lines.",
 	},
+	{
+		id: "research-library",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "One Research tab: themes first, then posts",
+		text: "Research posts now have one home on an interface: a Research tab. It shows the themes the company must answer, each with its question and how many posts answer it, then a featured post and every post with its number, date and cover. A theme opens to what is known so far, each line leading to its post, beside what is still open and what would close it. A post opens with its short answer, marks that open each source, what it changes, how it was found and what could not be found. Posts no longer sit under each tab of Strategy. When you ask a session for research, name the themes you want answered: one with no post yet shows as empty, so everyone sees what is still open.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

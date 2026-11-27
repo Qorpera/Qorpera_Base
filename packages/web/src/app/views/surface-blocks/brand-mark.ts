@@ -10,7 +10,7 @@ type Picture =
 	| { readonly kind: "binary"; readonly ref: StudioBinaryRef }
 	| undefined;
 
-function svgText(text: string | undefined): string | undefined {
+export function svgText(text: string | undefined): string | undefined {
 	const trimmed = text?.trim();
 	return trimmed && /<svg[\s>]/i.test(trimmed) ? trimmed : undefined;
 }
