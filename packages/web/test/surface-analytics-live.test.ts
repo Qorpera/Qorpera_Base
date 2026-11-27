@@ -1089,8 +1089,14 @@ describe("live figures, table cells and the qorpera codes", () => {
 			texts: ["8088", "12536", undefined],
 			numeric: false,
 		});
+		expect(columnTexts([0.0035, 0.012, 1.2], false).texts).toEqual(["0.0035", "0.0120", "1.2000"]);
+		expect(columnTexts([55.676098, 7.4593], false).texts).toEqual(["55.676098", "7.459300"]);
+		expect(columnTexts([1.5e-7, 2], false)).toEqual({ texts: [undefined, undefined], numeric: true });
+		expect(columnTexts([1.5e-7, 2], true).texts).toEqual(["0.00", "2.00"]);
+		expect(columnTexts([12536, "8088", "0042"], true).texts).toEqual(["12,536", "8,088", undefined]);
+		expect(columnTexts(["12536", "8088"], true).texts).toEqual(["12536", "8088"]);
 		setLanguagePreference("da");
-		expect(columnTexts([1234.5, 8], true).texts).toEqual(["1.234,50", "8,00"]);
+		expect(columnTexts([1234.55, 8], true).texts).toEqual(["1.234,55", "8,00"]);
 	});
 
 	it("right-aligns number columns and lets a wide table scroll inside its own frame", async () => {
@@ -1121,12 +1127,19 @@ describe("live figures, table cells and the qorpera codes", () => {
 									heading: "Card or by hand?",
 								},
 								{ type: "table", id: "s", from: "plan.json#/months", heading: "The plan" },
+								{ type: "spec_list", id: "l", from: "parts.json", heading: "Parts" },
 							],
 						},
 					],
 				},
 				{
 					files: {
+						[`${ROOT}/parts.json`]: JSON.stringify({
+							bom: [
+								{ part: "Screw", cost: 0.0035 },
+								{ part: "Shade", cost: 64 },
+							],
+						}),
 						[`${ROOT}/plan.json`]: JSON.stringify({
 							months: [
 								{ month: "Jan", year: 2027, target: 8088 },
@@ -1168,6 +1181,13 @@ describe("live figures, table cells and the qorpera codes", () => {
 		).toEqual([
 			["Jan", "2027", "8,088.00"],
 			["Feb", "2027", "12,536.25"],
+		]);
+		const parts = root.querySelector('[data-block="spec_list"]')!;
+		expect([...parts.querySelectorAll("tbody td")].map((cell) => [cell.textContent, cell.className])).toEqual([
+			["Screw", ""],
+			["0.0035", "is-num"],
+			["Shade", ""],
+			["64.0000", "is-num"],
 		]);
 		life.abort();
 	});
