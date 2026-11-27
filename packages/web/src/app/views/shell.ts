@@ -977,6 +977,7 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 			(event) => {
 				if (!created.toolbar.isConnected) return;
 				pressClosesMenu =
+					Boolean(openMenu()?.el.isConnected) &&
 					companyButton.getAttribute("aria-expanded") === "true" &&
 					event.target instanceof Node &&
 					companyButton.contains(event.target);

@@ -4153,4 +4153,28 @@ describe("scheduled agent rename and delete across surface automations and legac
 		expect(store.state.error).toBe("The routine could not be deleted.");
 		store.dispose();
 	});
+
+	it("restarts loading on resume() and ignores late settlement from an aborted load", async () => {
+		const firstCall = deferred<boolean>();
+		let calls = 0;
+		const isSurfacesEnabled = vi.fn(() => {
+			calls += 1;
+			return calls === 1 ? firstCall.promise : Promise.resolve(true);
+		});
+		const store = storeWith(fakeClient({ isSurfacesEnabled }));
+
+		const firstLoad = store.load();
+		expect(store.state.source).toBe("loading");
+
+		store.suspend();
+		store.resume();
+		firstCall.resolve(false);
+		await firstLoad;
+		await store.load();
+
+		expect(calls).toBe(2);
+		expect(store.state.source).toBe("cloud");
+		expect(store.state.surfaces).toHaveLength(1);
+		store.dispose();
+	});
 });

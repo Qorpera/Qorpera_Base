@@ -1230,6 +1230,19 @@ export function mountApplication(
 		agentNotes = undefined;
 		sidePanel = undefined;
 		appPage?.dispose();
+		for (const el of [
+			appPage?.el,
+			siteView?.el,
+			whatsNewPage?.el,
+			newProgramPage?.view.el,
+			surfaceView?.view.el,
+			conceptsView?.el,
+			conversation?.el,
+			memberChat?.view.el,
+			newConversation?.el,
+		]) {
+			if (el?.parentElement === main) el.remove();
+		}
 		appPage = undefined;
 		appReturn = undefined;
 		siteView?.view.dispose();
@@ -1385,26 +1398,32 @@ export function mountApplication(
 	}
 
 	async function ensureCompany(profileId: string): Promise<CompanyController | undefined> {
-		if (company?.profile.profileId === profileId) return company;
+		if (company?.profile.profileId === profileId) {
+			if (!company.signal.aborted || company.store.get().accessLost) return company;
+			teardownCompany();
+		}
 		const warm = warmCompanyFor(profileId);
 		if (warm) {
-			parkCompany();
 			warmCompanies.delete(profileId);
-			const latest = profiles.find((item) => item.profileId === profileId);
-			if (latest && JSON.stringify(latest) !== JSON.stringify(warm.profile)) {
-				warm.store.set({ profile: latest });
+			parkCompany();
+			if (!warm.signal.aborted && !warm.store.get().accessLost) {
+				const latest = profiles.find((item) => item.profileId === profileId);
+				if (latest && JSON.stringify(latest) !== JSON.stringify(warm.profile)) {
+					warm.store.set({ profile: latest });
+				}
+				company = warm;
+				companyActiveAbort = new AbortController();
+				computerPanels = createComputerPanels(warm, warm.profile, warm.userId);
+				unsubscribeCompany = warm.store.subscribe(() => render());
+				warm.resume();
+				surfacesStoreOf(warm)?.resume();
+				appQuestions.get(warm)?.resume();
+				appData.get(warm)?.resume();
+				appNumbers.get(warm)?.resume();
+				logos.resumeIdentity(profileId);
+				return warm;
 			}
-			company = warm;
-			companyActiveAbort = new AbortController();
-			computerPanels = createComputerPanels(warm, warm.profile, warm.userId);
-			unsubscribeCompany = warm.store.subscribe(() => render());
-			warm.resume();
-			surfacesStoreOf(warm)?.resume();
-			appQuestions.get(warm)?.resume();
-			appData.get(warm)?.resume();
-			appNumbers.get(warm)?.resume();
-			logos.resumeIdentity(profileId);
-			return warm;
+			warm.stop();
 		}
 		if (pendingCompany?.profileId === profileId && pendingCompany.revision === routeRevision) {
 			if (!profiles.some((item) => item.profileId === profileId)) return pendingCompany.promise;
