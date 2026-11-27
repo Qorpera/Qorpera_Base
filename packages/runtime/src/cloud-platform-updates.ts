@@ -620,7 +620,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-27",
 		title: "Research posts: sources, a plan first, a second reader",
-		text: "A question that needs evidence now becomes a research post: one question, a plan the founder approves first, every source saved with its link and the day it was opened, the short answer first, and what could not be found. A second reader opens every source again before the founder sees the post. When a session asks the founder to approve a research plan, or for a fact only they know, pass it on in your own voice and never answer it yourself. When a session says a post needs its second reader, dispatch a worker with manage_worker whose brief is the research-check skill (read_skill) and send its lines back with steer_surface_session.",
+		text: "A question that needs evidence now becomes a research post: one question, a plan the founder approves first, every source saved with its link and the day it was opened, the short answer first, and what could not be found. A second reader opens every source again before the founder sees the post. When a session asks the founder to approve a research plan, or for a fact only they know, pass it on in your own voice and never answer it yourself. When a session says a post needs its second reader, dispatch a worker with manage_worker whose brief is the research-check skill (read_skill), tell no member, and steer the session with the worker's lines.",
 	},
 ]);
 

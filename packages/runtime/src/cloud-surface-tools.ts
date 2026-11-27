@@ -67,6 +67,7 @@ import {
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
+	surfaceReportMarkedKey,
 	WireValueError,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -1824,6 +1825,19 @@ export function checkStagedSurfaceDeliverables(
 					throw reportRefusal(
 						op.path,
 						`${whole.join(", ")} cannot be merged: a research post's question, short answer, sources, method and not-found list are written whole, with write_text`,
+					);
+				}
+				if (patch.theme === null) {
+					throw reportRefusal(
+						op.path,
+						"theme cannot be removed by a merge: a research post needs it; write the post whole, with write_text",
+					);
+				}
+				const marked = surfaceReportMarkedKey(patch);
+				if (marked !== undefined) {
+					throw reportRefusal(
+						op.path,
+						`${marked} carries a source mark in a merge: a mark is read against the post's sources, so a post with marks is written whole, with write_text`,
 					);
 				}
 				checkReportEvidence(

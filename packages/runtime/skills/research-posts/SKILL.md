@@ -37,7 +37,7 @@ Offer "Yes, research it" and "Change the plan". Their yes is a hard blocker by r
 A second reader who has seen none of your reasoning opens every source again and checks each number and name against it. Its whole brief is the research-check skill (`read_skill`).
 - If your run can start a helper, give a fresh one the draft and that skill, nothing else.
 - If it cannot, save the draft as a note and ask with text starting "Second reader needed:" and the note's name. It reaches the Co-Founder, who has one do the check. Say that nothing is needed from the founder.
-- Never check your own post, and never set a source's checked day yourself. A post is refused when staged while one source is unchecked.
+- Never check your own post. Set a source's checked day only from the second reader's line for it, never on your own. A post is refused when staged while one source is unchecked.
 - What fails is cut, or moved to `notFound`. Then stage the post alone in its own `stage_surface_patch` call.
 
 ## What the founder is told

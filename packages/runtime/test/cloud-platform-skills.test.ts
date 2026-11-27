@@ -53,7 +53,9 @@ describe("the platform's skills", () => {
 		expect(strategy).not.toMatch(/light and scannable|Never pause to ask/);
 		expect(writer).toContain("the research-check skill (`read_skill`)");
 		expect(writer).toContain("A run on GPT has no helpers: read alone");
-		expect(writer).toContain("never set a source's checked day yourself");
+		expect(writer).toContain(
+			"Set a source's checked day only from the second reader's line for it, never on your own",
+		);
 		for (const start of ['"Research plan:"', '"Second reader needed:"']) {
 			expect(writer, start).toContain(start);
 			expect(SURFACE_ESCALATION_WAKE_PROTOCOL, start).toContain(start);

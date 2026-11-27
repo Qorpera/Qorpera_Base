@@ -12,7 +12,7 @@ export const SURFACE_REPORT_RELATED_MAX = 8;
 
 export const SURFACE_REPORT_RESEARCH_KEYS = ["question", "shortAnswer", "sources", "method", "notFound"] as const;
 
-export const SURFACE_REPORT_FORMAT = `A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}. A research post is a report file that also names the one "question" it answers; it then needs "theme", "shortAnswer", "sources", "method" and "notFound", and may carry "cover", "changes" and "related": {"question":"<one question, ending in ?>","theme":"<the theme it belongs to>","cover":{"src":"<a picture in this folder>","alt"},"shortAnswer":["<1-${SURFACE_REPORT_CLAIMS_MAX} claims, one sentence each>"],"changes":[{"page","line","now":"<what that line says now>"}],"sources":[{"n":1,"title","publisher","url","opened":"YYYY-MM-DD","backs":"<the line it backs, in the source's own figures>","kind":"<e.g. maker's own page>","checked":"YYYY-MM-DD"}],"method":["<how the answer was found>"],"notFound":[{"what","note":"<what would close it>"}],"related":["<path of another *.report.json>"]}. A source mark is [n], or [n, m], after the sentence a source backs, in a claim or anywhere in sections; every mark needs its source. "opened" is the day the writer read the source, "checked" the day a second reader opened it again: a post is refused while a source has no "checked", and "question", "shortAnswer", "sources", "method" and "notFound" are written whole (write_text), never merged.`;
+export const SURFACE_REPORT_FORMAT = `A report file (*.report.json) is {"category","headline","subtitle","author","date","readingTime","keyMetrics":[{"label","value","delta"}],"sections":[{"id","kicker","heading","paragraphs":["..."],"blocks":[...]}]}. Section blocks: bar_chart {heading, subtitle, max, items:[{label, value, display, note, highlight}]}; line_chart {heading, subtitle, xLabels, series:[{name, color, values}]}; table {heading, caption, columns, rows, highlightRow}; callout {tone:"thesis"|"decision"|"tradeoff", heading, body, bullets}; quote {text, attribution}; figure {heading, caption, panels:[{label, heading, body, accent}]}. A research post is a report file that also names the one "question" it answers; it then needs "theme", "shortAnswer", "sources", "method" and "notFound", and may carry "cover", "changes" and "related": {"question":"<one question, ending in ?>","theme":"<the theme it belongs to>","cover":{"src":"<a picture in this folder>","alt"},"shortAnswer":["<1-${SURFACE_REPORT_CLAIMS_MAX} claims, one sentence each>"],"changes":[{"page","line","now":"<what that line says now>"}],"sources":[{"n":1,"title","publisher","url","opened":"YYYY-MM-DD","backs":"<the line it backs, in the source's own figures>","kind":"<e.g. maker's own page>","checked":"YYYY-MM-DD"}],"method":["<how the answer was found>"],"notFound":[{"what","note":"<what would close it>"}],"related":["<path of another *.report.json>"]}. A source mark is [n], or [n, m], after the sentence a source backs, anywhere in the post's text; every mark needs its source. "opened" is the day the writer read the source, "checked" the day a second reader opened it again: a post is refused while a source has no "checked", and "question", "shortAnswer", "sources", "method" and "notFound" are written whole (write_text), never merged. A merge_json carries no source mark and never removes "theme".`;
 
 export interface SurfaceReportCover {
 	readonly src: string;
@@ -62,6 +62,7 @@ const COVER_FILE = /\.(?:png|jpe?g|webp|gif|avif|svg)$/i;
 const REPORT_FILE = /\.report\.json$/i;
 const CALENDAR_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const SOURCE_MARK = /\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]/g;
+const UNMARKED_KEYS: ReadonlySet<string> = new Set(["sources", "cover", "related"]);
 const DAY_MS = 86_400_000;
 
 function fail(label: string, problem: string): never {
@@ -217,6 +218,16 @@ function checkSourceMarks(value: unknown, label: string, known: ReadonlySet<numb
 		for (const [key, entry] of Object.entries(value)) checkSourceMarks(entry, `${label}.${key}`, known);
 }
 
+function hasSourceMark(value: unknown): boolean {
+	if (typeof value === "string") return value.search(SOURCE_MARK) >= 0;
+	if (Array.isArray(value)) return value.some(hasSourceMark);
+	return isPlainObject(value) && Object.values(value).some(hasSourceMark);
+}
+
+export function surfaceReportMarkedKey(report: Readonly<Record<string, unknown>>): string | undefined {
+	return Object.keys(report).find((key) => !UNMARKED_KEYS.has(key) && hasSourceMark(report[key]));
+}
+
 export function parseSurfaceReportEvidence(
 	report: Readonly<Record<string, unknown>>,
 	options: SurfaceReportEvidenceOptions = {},
@@ -253,8 +264,7 @@ export function parseSurfaceReportEvidence(
 	}
 	if (sources !== undefined) {
 		const known = new Set(sources.map((source) => source.n));
-		for (const [key, part] of Object.entries({ shortAnswer, changes, method, notFound, sections: report.sections }))
-			checkSourceMarks(part, key, known);
+		for (const [key, part] of Object.entries(report)) if (!UNMARKED_KEYS.has(key)) checkSourceMarks(part, key, known);
 	}
 	return {
 		...(question === undefined ? {} : { question }),

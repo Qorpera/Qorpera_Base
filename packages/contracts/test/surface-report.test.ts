@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseSurfaceReportEvidence, SURFACE_REPORT_FORMAT, SURFACE_REPORT_RESEARCH_KEYS } from "../src/index.ts";
+import {
+	parseSurfaceReportEvidence,
+	SURFACE_REPORT_FORMAT,
+	SURFACE_REPORT_RESEARCH_KEYS,
+	surfaceReportMarkedKey,
+} from "../src/index.ts";
 
 const NOW = new Date("2026-11-28T09:00:00Z");
 
@@ -220,9 +225,29 @@ describe("the evidence a report file can carry", () => {
 			),
 		).toThrow("sections[0].blocks[0].text marks source [5], which is not in sources");
 		expect(read(post({ method: ["Read on one day. [8]"] }))).toThrow("method[0] marks source [8]");
+		expect(read(post({ keyMetrics: [{ label: "One unit", value: "3,062 kr [9]" }] }))).toThrow(
+			"keyMetrics[0].value marks source [9], which is not in sources",
+		);
+		expect(read(post({ subtitle: "Three come close. [6]" }))).toThrow("subtitle marks source [6]");
+		expect(read(post({ keyMetrics: [{ label: "One unit", value: "3,062 kr [2]" }] }))).not.toThrow();
+		expect(read(withSource(0, { backs: "Price on request [9]." }))).not.toThrow();
 		expect(
 			read(post({ sections: [{ id: "a", heading: "A", paragraphs: ["In [2024] it rose, see [1]."] }] })),
 		).not.toThrow();
+	});
+
+	it("names the part of a patch that carries a source mark, so a merge can be refused without the post it changes", () => {
+		expect(surfaceReportMarkedKey({ headline: "Plain", sections: [{ paragraphs: ["Costs 3,062 kr. [7]"] }] })).toBe(
+			"sections",
+		);
+		expect(surfaceReportMarkedKey({ changes: [{ page: "Money", line: "Electronics", now: "Quoted. [1, 2]" }] })).toBe(
+			"changes",
+		);
+		expect(
+			surfaceReportMarkedKey({ theme: "Money", sections: [{ paragraphs: ["In [2024] it rose."] }] }),
+		).toBeUndefined();
+		expect(surfaceReportMarkedKey({ related: ["notes[1].report.json"], cover: { src: "a[2].png" } })).toBeUndefined();
+		expect(SURFACE_REPORT_FORMAT).toContain('A merge_json carries no source mark and never removes "theme".');
 	});
 
 	it("holds a cover to a picture in the folder and related posts to other posts", () => {

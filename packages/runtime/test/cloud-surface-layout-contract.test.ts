@@ -875,6 +875,29 @@ describe("stage_surface_patch and the layout", () => {
 		expect(merge({ theme: "Money", cover: null, related: ["research/sleeve-prices.report.json"] })).not.toThrow();
 		expect(merge({ related: ["research/nothing-on-sale.report.json"] })).toThrow("related[0] is this post itself");
 		expect(merge({ headline: "A plainer headline" })).not.toThrow();
+		expect(merge({ theme: null })).toThrow(
+			"theme cannot be removed by a merge: a research post needs it; write the post whole, with write_text",
+		);
+		const marked = [{ id: "a", heading: "A", paragraphs: ["A unit costs 3,062 kr. [7]"] }];
+		expect(merge({ sections: marked })).toThrow(
+			"sections carries a source mark in a merge: a mark is read against the post's sources, so a post with marks is written whole, with write_text",
+		);
+		expect(merge({ changes: [{ page: "Money", line: "Electronics", now: "Quoted. [9]" }] })).toThrow(
+			"changes carries a source mark in a merge",
+		);
+		expect(merge({ keyMetrics: [{ label: "One unit", value: "3,062 kr [2]" }] })).toThrow(
+			"keyMetrics carries a source mark in a merge",
+		);
+		expect(merge({ sections: [{ id: "a", heading: "A", paragraphs: ["In [2024] it rose."] }] })).not.toThrow();
+		const path = "research/nothing-on-sale.report.json";
+		const followUp = (patch: Record<string, unknown>) => () =>
+			checkStagedSurfaceDeliverables([
+				{ op: "write_text", path, content: research([source(1, day), source(2, day)]) },
+				{ op: "merge_json", path, patch },
+			]);
+		expect(followUp({ subtitle: "Three come close." })).not.toThrow();
+		expect(followUp({ sections: marked })).toThrow("sections carries a source mark in a merge");
+		expect(followUp({ theme: null })).toThrow("theme cannot be removed by a merge");
 	});
 
 	it("tells every folder interface session where the vision is and that evidence means a research post", async () => {
