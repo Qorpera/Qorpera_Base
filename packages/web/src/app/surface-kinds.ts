@@ -112,7 +112,6 @@ export function surfaceKindSubtitle(kind: SurfaceKind): string {
 	return t(KIND_SPECS[kind].subtitle);
 }
 
-// WHY: Analytics is a studio of the dashboard kind, which the Financial Dashboard (a live build) shares.
 export function surfaceSubtitleOf(surface: Pick<SurfaceSummary, "archetype">, look: Pick<SurfaceLook, "kind">): string {
 	if (look.kind === "dashboard" && surface.archetype === "studio") return t("Sales, money & visitors");
 	return surfaceKindSubtitle(look.kind);

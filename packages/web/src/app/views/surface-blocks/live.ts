@@ -23,8 +23,6 @@ const MONTH_TEXT = /^(\d{4})-(\d{2})$/;
 const WHOLE_FROM = 100;
 const GROUPED_FROM = 10_000;
 
-/* The fixed codes the qorpera questions answer with (migrations 20260930767000, 776000, 777000), by question and
- * column, in plain words; a company's own databases keep their values as written. */
 const QORPERA_CODES: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
 	"money-now": {
 		state: {
