@@ -1377,6 +1377,8 @@ export function mountFigureMotion(
 		} catch {
 			entry.ready = false;
 			entry.painted = "";
+			canvas.hidden = true;
+			canvas.width = canvas.height = 0;
 			showFallback();
 		}
 	} else {

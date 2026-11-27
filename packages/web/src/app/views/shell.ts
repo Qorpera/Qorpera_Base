@@ -1975,23 +1975,6 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 	membersFold.released = new Set(membersFold.holding.filter((userId) => membersFold.released.has(userId)));
 	paintMembersFold(parts);
 	surfaceRail?.update(activeSurfaceSlug);
-	// Collapsed, where section titles hide, a short line parts each group of agents from the
-	// group above it: never under the Co-Founder, never around a section with no one in it.
-	let above = pinnedElements.length > 0;
-	for (const [element, count] of [
-		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
-		[parts.unassigned.el, unassignedRows.length] as const,
-		[parts.members.el, people] as const,
-	]) {
-		element.classList.toggle("rail-divided", above && count > 0);
-		above ||= count > 0;
-	}
-	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
-	const legacyNodes = [
-		sidebar || pinnedElements.length ? parts.pinnedGroup : null,
-		...sectionGroups.map(({ group }) => group.el),
-		unassignedRows.length || sectioned ? parts.unassigned.el : null,
-	].filter((element) => element !== null);
 	const companyAgents = active.filter(
 		(agent) => agent.id !== cofounderId && !foldedAgents[agent.id] && !hidden.has(agent.id),
 	);
@@ -2017,6 +2000,23 @@ export function renderRail(container: HTMLElement, company: CompanyController, c
 				idleStaff,
 			})
 		: null;
+	// Collapsed, where section titles hide, a short line parts each group of agents from the
+	// group above it: never under the Co-Founder, never around a section with no one in it.
+	let above = surfaceRail ? agentsHub !== null : pinnedElements.length > 0;
+	for (const [element, count] of [
+		...sectionGroups.map(({ group, rows: sectionRows }) => [group.el, sectionRows.length] as const),
+		[parts.unassigned.el, unassignedRows.length] as const,
+		[parts.members.el, people] as const,
+	]) {
+		element.classList.toggle("rail-divided", above && count > 0);
+		above ||= count > 0;
+	}
+	reconcile(parts.cofounderGroup, cofounderElement ? [cofounderElement] : []);
+	const legacyNodes = [
+		sidebar || pinnedElements.length ? parts.pinnedGroup : null,
+		...sectionGroups.map(({ group }) => group.el),
+		unassignedRows.length || sectioned ? parts.unassigned.el : null,
+	].filter((element) => element !== null);
 	const reattachedSurfaceRail = surfaceRail !== undefined && surfaceRail.el.parentElement !== parts.list;
 	const reattachedAgentsHub = agentsHub !== null && agentsHub.parentElement !== parts.dock;
 	reconcile(

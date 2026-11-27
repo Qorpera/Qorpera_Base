@@ -826,36 +826,40 @@ describe("2D studio playback in the shell", () => {
 				);
 			}
 		});
-		const targetColor = "#e22538";
-		const firstHost = document.createElement("span");
-		document.body.append(firstHost);
-		const firstRig = mountFigureMotion(firstHost, "crown", targetColor, evictingArtwork, {
-			identity: "evicted-first",
-		});
-		await settle();
-		const targetSource = rendered.get(`crown${targetColor}`)!;
-		expect(targetSource.width).toBe(512);
-		firstRig.dispose();
-		firstHost.remove();
-		for (let idx = 1; idx <= 25; idx++) {
-			const color = `#10${String(idx).padStart(4, "0")}`;
-			const host = document.createElement("span");
-			document.body.append(host);
-			const rig = mountFigureMotion(host, "crown", color, evictingArtwork, { identity: `evict-churn-${idx}` });
+		try {
+			const targetColor = "#e22538";
+			const firstHost = document.createElement("span");
+			document.body.append(firstHost);
+			const firstRig = mountFigureMotion(firstHost, "crown", targetColor, evictingArtwork, {
+				identity: "evicted-first",
+			});
 			await settle();
-			rig.dispose();
-			host.remove();
+			const targetSource = rendered.get(`crown${targetColor}`)!;
+			expect(targetSource.width).toBe(512);
+			firstRig.dispose();
+			firstHost.remove();
+			for (let idx = 1; idx <= 25; idx++) {
+				const color = `#10${String(idx).padStart(4, "0")}`;
+				const host = document.createElement("span");
+				document.body.append(host);
+				const rig = mountFigureMotion(host, "crown", color, evictingArtwork, { identity: `evict-churn-${idx}` });
+				await settle();
+				rig.dispose();
+				host.remove();
+			}
+			expect(targetSource.width).toBe(0);
+			expect(targetSource.height).toBe(0);
+			vi.stubGlobal("devicePixelRatio", 2);
+			const revivedHost = document.createElement("span");
+			document.body.append(revivedHost);
+			mounted.push(
+				mountFigureMotion(revivedHost, "crown", targetColor, evictingArtwork, { identity: "evicted-revived" }),
+			);
+			expect(revivedHost.querySelector("canvas")!.hidden).toBe(false);
+			expect(revivedHost.dataset.motionUnavailable).toBeUndefined();
+		} finally {
+			vi.mocked(context.drawImage!).mockReset();
 		}
-		expect(targetSource.width).toBe(0);
-		expect(targetSource.height).toBe(0);
-		vi.stubGlobal("devicePixelRatio", 2);
-		const revivedHost = document.createElement("span");
-		document.body.append(revivedHost);
-		mounted.push(
-			mountFigureMotion(revivedHost, "crown", targetColor, evictingArtwork, { identity: "evicted-revived" }),
-		);
-		expect(revivedHost.querySelector("canvas")!.hidden).toBe(false);
-		expect(revivedHost.dataset.motionUnavailable).toBeUndefined();
 	});
 	it("falls back without throwing when synchronous initial paint fails", async () => {
 		const color = "#87674c";
@@ -872,6 +876,10 @@ describe("2D studio playback in the shell", () => {
 		document.body.append(host);
 		const rig = mountFigureMotion(host, "crown", color, artwork, { identity: "sync-fail-remount" });
 		mounted.push(rig);
+		const canvas = host.querySelector("canvas")!;
+		expect(canvas.hidden).toBe(true);
+		expect(canvas.width).toBe(0);
+		expect(canvas.height).toBe(0);
 		expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(false);
 		expect(host.dataset.motionUnavailable).toBe("true");
 		expect(() => rig.dispose()).not.toThrow();
