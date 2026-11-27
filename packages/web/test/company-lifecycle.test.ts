@@ -693,17 +693,19 @@ describe("answering a card", () => {
 			return { hooks, named };
 		}
 
-		it("makes hello.<handle> as the member, then answers the card with its address", async () => {
+		it("makes bare <handle> as the member, then answers the card with its address", async () => {
 			const f = company();
 			f.controller.store.set({ sessions: [thread] });
 			const { named } = mail(f);
 			const answer = vi.spyOn(f.api, "answerInteraction").mockResolvedValue(answered);
-			await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave");
+			expect(await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave")).toBe(
+				"lerhave@inbox.qorpera.com",
+			);
 			expect(named("qorpera_create_company_mailbox")).toEqual([
 				{
 					p_profile_id: profileA.profileId,
 					p_environment_id: profileA.environmentId,
-					p_local_part: "hello.lerhave",
+					p_local_part: "lerhave",
 					p_purpose: "The company's main email",
 				},
 			]);
@@ -711,14 +713,14 @@ describe("answering a card", () => {
 			expect(answer.mock.calls[0]!.slice(2, 5)).toEqual([
 				id(593),
 				"answered",
-				{ values: ["hello.lerhave@inbox.qorpera.com"] },
+				{ values: ["lerhave@inbox.qorpera.com"] },
 			]);
 		});
 
 		it("uses an address the company has already, resuming it when it is paused, and makes none twice", async () => {
 			const f = company();
 			f.controller.store.set({ sessions: [thread] });
-			const { named } = mail(f, [mailbox("hello.lerhave", "paused")]);
+			const { named } = mail(f, [mailbox("lerhave", "paused")]);
 			const answer = vi
 				.spyOn(f.api, "answerInteraction")
 				.mockRejectedValueOnce(new Error("Network unavailable"))
@@ -727,11 +729,13 @@ describe("answering a card", () => {
 				"Network unavailable",
 			);
 			expect(named("qorpera_set_event_hook_status")).toEqual([{ p_hook_id: id(700), p_status: "active" }]);
-			await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave");
+			expect(await f.controller.chooseMailAddress(thread.sessionId, id(593), "lerhave")).toBe(
+				"lerhave@inbox.qorpera.com",
+			);
 			expect(named("qorpera_create_company_mailbox")).toEqual([]);
 			expect(named("qorpera_set_event_hook_status")).toHaveLength(1);
 			expect(answer).toHaveBeenCalledTimes(2);
-			expect(answer.mock.calls[1]![4]).toEqual({ values: ["hello.lerhave@inbox.qorpera.com"] });
+			expect(answer.mock.calls[1]![4]).toEqual({ values: ["lerhave@inbox.qorpera.com"] });
 		});
 
 		it("answers once when the address is made but the answer fails, and the retry makes no second one", async () => {

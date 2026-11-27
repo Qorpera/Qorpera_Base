@@ -606,8 +606,8 @@ export const SETTINGS: Record<string, string> = {
 	"Names beginning with mail- belong to mailboxes.": "Navne, der begynder med mail-, hører til postkasser.",
 	"A mailbox name is lowercase letters, digits, hyphens and underscores, and starts and ends with a letter or digit.":
 		"Et postkassenavn består af små bogstaver, tal, bindestreger og understregninger og starter og slutter med et bogstav eller et tal.",
-	"A new address is a name, a dot and the company's handle, like hello.acme.":
-		"En ny adresse er et navn, et punktum og virksomhedens del, som hello.acme.",
+	"A new address is the company's handle or a name, a dot and the handle, like acme or sales.acme.":
+		"En ny adresse er virksomhedens del eller et navn, et punktum og virksomhedens del, som acme eller sales.acme.",
 	"Say what it is for, in one line.": "Skriv på én linje, hvad den er til.",
 	"A webhook with this name already exists.": "Der findes allerede en webhook med dette navn.",
 	"This address is taken.": "Denne adresse er taget.",

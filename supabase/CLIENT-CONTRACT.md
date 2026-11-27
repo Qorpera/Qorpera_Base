@@ -968,18 +968,19 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   the platform (23505 when taken). The domain is one platform setting: a mailbox keeps only its local part, so
   `email` always shows the current domain. Owners and admins only (42501); 54000 past 20 mailboxes or 50 hooks;
   0A000 before the mail domain is set.
-- Company mail handles (20260930796000): a new mailbox's local part is `<box>.<handle>` (one dot), where the box
-  is 1–39 lowercase letters, digits, hyphens and underscores (letter or digit at both ends) and the handle is the
-  company's part of the address, 2–24 lowercase letters, digits and inner hyphens. Anything else is refused (22023
-  "A new address is a name, a dot and the company's handle, like hello.acme"); the reserved names and names that read
-  as Qorpera are refused for the box and the handle each (22023, the messages above). A handle belongs to one company
-  across the platform and stays its own while the company exists, also when its mailboxes are removed. An owner's or
-  admin's `qorpera_create_company_mailbox` with a free handle claims it for the company, up to 3 handles a company
-  (54000 "A company has at most 3 email handles"; removing mailboxes frees none); a handle another company
-  owns, or that another company's live mailbox ends in or equals, is 23505 "This address is taken". An agent's
-  `manage_hook` mailbox uses only a handle the company already owns (42501 "Only a member can choose the company's
-  email handle"). Mailboxes made before this (no dot, such as `brooks`) keep working; each such address that is a
-  valid handle became its company's handle.
+- Company mail handles (20260930796000, bare handles 20260930926000): a member's new mailbox local part is either
+  the bare company handle `<handle>` (2–24 lowercase letters, digits and inner hyphens, e.g. `acme`) or `<box>.<handle>`
+  (one dot), where the box is 1–39 lowercase letters, digits, hyphens and underscores (letter or digit at both ends);
+  anything else is refused (22023 "A new address is the company's handle or a name, a dot and the handle, like acme or
+  sales.acme"). An agent's `manage_hook` mailbox requires `<box>.<handle>` (22023 "A new address is a name, a dot and
+  the company's handle, like hello.acme") under a handle the company already owns (42501 "Only a member can choose the
+  company's email handle"). The reserved names and names that read as Qorpera are refused for the box and the handle
+  each (22023, the messages above). A handle belongs to one company across the platform and stays its own while the
+  company exists, also when its mailboxes are removed. An owner's or admin's `qorpera_create_company_mailbox` with a
+  free handle claims it for the company, up to 3 handles a company (54000 "A company has at most 3 email handles";
+  removing mailboxes frees none); a handle another company owns, or that another company's live mailbox ends in or
+  equals, is 23505 "This address is taken". Mailboxes made before handles (no dot, such as `brooks`) keep working; each
+  such address that is a valid handle became its company's handle.
 - `qorpera_company_mail_handle_status(p_profile_id, p_handle)` → `ours` (the company owns it), `free`, `taken` or
   `invalid` (not a handle, reserved, or reads as Qorpera); read-only, for a live check while a member types.
   `qorpera_company_mail_handles(p_profile_id)` → `{domain, handles}`: the mail domain (null before it is set) and the
