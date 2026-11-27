@@ -2788,4 +2788,185 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		expect(seenEntries).toEqual([".qorpera", "Dockerfile", "server.js"]);
 		expect(seenServerContent).toContain("subpath-api");
 	});
+
+	it("injects granted broker secrets and linked DATABASE_URL into app-host while keeping persisted envSpec secret-free and masking deploy errors", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 3000, healthPath: "/health" },
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('secrets-app');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "secrets server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/secrets@sha256:${"5".repeat(64)}`;
+		const stripeSecret = "sk-live-surface-secret-554433";
+		const dbUrl = "postgresql://shop_rw:pg-secret-221100@10.99.0.10:5432/co_shop?sslmode=require";
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const appHostPayloads: Array<Record<string, unknown>> = [];
+		let failWithSecret = false;
+
+		const makeWorker = () =>
+			new SurfaceCodeHostWorker({
+				exportSource: async (_job, input) => ({ sourceDir: input.tree }),
+				staleSweepIntervalMs: 60_000,
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8088",
+					controlToken: "router-secret",
+					appHostInternalUrl: "http://127.0.0.1:8089",
+					appHostControlToken: "apphost-secret",
+					companyDataUrl: "http://127.0.0.1:8091",
+					companyDataPublicUrl: "https://data.qorpera.com",
+					companyDataDirectLoginToken: "direct-login-tok",
+					companyDataFetchImpl: async () => ({
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrl,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "shop_rw",
+						}),
+					}),
+					broker: {
+						origin: "https://broker.internal",
+						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: "e".repeat(64),
+						fetchImpl: async () =>
+							new Response(
+								JSON.stringify({
+									schema: "qorpera.app-secrets/v1",
+									siteId,
+									slug: "thetaband",
+									scope: "runtime",
+									targetEnv: "prod",
+									secrets: { STRIPE_KEY: stripeSecret },
+								}),
+								{ status: 200, headers: { "content-type": "application/json" } },
+							),
+					},
+					buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 8 }),
+					appHostFetchImpl: async (_url, init) => {
+						appHostPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+						if (failWithSecret) {
+							throw new Error(`container failed with ${stripeSecret} and ${dbUrl}`);
+						}
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:48001" }) };
+					},
+				},
+				control: {
+					async call(method, args) {
+						rpcCalls.push({ method, args });
+						if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+							return {
+								sessions: [],
+								previews: [],
+								merges: [],
+								publishes: [
+									{
+										jobId,
+										surfaceId,
+										profileId,
+										environmentId,
+										sourceKind: "code_repo",
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+										siteId,
+										siteSlug: "thetaband",
+										leaseToken,
+										payload: {
+											liveHeadSha: serverMainSha,
+											repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+										},
+									},
+								],
+								cleanups: [],
+								automations: [],
+							};
+						}
+						if (method === "qorpera_surface_site_runtime_config") {
+							return {
+								schema: "qorpera.surface-site-runtime-config/v1",
+								found: true,
+								siteId,
+								slug: "thetaband",
+								runtimeEnvConfig: { PUBLIC_API_BASE: "https://api.example.com" },
+								linkedDatabaseName: "shop",
+								hasRuntimeDevSecrets: false,
+								hasRuntimeProdSecrets: true,
+							};
+						}
+						if (method === "qorpera_surface_site_deployment_register") {
+							return {
+								siteId,
+								slug: "thetaband",
+								versionId: verId,
+								deploymentId: depId,
+								versionNumber: 1,
+								kind: "server",
+								state: args.p_promote_live === true ? "live" : "ready",
+							};
+						}
+						return { ok: true };
+					},
+				},
+				hosts: {
+					async run(_companyId, _envId, _signal, fn) {
+						return fn(f.job, undefined as never);
+					},
+				},
+			});
+
+		const worker = makeWorker();
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+
+		const registerCalls = rpcCalls.filter((c) => c.method === "qorpera_surface_site_deployment_register");
+		expect(registerCalls).toHaveLength(2);
+		for (const reg of registerCalls) {
+			const persistedEnv = reg.args.p_env_spec as Record<string, string>;
+			expect(persistedEnv.PUBLIC_API_BASE).toBe("https://api.example.com");
+			expect(persistedEnv.QORPERA_COMPANY_DATA_PUBLIC_URL).toBe("https://data.qorpera.com");
+			expect(persistedEnv.STRIPE_KEY).toBeUndefined();
+			expect(persistedEnv.DATABASE_URL).toBeUndefined();
+		}
+		expect(appHostPayloads[0]?.env).toEqual({
+			PUBLIC_API_BASE: "https://api.example.com",
+			PORT: "3000",
+			NODE_ENV: "production",
+			QORPERA_REPOSITORY: `${f.repository.owner}/${f.repository.name}`,
+			QORPERA_COMPANY_DATA_URL: "http://127.0.0.1:8091",
+			QORPERA_COMPANY_DATA_PUBLIC_URL: "https://data.qorpera.com",
+			STRIPE_KEY: stripeSecret,
+			DATABASE_URL: dbUrl,
+		});
+
+		failWithSecret = true;
+		rpcCalls.length = 0;
+		const workerFail = makeWorker();
+		await workerFail.pass(new AbortController().signal);
+		const failedPublish = rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish");
+		expect(failedPublish?.args.p_status).toBe("failed");
+		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(stripeSecret);
+		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(dbUrl);
+	});
 });

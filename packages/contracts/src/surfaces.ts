@@ -1469,6 +1469,174 @@ export function surfaceCompanyPath(folderRoot: string, bindingPath: string): str
 	return rooted ? body : `${normalizeStudioFolderRoot(folderRoot)}/${body}`;
 }
 
+export const SURFACE_APP_SECRET_SCOPES = ["build", "test", "runtime"] as const;
+export type SurfaceAppSecretScope = (typeof SURFACE_APP_SECRET_SCOPES)[number];
+
+export const SURFACE_APP_TARGET_ENVS = ["dev", "prod"] as const;
+export type SurfaceAppTargetEnv = (typeof SURFACE_APP_TARGET_ENVS)[number];
+
+export const SURFACE_DEPLOYMENT_KINDS = ["static", "server", "hybrid"] as const;
+export type SurfaceDeploymentKind = (typeof SURFACE_DEPLOYMENT_KINDS)[number];
+
+export const SURFACE_RUNTIME_ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+export const SURFACE_LINKED_DATABASE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+
+const SURFACE_RUNTIME_ENV_REFUSED_PREFIX = /^(LC|GIT|LD|DYLD|QORPERA|SSH|XDG|DOCKER|CLAUDE|CODEX)_/;
+const SURFACE_RUNTIME_ENV_RESERVED = new Set([
+	"HOME",
+	"PATH",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"PWD",
+	"OLDPWD",
+	"TERM",
+	"COLORTERM",
+	"COLUMNS",
+	"LINES",
+	"LANG",
+	"LANGUAGE",
+	"TZ",
+	"BASH_ENV",
+	"ENV",
+	"IFS",
+	"PS1",
+	"PS2",
+	"PS4",
+	"PROMPT_COMMAND",
+	"SHELLOPTS",
+	"BASHOPTS",
+	"CDPATH",
+	"GLOBIGNORE",
+	"HOSTNAME",
+	"SHLVL",
+	"MAIL",
+	"MAILPATH",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"FTP_PROXY",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"NODE_EXTRA_CA_CERTS",
+	"PORT",
+	"NODE_ENV",
+	"DATABASE_URL",
+]);
+
+export function isSurfaceRuntimeEnvKey(name: string): boolean {
+	return (
+		SURFACE_RUNTIME_ENV_KEY_PATTERN.test(name) &&
+		!SURFACE_RUNTIME_ENV_REFUSED_PREFIX.test(name) &&
+		!SURFACE_RUNTIME_ENV_RESERVED.has(name)
+	);
+}
+
+export function isSurfaceLinkedDatabaseName(name: string): boolean {
+	return (
+		SURFACE_LINKED_DATABASE_NAME_PATTERN.test(name) &&
+		name !== "qorpera" &&
+		!name.startsWith("pg_") &&
+		!name.startsWith("qorpera_")
+	);
+}
+
+export interface SurfaceAppSecretGrantSummary {
+	readonly grantId: string;
+	readonly secretId: string;
+	readonly siteId: string;
+	readonly name: string;
+	readonly scope: SurfaceAppSecretScope;
+	readonly targetEnv: SurfaceAppTargetEnv;
+	readonly version: number;
+	readonly issuedByUserId: string;
+	readonly createdAt: string;
+}
+
+export interface SurfaceAvailableSecretSummary {
+	readonly secretId: string;
+	readonly name: string;
+	readonly purpose: string;
+	readonly version: number;
+}
+
+export interface SurfaceAppRuntimeConfig {
+	readonly surfaceId: string;
+	readonly profileId: string;
+	readonly siteId: string | null;
+	readonly slug: string | null;
+	readonly deploymentKind: SurfaceDeploymentKind | null;
+	readonly runtimeEnvConfig: Readonly<Record<string, string>>;
+	readonly linkedDatabaseName: string | null;
+	readonly canManage: boolean;
+	readonly grants: readonly SurfaceAppSecretGrantSummary[];
+	readonly availableSecrets: readonly SurfaceAvailableSecretSummary[];
+}
+
+export function parseSurfaceAppRuntimeConfig(value: unknown, label = "runtimeConfig"): SurfaceAppRuntimeConfig {
+	const raw = parseRecord(value, label);
+	if (raw.schema !== undefined && raw.schema !== "qorpera.surface-app-runtime-config/v1") {
+		throw new WireValueError(`${label}.schema`);
+	}
+	const envRaw = parseRecord(raw.runtimeEnvConfig ?? {}, `${label}.runtimeEnvConfig`);
+	const runtimeEnvConfig: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(envRaw)) {
+		if (!isSurfaceRuntimeEnvKey(key) || typeof entry !== "string" || entry.length > 4096) {
+			throw new WireValueError(`${label}.runtimeEnvConfig.${key}`);
+		}
+		runtimeEnvConfig[key] = entry;
+	}
+	const linkedDatabaseName = parseOptionalText(raw.linkedDatabaseName, `${label}.linkedDatabaseName`, 40);
+	if (linkedDatabaseName !== null && !isSurfaceLinkedDatabaseName(linkedDatabaseName)) {
+		throw new WireValueError(`${label}.linkedDatabaseName`);
+	}
+	if (!Array.isArray(raw.grants)) throw new WireValueError(`${label}.grants`);
+	const grants: SurfaceAppSecretGrantSummary[] = raw.grants.map((item, index) => {
+		const entry = parseRecord(item, `${label}.grants[${index}]`);
+		return {
+			grantId: parseUuid(entry.grantId, `${label}.grants[${index}].grantId`),
+			secretId: parseUuid(entry.secretId, `${label}.grants[${index}].secretId`),
+			siteId: parseUuid(entry.siteId, `${label}.grants[${index}].siteId`),
+			name: parseBoundedText(entry.name, `${label}.grants[${index}].name`, 64),
+			scope: parseEnum(entry.scope, SURFACE_APP_SECRET_SCOPES, `${label}.grants[${index}].scope`),
+			targetEnv: parseEnum(entry.targetEnv, SURFACE_APP_TARGET_ENVS, `${label}.grants[${index}].targetEnv`),
+			version: parseInteger(entry.version, `${label}.grants[${index}].version`, 1, 1_000_000),
+			issuedByUserId: parseUuid(entry.issuedByUserId, `${label}.grants[${index}].issuedByUserId`),
+			createdAt: parseTimestamp(entry.createdAt, `${label}.grants[${index}].createdAt`).text,
+		};
+	});
+	if (!Array.isArray(raw.availableSecrets)) throw new WireValueError(`${label}.availableSecrets`);
+	const availableSecrets: SurfaceAvailableSecretSummary[] = raw.availableSecrets.map((item, index) => {
+		const entry = parseRecord(item, `${label}.availableSecrets[${index}]`);
+		return {
+			secretId: parseUuid(entry.secretId, `${label}.availableSecrets[${index}].secretId`),
+			name: parseBoundedText(entry.name, `${label}.availableSecrets[${index}].name`, 64),
+			purpose: parseBoundedText(entry.purpose, `${label}.availableSecrets[${index}].purpose`, 512),
+			version: parseInteger(entry.version, `${label}.availableSecrets[${index}].version`, 1, 1_000_000),
+		};
+	});
+	const deploymentKind =
+		raw.deploymentKind === null || raw.deploymentKind === undefined
+			? null
+			: parseEnum(raw.deploymentKind, SURFACE_DEPLOYMENT_KINDS, `${label}.deploymentKind`);
+	return {
+		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
+		profileId: parseUuid(raw.profileId, `${label}.profileId`),
+		siteId: parseOptionalUuid(raw.siteId, `${label}.siteId`),
+		slug: parseOptionalText(raw.slug, `${label}.slug`, 64),
+		deploymentKind,
+		runtimeEnvConfig,
+		linkedDatabaseName,
+		canManage: raw.canManage === true,
+		grants,
+		availableSecrets,
+	};
+}
+
 export type SurfaceLookKind = Exclude<SurfaceKind, "members">;
 
 export interface SurfaceKindFacts {

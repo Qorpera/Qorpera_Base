@@ -1,10 +1,19 @@
-import type { BindSurfaceRepositoryInput } from "@qorpera/cloud-client/surfaces";
+import type {
+	BindSurfaceRepositoryInput,
+	GrantSurfaceAppSecretInput,
+	SetSurfaceAppRuntimeConfigInput,
+} from "@qorpera/cloud-client/surfaces";
 import {
 	type CompanyCodeRepositorySummary,
 	isSurfaceDefaultBranch,
+	isSurfaceLinkedDatabaseName,
 	isSurfaceRepositoryKey,
 	isSurfaceRepositorySubpath,
+	isSurfaceRuntimeEnvKey,
 	normalizeSurfaceRepositorySubpath,
+	type SurfaceAppRuntimeConfig,
+	type SurfaceAppSecretScope,
+	type SurfaceAppTargetEnv,
 } from "@qorpera/contracts";
 import { CloudRpcError } from "../../cloud/client.ts";
 import {
@@ -45,6 +54,13 @@ export interface SurfaceCodeSourceBinding {
 	readonly lastError?: () => string | undefined;
 }
 
+export interface SurfaceRuntimeConfigBinding {
+	readonly load: (signal?: AbortSignal) => Promise<SurfaceAppRuntimeConfig | undefined>;
+	readonly saveConfig: (input: SetSurfaceAppRuntimeConfigInput) => Promise<SurfaceAppRuntimeConfig | undefined>;
+	readonly grantSecret: (input: GrantSurfaceAppSecretInput) => Promise<void>;
+	readonly revokeGrant: (grantId: string) => Promise<void>;
+}
+
 export interface SurfaceAddressSetup {
 	readonly container: HTMLElement;
 	readonly canManage: () => boolean;
@@ -54,6 +70,7 @@ export interface SurfaceAddressSetup {
 	readonly publicChanged?: (isPublic: boolean) => void;
 	readonly slugChanged?: (updated: UpdatedSiteSlug) => void;
 	readonly codeSource?: () => SurfaceCodeSourceBinding | undefined;
+	readonly runtimeConfig?: () => SurfaceRuntimeConfigBinding | undefined;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
@@ -69,6 +86,7 @@ type Page =
 	| { readonly kind: "main" }
 	| { readonly kind: "edit" }
 	| { readonly kind: "source" }
+	| { readonly kind: "runtime" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly hostname: string };
 
@@ -76,6 +94,7 @@ type Shown =
 	| { readonly kind: "main" }
 	| { readonly kind: "edit" }
 	| { readonly kind: "source" }
+	| { readonly kind: "runtime" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly domain: SiteCustomDomain };
 
@@ -109,7 +128,7 @@ const MAIN = { kind: "main" } as const;
 const REFUSALS: Readonly<Record<string, string>> = {
 	PUBLIC_SITES_DISABLED: phrase("Sites cannot go live for everyone yet."),
 	SITE_CONTAINS_CREDENTIAL_INPUTS: phrase(
-		"The site has a place to sign in or type a password, so it cannot go live yet.",
+		"Static sites on Qorpera's default address cannot include sign-in or password fields. Connect a verified custom domain or deploy as a server app first.",
 	),
 	CUSTOM_DOMAINS_DISABLED: phrase("Your own domain cannot be added yet."),
 	SITE_DOMAIN_LIMIT_REACHED: phrase("A site can have five domains at most."),
@@ -301,6 +320,38 @@ export class SurfaceAddress {
 		spellcheck: "false",
 		"data-key": "source-branch",
 	});
+	readonly #runtimeDbField = h("input", {
+		type: "text",
+		class: "surface-address-input",
+		maxlength: "40",
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"data-key": "runtime-db",
+	});
+	readonly #runtimeSecretSelect = h("select", {
+		class: "surface-address-select",
+		"data-key": "runtime-secret-select",
+	});
+	readonly #runtimeScopeSelect = h(
+		"select",
+		{
+			class: "surface-address-select",
+			"data-key": "runtime-scope-select",
+		},
+		h("option", { value: "runtime" }, t("Runtime")),
+		h("option", { value: "build" }, t("Build")),
+		h("option", { value: "test" }, t("Test")),
+	);
+	readonly #runtimeTargetSelect = h(
+		"select",
+		{
+			class: "surface-address-select",
+			"data-key": "runtime-target-select",
+		},
+		h("option", { value: "prod" }, t("Production")),
+		h("option", { value: "dev" }, t("Preview")),
+	);
 	#target: SurfaceSiteHosting | undefined;
 	#liveUrl = "";
 	#syncedLiveUrl = "";
@@ -317,6 +368,13 @@ export class SurfaceAddress {
 	#sourceReposLoaded = false;
 	#sourceCustomRepo = false;
 	#sourceBranchEdited = false;
+	#runtimeConfig: SurfaceAppRuntimeConfig | null | undefined;
+	#runtimeLoading = false;
+	#savingRuntime = false;
+	#grantingSecret = false;
+	#revokingGrantId: string | null = null;
+	#runtimeEnvRows: Array<{ id: number; key: string; value: string }> = [];
+	#runtimeEnvRowSeq = 0;
 	#slugCheck: SlugCheckState = { kind: "idle" };
 	#slugTimer: ReturnType<typeof setTimeout> | undefined;
 	#slugCheckAbort: AbortController | undefined;
@@ -348,6 +406,11 @@ export class SurfaceAddress {
 		this.#sourceBranchField.addEventListener("input", () => {
 			this.#sourceBranchEdited = true;
 		});
+		this.#runtimeDbField.setAttribute("aria-label", t("Linked company database (optional)"));
+		this.#runtimeDbField.placeholder = t("e.g. shop");
+		this.#runtimeSecretSelect.setAttribute("aria-label", t("Secret to grant"));
+		this.#runtimeScopeSelect.setAttribute("aria-label", t("Secret scope"));
+		this.#runtimeTargetSelect.setAttribute("aria-label", t("Target environment"));
 		setup.container.append(this.#sheet);
 		setup.signal.addEventListener("abort", () => this.close(), { once: true });
 	}
@@ -357,7 +420,15 @@ export class SurfaceAddress {
 	}
 
 	get isWriting(): boolean {
-		return this.#writing > 0 || this.#going || this.#savingSlug || this.#savingSource;
+		return (
+			this.#writing > 0 ||
+			this.#going ||
+			this.#savingSlug ||
+			this.#savingSource ||
+			this.#savingRuntime ||
+			this.#grantingSecret ||
+			this.#revokingGrantId !== null
+		);
 	}
 
 	get readFailed(): boolean {
@@ -385,6 +456,13 @@ export class SurfaceAddress {
 			this.#sourceReposLoaded = false;
 			this.#sourceCustomRepo = false;
 			this.#sourceBranchEdited = false;
+			this.#runtimeConfig = undefined;
+			this.#runtimeLoading = false;
+			this.#savingRuntime = false;
+			this.#grantingSecret = false;
+			this.#revokingGrantId = null;
+			this.#runtimeEnvRows = [];
+			this.#runtimeDbField.value = "";
 			this.#liveUrl = url;
 			this.#syncedLiveUrl = url;
 			if (next) void this.#read();
@@ -722,7 +800,9 @@ export class SurfaceAddress {
 							? this.#sheet.querySelector<HTMLElement>('[data-key="edit-slug"]')
 							: from.kind === "source"
 								? this.#sheet.querySelector<HTMLElement>('[data-key="code-source"]')
-								: null;
+								: from.kind === "runtime"
+									? this.#sheet.querySelector<HTMLElement>('[data-key="runtime-config"]')
+									: null;
 		const target =
 			page.kind === "add" && this.#field.isConnected
 				? this.#field
@@ -732,7 +812,9 @@ export class SurfaceAddress {
 						? this.#sourceRepoSelect
 						: page.kind === "source" && this.#sourceRepoField.isConnected
 							? this.#sourceRepoField
-							: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
+							: page.kind === "runtime" && this.#runtimeDbField.isConnected
+								? this.#runtimeDbField
+								: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
 		(target ?? this.#sheet).focus();
 	}
 
@@ -1090,6 +1172,9 @@ export class SurfaceAddress {
 		if (page.kind === "source") {
 			return this.#setup.canManage() && this.#setup.codeSource?.() ? page : MAIN;
 		}
+		if (page.kind === "runtime") {
+			return this.#setup.runtimeConfig?.() ? page : MAIN;
+		}
 		if (!known) return MAIN;
 		if (page.kind === "edit") return this.#canEditSlug() ? page : MAIN;
 		if (page.kind === "add")
@@ -1120,6 +1205,24 @@ export class SurfaceAddress {
 			this.#sourceReposLoaded,
 			this.#sourceRepos.map((repo) => [repo.repositoryKey, repo.sourceBranch]),
 			source ? [source.repositoryKey ?? "", source.repositorySubpath ?? "", source.defaultBranch] : null,
+			this.#runtimeLoading,
+			this.#savingRuntime,
+			this.#grantingSecret,
+			this.#revokingGrantId ?? "",
+			this.#runtimeEnvRows.map((row) => row.id),
+			this.#runtimeConfig === undefined
+				? "rt-init"
+				: this.#runtimeConfig === null
+					? "rt-err"
+					: [
+							this.#runtimeConfig.siteId ?? "",
+							this.#runtimeConfig.deploymentKind ?? "",
+							this.#runtimeConfig.linkedDatabaseName ?? "",
+							this.#runtimeConfig.canManage,
+							this.#runtimeConfig.runtimeEnvConfig,
+							this.#runtimeConfig.grants.map((g) => [g.grantId, g.name, g.scope, g.targetEnv]),
+							this.#runtimeConfig.availableSecrets.map((s) => [s.secretId, s.name]),
+						],
 			known === undefined
 				? "unknown"
 				: known === null
@@ -1179,7 +1282,9 @@ export class SurfaceAddress {
 				? this.#editPage()
 				: shown.kind === "source"
 					? this.#sourcePage()
-					: shown.kind === "add"
+					: shown.kind === "runtime"
+						? this.#runtimePage()
+						: shown.kind === "add"
 						? this.#addPage(shown.from)
 						: shown.kind === "domain"
 							? securing(shown.domain)
@@ -1265,8 +1370,11 @@ export class SurfaceAddress {
 								: this.#quietLine(t(REFUSALS.PUBLIC_SITES_DISABLED!));
 		const source = manage ? this.#setup.codeSource?.() : undefined;
 		const sourceRow = source ? this.#sourceRow(source) : null;
+		const runtime = this.#setup.runtimeConfig?.();
+		const runtimeRow = runtime ? this.#runtimeRow(runtime) : null;
+		const configRows = [sourceRow, runtimeRow].filter((item): item is HTMLElement => item !== null);
 		const head = h("div", { class: "surface-address-head" }, nameRow, under, this.#problemLine());
-		if (!known) return [head, sourceRow ? this.#group(sourceRow) : null];
+		if (!known) return [head, configRows.length > 0 ? this.#group(...configRows) : null];
 		const domains = known.domains.map((domain) => this.#domainRow(domain, manage));
 		if (domains.length === 0 && manage)
 			domains.push(
@@ -1283,7 +1391,7 @@ export class SurfaceAddress {
 			head,
 			known.isPublic ? this.#group(this.#openRow(), this.#copyRow()) : null,
 			domains.length > 0 ? this.#group(...domains) : null,
-			sourceRow ? this.#group(sourceRow) : null,
+			configRows.length > 0 ? this.#group(...configRows) : null,
 			known.isPublic && manage
 				? this.#group(
 						this.#row({
@@ -1512,6 +1620,404 @@ export class SurfaceAddress {
 						this.#savingSource ? t("Saving…") : t("Save"),
 					),
 				),
+				this.#problemLine(),
+			),
+		];
+	}
+
+	#runtimeRow(binding: SurfaceRuntimeConfigBinding): HTMLElement {
+		return this.#row({
+			key: "runtime-config",
+			glyph: "key",
+			label: t("Environment & secrets"),
+			end: h("span", { class: "surface-address-row-end" }, icon("chevron")),
+			press: () => this.#openRuntime(binding),
+		});
+	}
+
+	#syncRuntimeFields(config: SurfaceAppRuntimeConfig): void {
+		this.#runtimeDbField.value = config.linkedDatabaseName ?? "";
+		this.#runtimeEnvRows = Object.entries(config.runtimeEnvConfig)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([key, value]) => ({ id: ++this.#runtimeEnvRowSeq, key, value }));
+		this.#runtimeSecretSelect.replaceChildren(
+			...config.availableSecrets.map((secret) =>
+				h("option", { value: secret.secretId }, `${secret.name} — ${secret.purpose}`),
+			),
+		);
+		if (config.availableSecrets.length > 0 && !this.#runtimeSecretSelect.value) {
+			this.#runtimeSecretSelect.value = config.availableSecrets[0]!.secretId;
+		}
+	}
+
+	#openRuntime(binding: SurfaceRuntimeConfigBinding): void {
+		this.#go({ kind: "runtime" });
+		void this.#loadRuntime(binding);
+	}
+
+	async #loadRuntime(binding: SurfaceRuntimeConfigBinding): Promise<void> {
+		const target = this.#target;
+		this.#runtimeLoading = true;
+		this.#problem = undefined;
+		this.#paint();
+		try {
+			const loaded = await binding.load(this.#setup.signal);
+			if (this.#setup.signal.aborted || target !== this.#target) return;
+			this.#runtimeLoading = false;
+			if (!loaded) {
+				this.#runtimeConfig = null;
+			} else {
+				this.#runtimeConfig = loaded;
+				this.#syncRuntimeFields(loaded);
+			}
+			this.#changed();
+		} catch {
+			if (this.#setup.signal.aborted || target !== this.#target) return;
+			this.#runtimeLoading = false;
+			this.#runtimeConfig = null;
+			this.#changed();
+		}
+	}
+
+	#saveRuntime(): void {
+		const binding = this.#setup.runtimeConfig?.();
+		const current = this.#runtimeConfig;
+		if (this.#savingRuntime || !binding || !current || !current.canManage || !current.siteId) return;
+		const envObj: Record<string, string> = {};
+		const seen = new Set<string>();
+		for (const row of this.#runtimeEnvRows) {
+			const key = row.key.trim();
+			const value = row.value;
+			if (!key && !value) continue;
+			if (!isSurfaceRuntimeEnvKey(key)) {
+				this.#problem = t(
+					"Enter an uppercase variable name like API_BASE_URL (not PORT, NODE_ENV, or DATABASE_URL).",
+				);
+				this.#paint();
+				return;
+			}
+			if (seen.has(key)) {
+				this.#problem = t("Duplicate environment variable name: {name}.", { name: key });
+				this.#paint();
+				return;
+			}
+			seen.add(key);
+			envObj[key] = value;
+		}
+		const rawDb = this.#runtimeDbField.value.trim();
+		const linkedDatabaseName = rawDb.length > 0 ? rawDb : null;
+		if (linkedDatabaseName !== null && !isSurfaceLinkedDatabaseName(linkedDatabaseName)) {
+			this.#problem = t("Use a lowercase database name like shop (not qorpera or pg_*).");
+			this.#paint();
+			this.#runtimeDbField.focus();
+			return;
+		}
+		const target = this.#target;
+		this.#savingRuntime = true;
+		this.#problem = undefined;
+		this.#paint();
+		this.#setup.changed();
+		void binding
+			.saveConfig({ runtimeEnvConfig: envObj, linkedDatabaseName })
+			.then(
+				(updated) => {
+					this.#savingRuntime = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (updated) {
+						this.#runtimeConfig = updated;
+						this.#syncRuntimeFields(updated);
+					}
+					this.#changed();
+				},
+				(error: unknown) => {
+					this.#savingRuntime = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+					this.#changed();
+				},
+			);
+	}
+
+	#grantRuntimeSecret(): void {
+		const binding = this.#setup.runtimeConfig?.();
+		const current = this.#runtimeConfig;
+		if (this.#grantingSecret || !binding || !current || !current.canManage || !current.siteId) return;
+		const secretId = this.#runtimeSecretSelect.value;
+		if (!secretId) return;
+		const scope = (this.#runtimeScopeSelect.value || "runtime") as SurfaceAppSecretScope;
+		const targetEnv = (this.#runtimeTargetSelect.value || "prod") as SurfaceAppTargetEnv;
+		const target = this.#target;
+		this.#grantingSecret = true;
+		this.#problem = undefined;
+		this.#paint();
+		this.#setup.changed();
+		void binding
+			.grantSecret({ secretId, siteId: current.siteId, scope, targetEnv })
+			.then(
+				async () => {
+					this.#grantingSecret = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					await this.#loadRuntime(binding);
+				},
+				(error: unknown) => {
+					this.#grantingSecret = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+					this.#changed();
+				},
+			);
+	}
+
+	#revokeRuntimeGrant(grantId: string): void {
+		const binding = this.#setup.runtimeConfig?.();
+		const current = this.#runtimeConfig;
+		if (this.#revokingGrantId !== null || !binding || !current || !current.canManage) return;
+		const target = this.#target;
+		this.#revokingGrantId = grantId;
+		this.#problem = undefined;
+		this.#paint();
+		this.#setup.changed();
+		void binding
+			.revokeGrant(grantId)
+			.then(
+				async () => {
+					this.#revokingGrantId = null;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					await this.#loadRuntime(binding);
+				},
+				(error: unknown) => {
+					this.#revokingGrantId = null;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+					this.#changed();
+				},
+			);
+	}
+
+	#runtimePage(): (HTMLElement | null)[] {
+		const config = this.#runtimeConfig;
+		if (this.#runtimeLoading && !config) {
+			return [
+				this.#top(t("Environment & secrets"), MAIN),
+				h("div", { class: "surface-address-body" }, this.#quietLine(t("Loading runtime settings…"))),
+			];
+		}
+		if (!config) {
+			return [
+				this.#top(t("Environment & secrets"), MAIN),
+				h("div", { class: "surface-address-body" }, this.#quietLine(t("Runtime settings could not be loaded."))),
+			];
+		}
+		if (!config.siteId) {
+			return [
+				this.#top(t("Environment & secrets"), MAIN),
+				h(
+					"div",
+					{ class: "surface-address-body" },
+					this.#quietLine(t("Publish or preview this app once before configuring runtime settings.")),
+				),
+			];
+		}
+		const canEdit = config.canManage;
+		this.#runtimeDbField.disabled = !canEdit || this.#savingRuntime;
+		const envRowsEl =
+			this.#runtimeEnvRows.length === 0
+				? this.#quietLine(t("No environment variables configured yet."))
+				: h(
+						"div",
+						{ class: "surface-address-runtime-list" },
+						...this.#runtimeEnvRows.map((row) => {
+							const keyInput = h("input", {
+								type: "text",
+								class: "surface-address-input",
+								value: row.key,
+								placeholder: "API_BASE_URL",
+								"aria-label": t("Variable name"),
+								disabled: !canEdit || this.#savingRuntime,
+								"data-key": `runtime-env-key-${row.id}`,
+								oninput: (event: Event) => {
+									row.key = (event.target as HTMLInputElement).value;
+								},
+							});
+							const valueInput = h("input", {
+								type: "text",
+								class: "surface-address-input",
+								value: row.value,
+								placeholder: "value",
+								"aria-label": t("Variable value"),
+								disabled: !canEdit || this.#savingRuntime,
+								"data-key": `runtime-env-val-${row.id}`,
+								oninput: (event: Event) => {
+									row.value = (event.target as HTMLInputElement).value;
+								},
+							});
+							return h(
+								"div",
+								{ class: "surface-address-runtime-pair" },
+								keyInput,
+								valueInput,
+								canEdit
+									? h(
+											"button",
+											{
+												type: "button",
+												class: "surface-address-runtime-icon-btn",
+												"aria-label": t("Remove variable"),
+												title: t("Remove variable"),
+												disabled: this.#savingRuntime,
+												"data-key": `runtime-env-rm-${row.id}`,
+												onclick: () => {
+													this.#runtimeEnvRows = this.#runtimeEnvRows.filter((item) => item.id !== row.id);
+													this.#paint();
+												},
+											},
+											icon("trash"),
+										)
+									: null,
+							);
+						}),
+					);
+
+		const grantsEl =
+			config.grants.length === 0
+				? this.#quietLine(t("No secrets granted to this app yet."))
+				: h(
+						"div",
+						{ class: "surface-address-runtime-list" },
+						...config.grants.map((grant) =>
+							h(
+								"div",
+								{ class: "surface-address-runtime-grant" },
+								h("span", { class: "surface-address-runtime-grant-name" }, grant.name),
+								h(
+									"span",
+									{ class: "surface-address-runtime-grant-meta" },
+									`${grant.scope} · ${grant.targetEnv}`,
+								),
+								canEdit
+									? h(
+											"button",
+											{
+												type: "button",
+												class: "surface-address-runtime-icon-btn",
+												"aria-label": t("Revoke secret"),
+												title: t("Revoke secret"),
+												disabled: this.#revokingGrantId !== null,
+												"data-key": `runtime-revoke-${grant.grantId}`,
+												onclick: () => this.#revokeRuntimeGrant(grant.grantId),
+											},
+											icon("trash"),
+										)
+									: null,
+							),
+						),
+					);
+
+		this.#runtimeSecretSelect.disabled = !canEdit || this.#grantingSecret;
+		this.#runtimeScopeSelect.disabled = !canEdit || this.#grantingSecret;
+		this.#runtimeTargetSelect.disabled = !canEdit || this.#grantingSecret;
+
+		const grantForm = !canEdit
+			? null
+			: config.availableSecrets.length === 0
+				? this.#quietLine(t("Add environment secrets in Settings first, then grant them here."))
+				: h(
+						"div",
+						{ class: "surface-address-runtime-grant-form" },
+						this.#runtimeSecretSelect,
+						h(
+							"div",
+							{ class: "surface-address-runtime-grant-row" },
+							this.#runtimeScopeSelect,
+							this.#runtimeTargetSelect,
+							h(
+								"button",
+								{
+									type: "button",
+									class: "surface-address-pill",
+									"data-key": "runtime-grant-secret",
+									disabled: this.#grantingSecret,
+									onclick: () => this.#grantRuntimeSecret(),
+								},
+								this.#grantingSecret ? t("Granting…") : t("Grant secret"),
+							),
+						),
+					);
+
+		return [
+			this.#top(t("Environment & secrets"), MAIN),
+			h(
+				"div",
+				{ class: "surface-address-body" },
+				h(
+					"form",
+					{
+						class: "surface-address-runtime-section",
+						autocomplete: "off",
+						onsubmit: (event: SubmitEvent) => {
+							event.preventDefault();
+							this.#saveRuntime();
+						},
+					},
+					h(
+						"label",
+						{ class: "surface-address-field" },
+						h("span", null, t("Linked company database (optional)")),
+						this.#runtimeDbField,
+					),
+					h(
+						"p",
+						{ class: "surface-address-hint" },
+						t("Injects a scoped DATABASE_URL automatically on the next preview or publish."),
+					),
+					h(
+						"div",
+						{ class: "surface-address-runtime-head" },
+						h("h3", { class: "surface-address-runtime-heading" }, t("Environment variables")),
+						canEdit
+							? h(
+									"button",
+									{
+										type: "button",
+										class: "surface-address-runtime-add",
+										"data-key": "runtime-add-env",
+										disabled: this.#savingRuntime || this.#runtimeEnvRows.length >= 64,
+										onclick: () => {
+											this.#runtimeEnvRows.push({ id: ++this.#runtimeEnvRowSeq, key: "", value: "" });
+											this.#paint();
+										},
+									},
+									icon("plus"),
+									t("Add variable"),
+								)
+							: null,
+					),
+					envRowsEl,
+					canEdit
+						? h(
+								"div",
+								{ class: "surface-address-end" },
+								h(
+									"button",
+									{
+										type: "submit",
+										class: "surface-address-pill",
+										"data-key": "runtime-save",
+										disabled: this.#savingRuntime,
+									},
+									this.#savingRuntime ? t("Saving…") : t("Save"),
+								),
+							)
+						: this.#quietLine(t(MANAGERS_ONLY)),
+				),
+				h(
+					"div",
+					{ class: "surface-address-runtime-section" },
+					h("h3", { class: "surface-address-runtime-heading" }, t("App secrets")),
+					grantsEl,
+					grantForm,
+				),
+				h("p", { class: "surface-address-hint" }, t("Changes apply on the next preview or publish.")),
 				this.#problemLine(),
 			),
 		];

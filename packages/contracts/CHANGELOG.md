@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added surface app runtime configuration contracts (`surfaces.ts`): `SURFACE_APP_SECRET_SCOPES`, `SURFACE_APP_TARGET_ENVS`, `SURFACE_DEPLOYMENT_KINDS`, `isSurfaceRuntimeEnvKey`, `isSurfaceLinkedDatabaseName`, `SurfaceAppSecretGrantSummary`, `SurfaceAvailableSecretSummary`, `SurfaceAppRuntimeConfig`, and `parseSurfaceAppRuntimeConfig`.
 - Added surface repository binding contracts (`surfaces.ts`): optional `repositorySubpath` and `defaultBranch` on `SurfaceSummary` / `parseSurfaceSummary`, `CompanyCodeRepositorySummary` / `parseCompanyCodeRepositorySummary`, and validation/normalization helpers `isSurfaceRepositoryKey`, `normalizeSurfaceRepositorySubpath`, `isSurfaceRepositorySubpath`, and `isSurfaceDefaultBranch`.
 - Added optional `supersedeKey` (`SURFACE_SUPERSEDE_KEY_PATTERN`, `SURFACE_MAX_SUPERSEDE_KEY_CHARS`, `isSurfaceSupersedeKey`) to `SurfaceChangeUnit` and `SurfaceSession` (`surfaces.ts`) so recurring upkeep/sync Surface changes can cleanly supersede prior unapproved refreshes.
 - A chart's ask takes `estimate` (boolean; `SURFACE_ASK_FIELDS`, refused by figure, facts.from and table.from asks) and `SURFACE_ASK_FORMAT` says "estimate true draws it dashed, as an estimate". A chart file's series takes `estimate: true` too (`SurfaceChartSeries.estimate`, kept by `parseSurfaceChartDocument`, named in `SURFACE_CHART_FORMAT`).

@@ -6,8 +6,15 @@ import { withTimeoutScope } from "./abort-scope.ts";
 import type { CodeChangeRecordsOptions } from "./code-change-records.ts";
 import { CODE_SITE_MAX_BYTES, CODE_SITE_MAX_FILES } from "./code-site.ts";
 import type { CodeSiteTarget, CodeSiteUploadFile } from "./code-site-uploads.ts";
-import type { CodingSecretMask } from "./coding-secret-mask.ts";
-import { type CompanyMachineSecretsManager, maskAppLogText } from "./company-machine-secrets.ts";
+import { buildAppSecretMask } from "./coding-command-secrets.ts";
+import { CodingSecretMask } from "./coding-secret-mask.ts";
+import {
+	appSecretEnvNameAllowed,
+	type CompanyMachineSecretsManager,
+	fetchHostedAppSecrets,
+	type HostedAppTargetEnv,
+	maskAppLogText,
+} from "./company-machine-secrets.ts";
 import {
 	type BlobUploadFetch,
 	NATIVE_SITE_MAX_BYTES,
@@ -80,6 +87,14 @@ export type AppHostFetch = (
 	},
 ) => Promise<AppHostFetchResponse>;
 
+export interface NativeEdgeBrokerConfig {
+	readonly origin: string;
+	readonly executorToken: string;
+	readonly executorOwner: string;
+	readonly machineIdSha256: string;
+	readonly fetchImpl?: typeof fetch;
+}
+
 export interface NativeEdgeHostingConfig {
 	readonly routerInternalUrl: string;
 	readonly controlToken: string;
@@ -88,10 +103,14 @@ export interface NativeEdgeHostingConfig {
 	readonly builderScriptPath?: string;
 	readonly registryPrefix?: string;
 	readonly companyDataUrl?: string;
+	readonly companyDataDirectLoginToken?: string;
+	readonly companyDataPublicUrl?: string;
 	readonly objectStorageUrl?: string;
+	readonly broker?: NativeEdgeBrokerConfig;
 	readonly buildAppImage?: BuildAppImageFn;
 	readonly fetchImpl?: BlobUploadFetch;
 	readonly appHostFetchImpl?: AppHostFetch;
+	readonly companyDataFetchImpl?: AppHostFetch;
 }
 
 export interface NativeDeploymentRegistered {
@@ -238,20 +257,193 @@ export function parseNativeCodeSiteSpec(raw: unknown): NativeCodeSiteSpec | null
 	};
 }
 
+const RUNTIME_ENV_CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const RUNTIME_ENV_PLATFORM_KEYS = new Set(["PORT", "NODE_ENV", "DATABASE_URL"]);
+const LINKED_DATABASE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+
 export function buildNativeAppEnvSpec(options: {
 	readonly port: number;
 	readonly repositoryOwner: string;
 	readonly repositoryName: string;
 	readonly companyDataUrl?: string;
+	readonly companyDataPublicUrl?: string;
 	readonly objectStorageUrl?: string;
+	readonly runtimeEnvConfig?: Readonly<Record<string, string>>;
 }): Record<string, string> {
+	const merged: Record<string, string> = {};
+	if (options.runtimeEnvConfig) {
+		for (const key of Object.keys(options.runtimeEnvConfig).sort()) {
+			const value = options.runtimeEnvConfig[key];
+			if (
+				typeof value !== "string" ||
+				!appSecretEnvNameAllowed(key) ||
+				RUNTIME_ENV_PLATFORM_KEYS.has(key) ||
+				value.length > 4096 ||
+				RUNTIME_ENV_CONTROL_CHARS.test(value)
+			) {
+				continue;
+			}
+			merged[key] = value;
+		}
+	}
+	merged.PORT = String(options.port);
+	merged.NODE_ENV = "production";
+	merged.QORPERA_REPOSITORY = `${options.repositoryOwner}/${options.repositoryName}`;
+	if (options.companyDataUrl) merged.QORPERA_COMPANY_DATA_URL = options.companyDataUrl;
+	if (options.companyDataPublicUrl) merged.QORPERA_COMPANY_DATA_PUBLIC_URL = options.companyDataPublicUrl;
+	if (options.objectStorageUrl) merged.QORPERA_OBJECT_STORAGE_URL = options.objectStorageUrl;
+	return merged;
+}
+
+export async function provisionCompanyDataDirectLogin(options: {
+	readonly companyDataUrl: string;
+	readonly directLoginToken: string;
+	readonly environmentId: string;
+	readonly database: string;
+	readonly access?: "read-write" | "read-only";
+	readonly connectionLimit?: number;
+	readonly fetchImpl?: AppHostFetch;
+	readonly signal?: AbortSignal;
+}): Promise<{
+	readonly connectionString: string;
+	readonly host: string;
+	readonly port: number;
+	readonly database: string;
+	readonly schema: string;
+	readonly user: string;
+}> {
+	if (!isUuid(options.environmentId)) {
+		throw new Error("COMPANY_DATA_DIRECT_LOGIN_ENV_INVALID");
+	}
+	if (
+		!LINKED_DATABASE_NAME_PATTERN.test(options.database) ||
+		options.database === "qorpera" ||
+		options.database.startsWith("pg_") ||
+		options.database.startsWith("qorpera_")
+	) {
+		throw new Error("COMPANY_DATA_DIRECT_LOGIN_DATABASE_INVALID");
+	}
+	const base = options.companyDataUrl.replace(/\/+$/, "");
+	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
+	const res = await fetchImpl(`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${options.directLoginToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			database: options.database,
+			access: options.access ?? "read-write",
+			connectionLimit: options.connectionLimit ?? 4,
+		}),
+		signal: options.signal,
+	});
+	if (res.status !== 200) {
+		throw new Error(`COMPANY_DATA_DIRECT_LOGIN_FAILED_${res.status}`);
+	}
+	const parsed = JSON.parse(res.body) as unknown;
+	if (
+		!isRecord(parsed) ||
+		typeof parsed.connectionString !== "string" ||
+		!/^postgres(?:ql)?:\/\//.test(parsed.connectionString) ||
+		typeof parsed.host !== "string" ||
+		typeof parsed.port !== "number" ||
+		typeof parsed.database !== "string" ||
+		typeof parsed.schema !== "string" ||
+		typeof parsed.user !== "string"
+	) {
+		throw new Error("COMPANY_DATA_DIRECT_LOGIN_INVALID_RESPONSE");
+	}
 	return {
-		PORT: String(options.port),
-		NODE_ENV: "production",
-		QORPERA_REPOSITORY: `${options.repositoryOwner}/${options.repositoryName}`,
-		...(options.companyDataUrl ? { QORPERA_COMPANY_DATA_URL: options.companyDataUrl } : {}),
-		...(options.objectStorageUrl ? { QORPERA_OBJECT_STORAGE_URL: options.objectStorageUrl } : {}),
+		connectionString: parsed.connectionString,
+		host: parsed.host,
+		port: parsed.port,
+		database: parsed.database,
+		schema: parsed.schema,
+		user: parsed.user,
 	};
+}
+
+export async function resolveAppRuntimeEnv(options: {
+	readonly baseEnvSpec: Readonly<Record<string, string>>;
+	readonly siteId: string;
+	readonly environmentId: string;
+	readonly deploymentId: string;
+	readonly targetEnv: HostedAppTargetEnv;
+	readonly hasRuntimeSecrets: boolean;
+	readonly linkedDatabaseName: string | null;
+	readonly nativeEdge: NativeEdgeHostingConfig;
+	readonly signal?: AbortSignal;
+}): Promise<{
+	readonly runtimeEnv: Record<string, string>;
+	readonly mask: CodingSecretMask;
+	readonly secretNames: readonly string[];
+}> {
+	const runtimeEnv: Record<string, string> = { ...options.baseEnvSpec };
+	const sensitive: Record<string, string> = {};
+
+	if (options.hasRuntimeSecrets) {
+		const broker = options.nativeEdge.broker;
+		if (!broker) {
+			throw new Error("APP_SECRETS_BROKER_UNAVAILABLE");
+		}
+		const bundle = await fetchHostedAppSecrets({
+			brokerOrigin: broker.origin,
+			executorToken: broker.executorToken,
+			executorOwner: broker.executorOwner,
+			machineIdSha256: broker.machineIdSha256,
+			siteId: options.siteId,
+			scope: "runtime",
+			targetEnv: options.targetEnv,
+			deploymentId: options.deploymentId,
+			...(broker.fetchImpl ? { fetchImpl: broker.fetchImpl } : {}),
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+		for (const [name, value] of Object.entries(bundle.secrets)) {
+			if (!appSecretEnvNameAllowed(name) || name === "PORT" || name === "NODE_ENV") {
+				continue;
+			}
+			runtimeEnv[name] = value;
+			sensitive[name] = value;
+		}
+	}
+
+	if (options.linkedDatabaseName) {
+		const companyDataUrl = options.nativeEdge.companyDataUrl;
+		const directLoginToken = options.nativeEdge.companyDataDirectLoginToken;
+		if (!companyDataUrl || !directLoginToken) {
+			throw new Error("COMPANY_DATA_DIRECT_LOGIN_UNAVAILABLE");
+		}
+		const direct = await provisionCompanyDataDirectLogin({
+			companyDataUrl,
+			directLoginToken,
+			environmentId: options.environmentId,
+			database: options.linkedDatabaseName,
+			access: "read-write",
+			connectionLimit: 4,
+			...(options.nativeEdge.companyDataFetchImpl ? { fetchImpl: options.nativeEdge.companyDataFetchImpl } : {}),
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+		runtimeEnv.DATABASE_URL = direct.connectionString;
+		sensitive.DATABASE_URL = direct.connectionString;
+	}
+
+	for (const key of [
+		"PORT",
+		"NODE_ENV",
+		"QORPERA_REPOSITORY",
+		"QORPERA_COMPANY_DATA_URL",
+		"QORPERA_COMPANY_DATA_PUBLIC_URL",
+		"QORPERA_OBJECT_STORAGE_URL",
+	] as const) {
+		if (options.baseEnvSpec[key] !== undefined) {
+			runtimeEnv[key] = options.baseEnvSpec[key]!;
+		}
+	}
+
+	const secretNames = Object.freeze(Object.keys(sensitive).sort());
+	const mask = secretNames.length > 0 ? buildAppSecretMask(sensitive) : new CodingSecretMask();
+	return { runtimeEnv, mask, secretNames };
 }
 
 export async function buildAppImageWithScript(
@@ -556,6 +748,7 @@ export async function deployCodeSiteToNativeEdge(options: {
 			repositoryOwner: target.owner,
 			repositoryName: target.name,
 			companyDataUrl: edge.companyDataUrl,
+			companyDataPublicUrl: edge.companyDataPublicUrl,
 			objectStorageUrl: edge.objectStorageUrl,
 		});
 	}

@@ -38,11 +38,13 @@ import {
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CODE_SITE_EXTENSIONS, CODE_SITE_PATH, codeSiteManifest, codeSiteTreeProblem } from "./code-site.ts";
 import { CODE_SITE_LIST_BYTES, CODE_SITE_LIST_FILES, type CodeSiteTreeRead } from "./code-site-uploads.ts";
+import { maskAppLogText } from "./company-machine-secrets.ts";
 import {
 	type BuildAppImageFn,
 	buildAppImageWithScript,
 	buildNativeAppEnvSpec,
 	type NativeEdgeHostingConfig,
+	resolveAppRuntimeEnv,
 	stopHostedAppDeployment,
 	triggerBlueGreenAppDeploy,
 } from "./native-webapp-deploy.ts";
@@ -97,6 +99,7 @@ export const SURFACE_CODE_HOST_RPCS = [
 	"qorpera_surface_site_version_finish",
 	"qorpera_surface_site_deployment_register",
 	"qorpera_surface_site_deployment_set_upstream",
+	"qorpera_surface_site_runtime_config",
 	"qorpera_surface_stale_app_deployments_due",
 	"qorpera_surface_app_deployment_mark_stopped",
 	"qorpera_surface_shared_product_folder_roots",
@@ -1915,12 +1918,46 @@ export class SurfaceCodeHostWorker {
 				await exported.value.cleanup?.().catch(() => undefined);
 			}
 
+			const rawSiteRuntime = (await this.#control.call(
+				"qorpera_surface_site_runtime_config",
+				{ p_surface_id: input.surfaceId },
+				signal,
+			)) as Record<string, unknown> | null;
+			const siteRuntimeFound =
+				rawSiteRuntime !== null &&
+				typeof rawSiteRuntime === "object" &&
+				!Array.isArray(rawSiteRuntime) &&
+				rawSiteRuntime.schema === "qorpera.surface-site-runtime-config/v1" &&
+				rawSiteRuntime.found === true;
+			const siteRuntimeEnvConfig: Record<string, string> = {};
+			if (
+				siteRuntimeFound &&
+				rawSiteRuntime.runtimeEnvConfig &&
+				typeof rawSiteRuntime.runtimeEnvConfig === "object" &&
+				!Array.isArray(rawSiteRuntime.runtimeEnvConfig)
+			) {
+				for (const [k, v] of Object.entries(rawSiteRuntime.runtimeEnvConfig as Record<string, unknown>)) {
+					if (typeof v === "string") siteRuntimeEnvConfig[k] = v;
+				}
+			}
+			const linkedDatabaseName =
+				siteRuntimeFound && typeof rawSiteRuntime.linkedDatabaseName === "string"
+					? rawSiteRuntime.linkedDatabaseName
+					: null;
+			const hasRuntimeSecrets = siteRuntimeFound
+				? input.promoteLive
+					? rawSiteRuntime.hasRuntimeProdSecrets === true
+					: rawSiteRuntime.hasRuntimeDevSecrets === true
+				: false;
+
 			const envSpec = buildNativeAppEnvSpec({
 				port: input.app.port,
 				repositoryOwner: input.repository.owner,
 				repositoryName: input.repository.name,
 				companyDataUrl: nativeEdge.companyDataUrl,
+				companyDataPublicUrl: nativeEdge.companyDataPublicUrl,
 				objectStorageUrl: nativeEdge.objectStorageUrl,
+				runtimeEnvConfig: siteRuntimeEnvConfig,
 			});
 			const appMeta: Omit<SurfaceNativeAppDeploymentInput, "upstreamAddr"> = {
 				kind: input.app.kind,
@@ -1949,23 +1986,43 @@ export class SurfaceCodeHostWorker {
 				signal,
 			);
 			const deploymentId = registered.deploymentId!;
-			const deployed = await triggerBlueGreenAppDeploy({
-				appHostInternalUrl,
-				controlToken: appHostControlToken,
-				deploymentId,
+			const resolvedRuntime = await resolveAppRuntimeEnv({
+				baseEnvSpec: envSpec,
 				siteId: registered.siteId,
-				slug: registered.siteSlug,
 				environmentId: input.environmentId,
-				ociImageRef,
-				healthPath: input.app.healthPath,
-				idleTimeoutSec: input.app.idleTimeoutSec,
-				memoryMb: input.app.memoryMb,
-				vcpuLimit: input.app.vcpuLimit,
-				env: envSpec,
-				isPreview: !input.promoteLive,
-				fetchImpl: nativeEdge.appHostFetchImpl,
+				deploymentId,
+				targetEnv: input.promoteLive ? "prod" : "dev",
+				hasRuntimeSecrets,
+				linkedDatabaseName,
+				nativeEdge,
 				signal,
 			});
+			let deployed: { upstreamAddr: string };
+			try {
+				deployed = await triggerBlueGreenAppDeploy({
+					appHostInternalUrl,
+					controlToken: appHostControlToken,
+					deploymentId,
+					siteId: registered.siteId,
+					slug: registered.siteSlug,
+					environmentId: input.environmentId,
+					ociImageRef,
+					healthPath: input.app.healthPath,
+					idleTimeoutSec: input.app.idleTimeoutSec,
+					memoryMb: input.app.memoryMb,
+					vcpuLimit: input.app.vcpuLimit,
+					env: resolvedRuntime.runtimeEnv,
+					isPreview: !input.promoteLive,
+					fetchImpl: nativeEdge.appHostFetchImpl,
+					signal,
+				});
+			} catch (error) {
+				if (error instanceof Error) {
+					const masked = maskAppLogText(resolvedRuntime.mask, error.message);
+					if (masked !== error.message) throw new Error(masked);
+				}
+				throw error;
+			}
 
 			const recordUpstreamFallback = async (): Promise<void> => {
 				await this.#control

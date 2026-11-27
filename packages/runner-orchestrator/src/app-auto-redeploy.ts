@@ -22,6 +22,7 @@ import {
 	buildAppImageWithScript,
 	buildNativeAppEnvSpec,
 	type NativeEdgeHostingConfig,
+	resolveAppRuntimeEnv,
 	triggerBlueGreenAppDeploy,
 } from "./native-webapp-deploy.ts";
 import {
@@ -63,6 +64,7 @@ export interface CodeChangeLandedEvent {
 }
 
 export interface AppAutoRedeployHooks {
+	readonly runtimeEnvManagedByReload?: boolean;
 	currentReleaseId(site: string, signal: AbortSignal): Promise<string | null>;
 	loadBuildSecrets?(
 		site: string,
@@ -443,7 +445,7 @@ export async function runPostLandAppAutoRedeploy(options: {
 	let runtimeEnvUpdated = false;
 	let previousRuntimeEnv: Buffer | null = null;
 	try {
-		if (config.injectRuntimeSecrets) {
+		if (config.injectRuntimeSecrets && !hooks.runtimeEnvManagedByReload) {
 			if (!hooks.loadRuntimeSecrets || !secretsManager) {
 				throw new Error("APP_SECRETS_DELIVERY_UNAVAILABLE");
 			}
@@ -619,7 +621,13 @@ export function createNativeEdgeAutoRedeploy(
 		);
 		if (!configResult) return null;
 
-		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig));
+		const canInjectRuntimeSecrets = Boolean(
+			options.nativeEdge.broker ||
+				(options.nativeEdge.companyDataUrl && options.nativeEdge.companyDataDirectLoginToken),
+		);
+		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig), {
+			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
+		});
 		const match = shouldAutoRedeployOnCodeChange(parsedConfig, {
 			kind: "landed",
 			repo: `${repository.owner}/${repository.name}`,
@@ -678,6 +686,21 @@ export function createNativeEdgeAutoRedeploy(
 		const vcpuLimit =
 			typeof lookup.vcpuLimit === "number" && Number.isFinite(lookup.vcpuLimit) ? lookup.vcpuLimit : 1;
 
+		const runtimeEnvConfig: Record<string, string> = {};
+		if (
+			lookup.runtimeEnvConfig &&
+			typeof lookup.runtimeEnvConfig === "object" &&
+			!Array.isArray(lookup.runtimeEnvConfig)
+		) {
+			for (const [k, v] of Object.entries(lookup.runtimeEnvConfig as Record<string, unknown>)) {
+				if (typeof v === "string") runtimeEnvConfig[k] = v;
+			}
+		}
+		const linkedDatabaseName =
+			typeof lookup.linkedDatabaseName === "string" && lookup.linkedDatabaseName.length > 0
+				? lookup.linkedDatabaseName
+				: null;
+
 		const releaseImages = new Map<string, string>([[currentDeploymentId, currentImageRef]]);
 		let startedNewOnAppHost = false;
 		let promotedNewInDb = false;
@@ -686,8 +709,26 @@ export function createNativeEdgeAutoRedeploy(
 			repositoryOwner: repository.owner,
 			repositoryName: repository.name,
 			companyDataUrl: options.nativeEdge.companyDataUrl,
+			companyDataPublicUrl: options.nativeEdge.companyDataPublicUrl,
 			objectStorageUrl: options.nativeEdge.objectStorageUrl,
+			runtimeEnvConfig,
 		});
+		const resolveDeployEnv = async (deploymentId: string, hookSignal: AbortSignal) => {
+			if (parsedConfig.injectDatabaseUrl && !linkedDatabaseName) {
+				throw new Error("APP_LINKED_DATABASE_NOT_CONFIGURED");
+			}
+			return await resolveAppRuntimeEnv({
+				baseEnvSpec: envSpec,
+				siteId,
+				environmentId: claim.environmentId,
+				deploymentId,
+				targetEnv: parsedConfig.targetEnv,
+				hasRuntimeSecrets: parsedConfig.injectRuntimeSecrets,
+				linkedDatabaseName: parsedConfig.injectDatabaseUrl ? linkedDatabaseName : null,
+				nativeEdge: options.nativeEdge,
+				signal: hookSignal,
+			});
+		};
 		const repoKey = `${claim.environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`;
 		const changeKey = `${repoKey}:${change}`;
 
@@ -724,7 +765,9 @@ export function createNativeEdgeAutoRedeploy(
 			rawConfig: configResult.rawConfig,
 			siteId,
 			paths: configResult.paths,
+			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
 			hooks: {
+				runtimeEnvManagedByReload: true,
 				currentReleaseId: async () => currentDeploymentId,
 				build: async (_input, hookSignal) => {
 					const runBuild = async (): Promise<{ releaseId: string }> => {
@@ -847,21 +890,31 @@ export function createNativeEdgeAutoRedeploy(
 				reload: async (input, hookSignal) => {
 					const ociImageRef = releaseImages.get(input.releaseId);
 					if (!ociImageRef) throw new Error("AUTO_REDEPLOY_IMAGE_MISSING");
-					const deployed = await triggerBlueGreenAppDeploy({
-						appHostInternalUrl,
-						controlToken: appHostControlToken,
-						deploymentId: input.releaseId,
-						siteId,
-						slug,
-						ociImageRef,
-						healthPath,
-						idleTimeoutSec,
-						memoryMb,
-						vcpuLimit,
-						env: envSpec,
-						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
-						signal: hookSignal,
-					});
+					const resolved = await resolveDeployEnv(input.releaseId, hookSignal);
+					let deployed: { upstreamAddr: string };
+					try {
+						deployed = await triggerBlueGreenAppDeploy({
+							appHostInternalUrl,
+							controlToken: appHostControlToken,
+							deploymentId: input.releaseId,
+							siteId,
+							slug,
+							ociImageRef,
+							healthPath,
+							idleTimeoutSec,
+							memoryMb,
+							vcpuLimit,
+							env: resolved.runtimeEnv,
+							...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+							signal: hookSignal,
+						});
+					} catch (error) {
+						if (error instanceof Error) {
+							const masked = maskAppLogText(resolved.mask, error.message);
+							if (masked !== error.message) throw new Error(masked);
+						}
+						throw error;
+					}
 					startedNewOnAppHost = true;
 					await switchLiveDeployment(input.releaseId, deployed.upstreamAddr, "release", hookSignal);
 					promotedNewInDb = true;
@@ -870,21 +923,31 @@ export function createNativeEdgeAutoRedeploy(
 					if (!input.previousReleaseId || (!startedNewOnAppHost && !promotedNewInDb)) return;
 					const previousImage = releaseImages.get(input.previousReleaseId);
 					if (!previousImage) throw new Error("AUTO_REDEPLOY_PREVIOUS_IMAGE_MISSING");
-					const restored = await triggerBlueGreenAppDeploy({
-						appHostInternalUrl,
-						controlToken: appHostControlToken,
-						deploymentId: input.previousReleaseId,
-						siteId,
-						slug,
-						ociImageRef: previousImage,
-						healthPath,
-						idleTimeoutSec,
-						memoryMb,
-						vcpuLimit,
-						env: envSpec,
-						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
-						signal: hookSignal,
-					});
+					const resolved = await resolveDeployEnv(input.previousReleaseId, hookSignal);
+					let restored: { upstreamAddr: string };
+					try {
+						restored = await triggerBlueGreenAppDeploy({
+							appHostInternalUrl,
+							controlToken: appHostControlToken,
+							deploymentId: input.previousReleaseId,
+							siteId,
+							slug,
+							ociImageRef: previousImage,
+							healthPath,
+							idleTimeoutSec,
+							memoryMb,
+							vcpuLimit,
+							env: resolved.runtimeEnv,
+							...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+							signal: hookSignal,
+						});
+					} catch (error) {
+						if (error instanceof Error) {
+							const masked = maskAppLogText(resolved.mask, error.message);
+							if (masked !== error.message) throw new Error(masked);
+						}
+						throw error;
+					}
 					if (promotedNewInDb) {
 						await switchLiveDeployment(input.previousReleaseId, restored.upstreamAddr, "back", hookSignal);
 					}

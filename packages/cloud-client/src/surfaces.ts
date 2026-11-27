@@ -4,6 +4,7 @@ import {
 	type PointToChangeTarget,
 	parseCompanyCodeRepositorySummary,
 	parsePointToChangeTarget,
+	parseSurfaceAppRuntimeConfig,
 	parseSurfaceAutomationSummary,
 	parseSurfaceMigrationChecklist,
 	parseSurfacePreviewCompositionState,
@@ -13,6 +14,9 @@ import {
 	parseSurfaceSummary,
 	parseSurfaceUnseenNotes,
 	parseSurfaceWorkspace,
+	type SurfaceAppRuntimeConfig,
+	type SurfaceAppSecretScope,
+	type SurfaceAppTargetEnv,
 	type SurfaceArchetype,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
@@ -62,6 +66,18 @@ export interface BindSurfaceRepositoryInput {
 	readonly repositoryKey: string;
 	readonly repositorySubpath?: string | null;
 	readonly defaultBranch?: string | null;
+}
+
+export interface SetSurfaceAppRuntimeConfigInput {
+	readonly runtimeEnvConfig: Readonly<Record<string, string>>;
+	readonly linkedDatabaseName: string | null;
+}
+
+export interface GrantSurfaceAppSecretInput {
+	readonly secretId: string;
+	readonly siteId: string;
+	readonly scope: SurfaceAppSecretScope;
+	readonly targetEnv: SurfaceAppTargetEnv;
 }
 
 export interface CreateSurfaceAutomationInput {
@@ -514,6 +530,40 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
+	async getSurfaceAppRuntimeConfig(surfaceId: string, signal?: AbortSignal): Promise<SurfaceAppRuntimeConfig> {
+		const data = await this.#rpc("qorpera_get_surface_app_runtime_config", { p_surface_id: surfaceId }, signal);
+		return parseSurfaceAppRuntimeConfig(data, "runtimeConfig");
+	}
+
+	async setSurfaceAppRuntimeConfig(
+		surfaceId: string,
+		input: SetSurfaceAppRuntimeConfigInput,
+	): Promise<SurfaceAppRuntimeConfig> {
+		const data = await this.#rpc("qorpera_set_surface_app_runtime_config", {
+			p_surface_id: surfaceId,
+			p_runtime_env_config: input.runtimeEnvConfig,
+			p_linked_database_name: input.linkedDatabaseName,
+		});
+		return parseSurfaceAppRuntimeConfig(data, "runtimeConfig");
+	}
+
+	async grantAppSecret(companyId: string, input: GrantSurfaceAppSecretInput): Promise<void> {
+		await this.#rpc("qorpera_grant_app_secret", {
+			p_profile_id: companyId,
+			p_secret_id: input.secretId,
+			p_site_id: input.siteId,
+			p_scope: input.scope,
+			p_target_env: input.targetEnv,
+		});
+	}
+
+	async revokeAppSecretGrant(companyId: string, grantId: string): Promise<void> {
+		await this.#rpc("qorpera_revoke_app_secret_grant", {
+			p_profile_id: companyId,
+			p_grant_id: grantId,
+		});
+	}
+
 	async listAutomations(companyId: string, signal?: AbortSignal): Promise<SurfaceAutomationSummary[]> {
 		const data = await this.#rpc("qorpera_list_automations", { p_company_id: companyId }, signal);
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_automations payload");
@@ -592,6 +642,9 @@ export class CloudSurfacesClient {
 export type {
 	CompanyCodeRepositorySummary,
 	PointToChangeTarget,
+	SurfaceAppRuntimeConfig,
+	SurfaceAppSecretScope,
+	SurfaceAppTargetEnv,
 	SurfaceAutomationSummary,
 	SurfaceChangeUnit,
 	SurfaceMigrationChecklist,
