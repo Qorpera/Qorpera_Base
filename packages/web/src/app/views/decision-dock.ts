@@ -13,6 +13,7 @@ import { type ActionReviewDraft, authorizationRequestId, renderActionReviewCard 
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, personAvatar, replace } from "../../ui/dom.ts";
 import { renderInteractionCard } from "../../ui/interaction-card.ts";
+import type { MailAddressCalls } from "../../ui/mail-address.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { OpenQuestions } from "../open-questions.ts";
 import type { QuestionDockHost } from "./question-dock.ts";
@@ -139,6 +140,7 @@ export class DecisionDock {
 	#narrow = false;
 	#expires: ReturnType<typeof setTimeout> | undefined;
 	#cut: { disconnect: () => void } | undefined;
+	#stageAbort: AbortController | undefined;
 
 	constructor(host: QuestionDockHost) {
 		this.#host = host;
@@ -288,6 +290,8 @@ export class DecisionDock {
 	dispose(): void {
 		this.#sendHeld();
 		this.#lifetime.abort();
+		this.#stageAbort?.abort();
+		this.#stageAbort = undefined;
 		this.#stopWatch();
 		this.#sizes?.disconnect();
 		this.#cut?.disconnect();
@@ -452,6 +456,8 @@ export class DecisionDock {
 		} else {
 			this.#stageKey = "";
 			this.#tabsKey = "";
+			this.#stageAbort?.abort();
+			this.#stageAbort = undefined;
 			this.#cut?.disconnect();
 			this.#cut = undefined;
 			replace(this.#stage);
@@ -468,6 +474,8 @@ export class DecisionDock {
 		const others = current.othersAnswer === true;
 		const mayVote = this.#host.questions.mayVote();
 		const ownPick = this.#picksOwn(current);
+		const address = current.kind === "question" && !others && questionInput(current.request) === "mail_address";
+		const canChooseMail = address ? this.#host.questions.canChooseMailAddress() : null;
 		const key = JSON.stringify([
 			current.interactionId,
 			error,
@@ -476,10 +484,14 @@ export class DecisionDock {
 			others,
 			mayVote,
 			ownPick,
+			canChooseMail,
 		]);
 		if (key === this.#stageKey) return;
 		this.#stageKey = key;
 		this.#votesKey = "";
+		this.#stageAbort?.abort();
+		const stageAbort = new AbortController();
+		this.#stageAbort = stageAbort;
 		const agent = this.#host.agent(current.staffAgentId);
 		const name = agent?.displayName ?? t("The agent");
 		const id = current.interactionId;
@@ -517,6 +529,7 @@ export class DecisionDock {
 								canAnswer: !others && !ownPick,
 								inThread: true,
 								viewerId: this.#host.questions.viewerId,
+								signal: stageAbort.signal,
 								...(current.kind === "question" && current.round ? { round: current.round } : {}),
 								...(others || ownPick
 									? {
@@ -529,6 +542,7 @@ export class DecisionDock {
 									: {}),
 								...(this.#host.image ? { image: this.#host.image } : {}),
 								...(this.#host.app ? { app: this.#host.app } : {}),
+								...(address ? { mailAddress: this.#mailAddress(current, stageAbort.signal) } : {}),
 								answer: async (outcome, value) =>
 									this.#hold({ decision: current, outcome, value, at: Date.now(), state: "held" }),
 							},
@@ -764,6 +778,48 @@ export class DecisionDock {
 				t("Send {name}'s pick: {option}", { name, option: option.label }),
 			),
 		);
+	}
+
+	#mailAddress(card: OpenCard, signal: AbortSignal): MailAddressCalls {
+		const calls = this.#host.questions.mailAddressCalls(card);
+		return {
+			...calls,
+			choose: async (handle) => {
+				const id = card.interactionId;
+				this.#errors.delete(id);
+				let address: string;
+				try {
+					address = await calls.choose(handle);
+				} catch (error) {
+					if (signal.aborted) {
+						const said = this.#host.questions.conversationState(card.sessionId)?.interactionError;
+						this.#errors.set(
+							id,
+							said ??
+								(error instanceof Error && error.message
+									? error.message
+									: t("The address could not be made. Try again.")),
+						);
+						this.#everyDock();
+					}
+					throw error;
+				}
+				if (!this.#decided.some((entry) => entry.decision.interactionId === id)) {
+					this.#decided.push({
+						decision: card,
+						outcome: "answered",
+						value: { values: [address] },
+						at: Date.now(),
+						state: "sent",
+					});
+				}
+				this.#host.questions.forget(id);
+				void this.#host.questions.refresh();
+				if (this.#current === id) this.#current = undefined;
+				this.#everyDock();
+				return address;
+			},
+		};
 	}
 
 	#draftCard(draft: OpenDraft, name: string): HTMLElement {

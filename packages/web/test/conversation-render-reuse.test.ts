@@ -599,7 +599,7 @@ describe("kept items follow names", () => {
 				statusSignals.push(signal);
 				return new Promise(() => {});
 			},
-			choose: async () => {},
+			choose: async (handle: string) => `${handle}@qorpera.test`,
 		}));
 		const firstCard: TranscriptInteraction = {
 			kind: "interaction",
@@ -639,7 +639,7 @@ describe("kept items follow names", () => {
 				...firstCard,
 				answer: {
 					outcome: "answered",
-					answer: { values: ["hello.acme@qorpera.test"] },
+					answer: { values: ["acme@qorpera.test"] },
 					answeredBy: userA.id,
 					answeredAt: at(2),
 				},

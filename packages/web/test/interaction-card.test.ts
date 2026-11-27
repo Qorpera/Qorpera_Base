@@ -1000,14 +1000,21 @@ describe("the address card", () => {
 		},
 	};
 	const taken = new Set(["brooks"]);
+	const reserved = new Set(["support"]);
 	function calls(overrides: Partial<MailAddressCalls> = {}) {
 		return {
 			canChoose: true,
 			handles: vi.fn(async () => ({ domain: "inbox.qorpera.com", handles: ["mine"] })),
 			status: vi.fn(async (handle: string) =>
-				handle === "mine" ? ("ours" as const) : taken.has(handle) ? ("taken" as const) : ("free" as const),
+				handle === "mine"
+					? ("ours" as const)
+					: taken.has(handle)
+						? ("taken" as const)
+						: reserved.has(handle)
+							? ("invalid" as const)
+							: ("free" as const),
 			),
-			choose: vi.fn(async () => {}),
+			choose: vi.fn(async (handle: string) => `${handle}@inbox.qorpera.com`),
 			...overrides,
 		};
 	}
@@ -1029,10 +1036,10 @@ describe("the address card", () => {
 		expect(questionInput({ ...address, payload: { ...address.payload, input: { kind: "phone" } } })).toBeUndefined();
 	});
 
-	it("shows hello., the first suggestion and the domain in one field, and checks the company's part as it is typed", async () => {
+	it("shows the bare handle suggestion and the domain in one field, and checks the handle as it is typed", async () => {
 		const mail = calls();
 		const card = renderInteractionCard(item(address), context({ inThread: true, mailAddress: mail }));
-		expect(card.querySelector(".interaction-address-box")?.textContent).toBe("hello.");
+		expect(card.querySelector(".interaction-address-box")).toBeNull();
 		expect(field(card).value).toBe("lerhave-keramik");
 		await vi.waitFor(() =>
 			expect(card.querySelector(".interaction-address-domain")?.textContent).toBe("@inbox.qorpera.com"),
@@ -1054,6 +1061,10 @@ describe("the address card", () => {
 		expect(use(card)?.disabled).toBe(true);
 		type(card, "mine");
 		await vi.waitFor(() => expect(check(card)).toBe("Already yours"));
+		type(card, "support");
+		await vi.waitFor(() => expect(check(card)).toBe("This mailbox name is reserved. Choose another."));
+		expect(card.querySelector(".interaction-address-check")?.classList.contains("is-error")).toBe(true);
+		expect(use(card)?.disabled).toBe(true);
 		type(card, "a");
 		expect(check(card)).toBe("Use a–z, 0–9 and hyphens");
 		expect(use(card)?.disabled).toBe(true);
@@ -1064,9 +1075,9 @@ describe("the address card", () => {
 
 	it("makes the address with Use this address, and says why when it could not be made", async () => {
 		const choose = vi
-			.fn<(handle: string) => Promise<void>>()
+			.fn<(handle: string) => Promise<string>>()
 			.mockRejectedValueOnce(new Error("This address is taken."))
-			.mockResolvedValueOnce(undefined);
+			.mockResolvedValueOnce("lerhave-keramik@inbox.qorpera.com");
 		const ctx = context({ inThread: true, mailAddress: calls({ choose }) });
 		const card = renderInteractionCard(item(address), ctx);
 		document.body.append(card);
@@ -1107,7 +1118,7 @@ describe("the address card", () => {
 		const card = renderInteractionCard(
 			item(address, {
 				outcome: "answered",
-				answer: { values: ["hello.lerhave-keramik@inbox.qorpera.com"] },
+				answer: { values: ["lerhave-keramik@inbox.qorpera.com"] },
 				answeredBy: MEMBER,
 				answeredAt: "2026-09-22T20:05:00Z",
 			}),
@@ -1115,7 +1126,7 @@ describe("the address card", () => {
 		);
 		expect(card.querySelector(".interaction-address")).toBeNull();
 		expect(card.querySelector(".interaction-result.is-said.mine .bubble")?.textContent).toBe(
-			"hello.lerhave-keramik@inbox.qorpera.com",
+			"lerhave-keramik@inbox.qorpera.com",
 		);
 	});
 
@@ -1159,7 +1170,7 @@ describe("the address card", () => {
 			expect(skippedHandles).not.toHaveBeenCalled();
 
 			const rerenderSignals: AbortSignal[] = [];
-			const choose = vi.fn(async () => undefined);
+			const choose = vi.fn(async (handle: string) => `${handle}@inbox.qorpera.com`);
 			const card2 = renderInteractionCard(
 				item(address),
 				context({

@@ -16,6 +16,7 @@ import type { OpenQuestion } from "../cloud/open-questions.ts";
 import type { ActionReviewAnswer } from "../cloud/review-rules.ts";
 import { selectSessionExecutionSponsor } from "../cloud/session-input.ts";
 import type { JsonValue } from "../cloud/types.ts";
+import type { MailAddressCalls } from "../ui/mail-address.ts";
 import type { CompanyController, ConversationState } from "./company.ts";
 import { Store, throttle } from "./state.ts";
 
@@ -61,6 +62,7 @@ export interface OpenQuestionsState {
 	/** The cloud has no such read yet (before 20260930706000): nothing is asked again. */
 	readonly unavailable: boolean;
 	readonly hasLogin?: boolean;
+	readonly canChooseMailAddress?: boolean;
 }
 
 function unsettled(editor: EmailDraftEditor): boolean {
@@ -85,7 +87,7 @@ const LOGIN_AGAIN_MS = 300_000;
 export const ANSWERED_HOLD_MS = 2_200;
 
 export class OpenQuestions {
-	readonly store = new Store<OpenQuestionsState>({ questions: [], decisions: [], read: false, unavailable: false });
+	readonly store: Store<OpenQuestionsState>;
 	readonly #company: CompanyController;
 	readonly #accounts: QuestionAccounts;
 	/** Cards answered from here: a read on its way when the answer went keeps them off the list. */
@@ -114,6 +116,13 @@ export class OpenQuestions {
 	constructor(company: CompanyController, accounts: QuestionAccounts) {
 		this.#company = company;
 		this.#accounts = accounts;
+		this.store = new Store<OpenQuestionsState>({
+			questions: [],
+			decisions: [],
+			read: false,
+			unavailable: false,
+			canChooseMailAddress: company.canChooseMailAddress(),
+		});
 	}
 
 	pause(): void {
@@ -208,6 +217,23 @@ export class OpenQuestions {
 		await this.#chooseAccount(approval.sessionId);
 		await this.#company.answerActionReview(approval.sessionId, approval.interactionId, answer, ruleText);
 		this.#answered.add(approval.interactionId);
+	}
+
+	canChooseMailAddress(): boolean {
+		return this.#company.canChooseMailAddress();
+	}
+
+	mailAddressCalls(question: OpenQuestion): MailAddressCalls {
+		const calls = this.#company.mailAddressCalls(question.sessionId, question.interactionId);
+		return {
+			...calls,
+			choose: async (handle) => {
+				await this.#chooseAccount(question.sessionId);
+				const address = await calls.choose(handle);
+				this.#answered.add(question.interactionId);
+				return address;
+			},
+		};
 	}
 
 	draftEditor(draft: OpenDraft): EmailDraftEditor {
@@ -413,7 +439,15 @@ export class OpenQuestions {
 			return `${capabilities?.read === true} ${capabilities?.write === true}`;
 		};
 		let could = mayWrite();
+		let canChooseMail = this.#company.canChooseMailAddress();
+		if (this.store.get().canChooseMailAddress !== canChooseMail)
+			this.store.set({ canChooseMailAddress: canChooseMail });
 		const stopTeam = this.#company.store.subscribe(() => {
+			const nextMail = this.#company.canChooseMailAddress();
+			if (nextMail !== canChooseMail) {
+				canChooseMail = nextMail;
+				this.store.set({ canChooseMailAddress: nextMail });
+			}
 			const can = mayWrite();
 			if (can === could) return;
 			could = can;

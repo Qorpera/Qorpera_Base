@@ -357,8 +357,6 @@ export function refreshAppPreviews(root: ParentNode, apps: AppReader, read?: Pic
 	}
 }
 
-const FIRST_BOX = "hello.";
-
 function mailAddressParts(
 	options: readonly QuestionOption[],
 	calls: MailAddressCalls | undefined,
@@ -376,6 +374,7 @@ function mailAddressParts(
 		autocomplete: "off",
 		autocapitalize: "none",
 		spellcheck: "false",
+		placeholder: t("e.g. acme"),
 		"aria-label": t("The company's part of the address"),
 		disabled: !able,
 	});
@@ -401,7 +400,11 @@ function mailAddressParts(
 		else
 			say(
 				handleWords(state),
-				state === "free" || state === "ours" ? "ok" : state === "taken" || state === "invalid" ? "error" : "",
+				state === "free" || state === "ours"
+					? "ok"
+					: state === "taken" || state === "invalid" || state === "reserved"
+						? "error"
+						: "",
 			);
 	};
 	const check = able && calls ? new HandleCheck(calls.status, draw) : undefined;
@@ -445,6 +448,7 @@ function mailAddressParts(
 						pill(
 							handle,
 							() => {
+								if (input.getAttribute("aria-disabled") === "true") return;
 								input.value = handle;
 								check?.set(handle);
 								input.focus();
@@ -458,17 +462,7 @@ function mailAddressParts(
 	draw();
 	check?.set(input.value);
 	return {
-		body: [
-			h(
-				"label",
-				{ class: "interaction-address" },
-				h("span", { class: "interaction-address-box" }, FIRST_BOX),
-				input,
-				domain,
-			),
-			...(pills ? [pills] : []),
-			line,
-		],
+		body: [h("label", { class: "interaction-address" }, input, domain), ...(pills ? [pills] : []), line],
 		actions: useButton ? [useButton] : [],
 	};
 }
@@ -732,16 +726,22 @@ export function renderInteractionCard(item: InteractionCardItem, context: Intera
 					busy = true;
 					for (const control of card.querySelectorAll<HTMLElement>("button, input"))
 						control.setAttribute("aria-disabled", "true");
-					void context.mailAddress.choose(handle).then(rerender, (error: unknown) => {
-						busy = false;
-						for (const control of card.querySelectorAll<HTMLElement>("button, input"))
-							control.removeAttribute("aria-disabled");
-						refused(
-							error instanceof Error && error.message
-								? error.message
-								: t("The address could not be made. Try again."),
-						);
-					});
+					void context.mailAddress.choose(handle).then(
+						() => {
+							if (!cardAbort.signal.aborted) rerender();
+						},
+						(error: unknown) => {
+							if (cardAbort.signal.aborted) return;
+							busy = false;
+							for (const control of card.querySelectorAll<HTMLElement>("button, input"))
+								control.removeAttribute("aria-disabled");
+							refused(
+								error instanceof Error && error.message
+									? error.message
+									: t("The address could not be made. Try again."),
+							);
+						},
+					);
 				},
 				cardAbort.signal,
 			);

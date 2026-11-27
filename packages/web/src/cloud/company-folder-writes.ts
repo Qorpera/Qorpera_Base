@@ -205,6 +205,7 @@ export async function rewriteStateFile(
 	options: {
 		readonly locate: () => Promise<string | null>;
 		readonly rewrite: (text: string, path: string) => string | null;
+		readonly beforeWrite?: (file: CompanyStateFile, path: string) => Promise<void>;
 		readonly key: () => string;
 		readonly gone: string;
 		readonly failure: string;
@@ -225,6 +226,10 @@ export async function rewriteStateFile(
 		if (text === null) return false;
 		const parsed = parseStateFile(path, text);
 		if (!parsed.ok) throw invalid(options.failure, parsed.problems);
+		if (options.beforeWrite) {
+			await options.beforeWrite(parsed.file, path);
+			check();
+		}
 		options.sent?.(true);
 		const result = await commitUnit(
 			folder,
@@ -235,6 +240,44 @@ export async function rewriteStateFile(
 		if (result.outcome !== "saved" && result.outcome !== "waiting_for_review") options.sent?.(false);
 		check();
 		if (result.outcome === "saved") return true;
+		if (result.outcome === "conflict" && result.reason === "version_changed" && attempt < RETRIES) continue;
+		throw unsaved(result, options.failure);
+	}
+}
+
+export async function deleteStateFile(
+	folder: WebMemberFolder,
+	options: {
+		readonly locate: (attempt: number) => Promise<string | null>;
+		readonly verify?: (text: string, path: string) => void;
+		readonly key: () => string;
+		readonly failure: string;
+	},
+	signal: AbortSignal,
+	check: () => void,
+): Promise<void> {
+	for (let attempt = 0; ; attempt++) {
+		const path = await options.locate(attempt);
+		check();
+		if (path === null) return;
+		const current = options.verify
+			? await readStateFile(folder, path, signal)
+			: await folder.read(path, signal).then((read) => {
+					if (!read.entry) return null;
+					if (read.entry.kind !== "file") throw new Error(options.failure);
+					return { entry: read.entry, text: "" };
+				});
+		check();
+		if (current === null) return;
+		options.verify?.(current.text, path);
+		const result = await commitUnit(
+			folder,
+			options.key(),
+			{ op: "delete", path, expectedVersion: current.entry.version },
+			signal,
+		);
+		check();
+		if (result.outcome === "saved" || (result.outcome === "conflict" && result.reason === "missing")) return;
 		if (result.outcome === "conflict" && result.reason === "version_changed" && attempt < RETRIES) continue;
 		throw unsaved(result, options.failure);
 	}

@@ -4028,3 +4028,129 @@ describe("SurfacesStore", () => {
 		store.dispose();
 	});
 });
+
+describe("scheduled agent rename and delete across surface automations and legacy routines", () => {
+	const SURFACE_AUTO_ID = "88888888-8888-4888-8888-888888888801";
+	const LEGACY_ROUTINE_ID = "88888888-8888-4888-8888-888888888802";
+	const LEGACY_CLIENT_ID = "88888888-8888-4888-8888-888888888803";
+
+	const surfaceAutomation = {
+		id: SURFACE_AUTO_ID,
+		key: "cofounder-pulse",
+		title: "Co-Founder Pulse",
+		prompt: "Morning check",
+		scheduleSummary: "Every morning · 09:00",
+		targetSurfaceSlug: null,
+		outputMode: "decision_card" as const,
+		enabled: true,
+		status: "idle" as const,
+		lastRunAt: null,
+		lastOutcomeSummary: null,
+		nextRunAt: null,
+		ownable: true,
+		ownerUserId: null,
+		offer: null,
+	};
+	const legacyRoutine = {
+		id: LEGACY_ROUTINE_ID,
+		key: LEGACY_CLIENT_ID,
+		title: "Daglig plan for Brooks",
+		prompt: "Lav dagsplan",
+		scheduleSummary: "schedule",
+		targetSurfaceSlug: null,
+		outputMode: "surface_session" as const,
+		enabled: false,
+		status: "paused" as const,
+		lastRunAt: null,
+		lastOutcomeSummary: null,
+		nextRunAt: null,
+		ownable: false,
+		ownerUserId: null,
+		offer: null,
+	};
+
+	it("routes ownable automations through the surface client and legacy routines through routine file callbacks", async () => {
+		const updateAutomation = vi.fn(async (id: string, input: { title?: string }) => ({
+			...surfaceAutomation,
+			id,
+			title: input.title ?? surfaceAutomation.title,
+		}));
+		const deleteAutomation = vi.fn(async () => true);
+		const renameLegacyRoutine = vi.fn(async () => undefined);
+		const deleteLegacyRoutine = vi.fn(async () => undefined);
+		const store = storeWith(
+			fakeClient({
+				listAutomations: vi.fn(async () => [surfaceAutomation, legacyRoutine]),
+				updateAutomation,
+				deleteAutomation,
+			}),
+			{ renameLegacyRoutine, deleteLegacyRoutine },
+		);
+		await store.load();
+		expect(store.canRenameLegacyRoutine).toBe(true);
+		expect(store.canDeleteLegacyRoutine).toBe(true);
+
+		const renamedSurface = await store.updateScheduledAgent(SURFACE_AUTO_ID, { title: "Morning Pulse" });
+		expect(renamedSurface?.title).toBe("Morning Pulse");
+		expect(updateAutomation).toHaveBeenCalledWith(SURFACE_AUTO_ID, { title: "Morning Pulse" });
+		expect(renameLegacyRoutine).not.toHaveBeenCalled();
+
+		const renamedLegacy = await store.updateScheduledAgent(LEGACY_ROUTINE_ID, {
+			title: "Ny plan for Brooks",
+			prompt: "Lav dagsplan",
+			scheduleSummary: "schedule",
+			targetSurfaceSlug: null,
+		});
+		expect(renamedLegacy?.title).toBe("Ny plan for Brooks");
+		expect(renameLegacyRoutine).toHaveBeenCalledWith(
+			LEGACY_ROUTINE_ID,
+			LEGACY_CLIENT_ID,
+			"Ny plan for Brooks",
+			expect.any(AbortSignal),
+		);
+		expect(updateAutomation).toHaveBeenCalledTimes(1);
+
+		const rejected = await store.updateScheduledAgent(LEGACY_ROUTINE_ID, {
+			title: "Ny plan for Brooks",
+			prompt: "Changed prompt",
+		});
+		expect(rejected).toBeUndefined();
+		expect(updateAutomation).toHaveBeenCalledTimes(1);
+		expect(renameLegacyRoutine).toHaveBeenCalledTimes(1);
+
+		expect(await store.deleteScheduledAgent(LEGACY_ROUTINE_ID)).toBe(true);
+		expect(deleteLegacyRoutine).toHaveBeenCalledWith(LEGACY_ROUTINE_ID, LEGACY_CLIENT_ID, expect.any(AbortSignal));
+		expect(deleteAutomation).not.toHaveBeenCalled();
+		expect(store.state.automations.map((item) => item.id)).toEqual([SURFACE_AUTO_ID]);
+
+		expect(await store.deleteScheduledAgent(SURFACE_AUTO_ID)).toBe(true);
+		expect(deleteAutomation).toHaveBeenCalledWith(SURFACE_AUTO_ID);
+		expect(store.state.automations).toEqual([]);
+		store.dispose();
+	});
+
+	it("keeps legacy routines in state and records the error when routine file callbacks fail", async () => {
+		const renameLegacyRoutine = vi.fn(async () => {
+			throw new Error("The routine could not be renamed.");
+		});
+		const deleteLegacyRoutine = vi.fn(async () => {
+			throw new Error("The routine could not be deleted.");
+		});
+		const store = storeWith(
+			fakeClient({
+				listAutomations: vi.fn(async () => [legacyRoutine]),
+			}),
+			{ renameLegacyRoutine, deleteLegacyRoutine },
+		);
+		await store.load();
+
+		expect(await store.updateScheduledAgent(LEGACY_ROUTINE_ID, { title: "Blocked" })).toBeUndefined();
+		expect(store.state.automations[0]?.title).toBe("Daglig plan for Brooks");
+		expect(store.state.error).toBe("The routine could not be renamed.");
+
+		expect(await store.deleteScheduledAgent(LEGACY_ROUTINE_ID)).toBe(false);
+		expect(store.state.automations).toHaveLength(1);
+		expect(store.state.error).toBe("The routine could not be deleted.");
+		store.dispose();
+	});
+});

@@ -643,4 +643,7 @@ export const SURFACES: Record<string, string> = {
 	Number: "Tal",
 	"What it counts": "Hvad det tæller",
 	"Leaves out": "Udelader",
+	"Copy ID": "Kopiér id",
+	"The ID could not be copied.": "Id’et kunne ikke kopieres.",
+	"{name} could not be renamed.": "{name} kunne ikke omdøbes.",
 };
