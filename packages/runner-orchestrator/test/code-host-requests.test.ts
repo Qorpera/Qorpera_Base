@@ -1860,4 +1860,49 @@ describe("CodeHostRequests", () => {
 			expect(Date.now() - started).toBeLessThan(2000);
 		});
 	});
+
+	describe("github_sync", () => {
+		const GH_SYNC = {
+			requestId: R1,
+			token: T1,
+			leaseUntil: "2026-11-10T12:15:00+00:00",
+			...WHERE,
+			kind: "github_sync",
+			op: "sync",
+			githubSync: {
+				op: "sync",
+				githubRepo: "acme/shop",
+				remoteBranch: "main",
+			},
+		};
+
+		it("claims github_sync when configured, runs it beside passes, and finishes its outcome", async () => {
+			const outcome: CodeRequestOutcome = {
+				schema: SCHEMA,
+				state: "done",
+				result: "synced",
+				githubRepo: "acme/shop",
+				remoteBranch: "main",
+				remoteSha: AFTER,
+				mainSha: MAIN,
+				ahead: 1,
+				behind: 2,
+				diverged: true,
+			};
+			const runSync = vi.fn(async () => outcome);
+			const t = setup({ githubSync: { run: runSync } });
+			t.kernel.claims = [[GH_SYNC]];
+			await expect(t.whole()).resolves.toEqual({ ...NONE, done: 1 });
+			expect(t.calls[0]?.args.p_kinds).toEqual([...KINDS, "github_sync"]);
+			expect(runSync).toHaveBeenCalledTimes(1);
+			expect(t.finishes()).toEqual([finishOf(R1, T1, outcome)]);
+		});
+
+		it("puts a github_sync request back as busy when no githubSync runner is configured", async () => {
+			const t = setup();
+			t.kernel.claims = [[GH_SYNC]];
+			await expect(t.whole()).resolves.toEqual({ ...NONE, busy: 1 });
+			expect(t.finishes()).toEqual([finishOf(R1, T1, { schema: SCHEMA, state: "busy" })]);
+		});
+	});
 });

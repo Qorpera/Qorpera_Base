@@ -128,6 +128,7 @@ export type CloudCompanyPathRpc =
 	| "qorpera_folder_code_history"
 	| "qorpera_folder_code_query"
 	| "qorpera_folder_code_lifecycle"
+	| "qorpera_folder_code_github_sync"
 	| "qorpera_folder_describe_code_change"
 	// Existing code brought in as a repository kept in Qorpera (20260930736000): an agent's ask, and how it stands.
 	| "qorpera_folder_request_code_import"

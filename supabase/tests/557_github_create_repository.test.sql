@@ -23,8 +23,8 @@ select pg_temp.repo_assert((select input_schema -> 'required' = '["name"]'::json
 		and input_schema #>> '{properties,owner,pattern}' = '^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$'
 	from public.qorpera_cloud_connector_operations where connector_id = 'github' and operation_id = 'create_repository'),
 	'the schema differs');
-select pg_temp.repo_assert((select count(*) = 8 from public.qorpera_cloud_connector_operations
-	where connector_id = 'github' and status = 'active'), 'GitHub does not have eight operations');
+select pg_temp.repo_assert((select count(*) = 14 from public.qorpera_cloud_connector_operations
+	where connector_id = 'github' and status = 'active'), 'GitHub does not have fourteen operations');
 -- Every agent's connector tools still fit the native list (at most 32 grants), and no tool takes a field named input:
 -- a call may send its fields on their own or inside input (cloud-secret-tools.ts).
 select pg_temp.repo_assert((select count(*) <= 32 from public.qorpera_cloud_connector_operations
@@ -155,7 +155,7 @@ values ('55700000-0000-4000-8000-000000000053', '55700000-0000-4000-8000-0000000
 	'55700000-0000-4000-8000-000000000021', '55700000-0000-4000-8000-000000000040', 'company', null, 'github', 'primary',
 	'Company GitHub', 1, '55700000-0000-4000-8000-000000000001');
 select pg_temp.repo_assert(public.qorpera_share_company_connection('55700000-0000-4000-8000-000000000053',
-	'55700000-0000-4000-8000-000000000001') = 64, 'a new share did not issue eight operations to eight active agents');
+	'55700000-0000-4000-8000-000000000001') = 112, 'a new share did not issue fourteen operations to eight active agents');
 select pg_temp.repo_assert((select count(*) = 8 from public.qorpera_cloud_secret_operation_grants
 	where secret_id = '55700000-0000-4000-8000-000000000053' and status = 'active'
 		and tool_name = 'github_create_repository'), 'a new share left out github_create_repository');

@@ -615,6 +615,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Isolated app update tracks, artifacts, and live progress",
 		text: "App interfaces now support isolated update tracks with rich inline discussion artifacts, live progress checklists, test status summaries, and non-destructive turn stopping. Coding turns on app tracks can publish or revise mockups, plans, reports, checklists, and diff summaries directly inside the session thread, and report their live current activity, step checklist, and verification results as work progresses. Founders can preview a single track in isolation, ship one track cleanly, combine specific tracks when ready, or stop an active turn without losing the session branch or workspace.",
 	},
+	{
+		id: "github-two-way-sync-and-track-prs",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Two-way GitHub sync, pull requests and track webhooks",
+		text: "Qorpera-hosted repositories now support two-way GitHub sync through manage_code: sync fetches upstream changes to inspect ahead/behind status, pull fast-forwards or merges them into main, push publishes a branch to GitHub while guarding the default branch, and opening a pull request creates a GitHub PR and links it directly to an app track. Connected GitHub accounts also gain pull request list, create, update, review, check-run, and branch tools, and signed GitHub webhooks update linked app tracks with PR state, reviews, and check results automatically.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

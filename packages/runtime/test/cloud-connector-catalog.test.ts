@@ -18,7 +18,7 @@ const client = { clientId: "client-id-test", clientSecret: "client-secret-test" 
 it("declares GitHub, Gmail and Google Drive with closed, runtime-parsable operation schemas", () => {
 	expect(CLOUD_CONNECTORS.map((connector) => connector.id)).toEqual(["github", "gmail", "google_drive"]);
 	const rows = cloudConnectorCatalogRows();
-	expect(rows).toHaveLength(24);
+	expect(rows).toHaveLength(30);
 	expect(new Set(rows.map((row) => row.toolName)).size).toBe(rows.length);
 	for (const row of rows) {
 		expect(row.toolName).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
@@ -61,8 +61,14 @@ it("counts a granted operation as a read only when it is this build's read, at i
 		return { connectorId, operationId, operationVersion: row.version, adapterSha256: row.adapterSha256 };
 	};
 	expect(cloudConnectorOperationReads(granted("github", "list_repositories"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("github", "list_pull_requests"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("github", "list_pull_request_reviews"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("github", "list_check_runs"))).toBe(true);
+	expect(cloudConnectorOperationReads(granted("github", "list_branches"))).toBe(true);
 	expect(cloudConnectorOperationReads(granted("gmail", "read_thread"))).toBe(true);
 	expect(cloudConnectorOperationReads(granted("github", "create_repository"))).toBe(false);
+	expect(cloudConnectorOperationReads(granted("github", "create_pull_request"))).toBe(false);
+	expect(cloudConnectorOperationReads(granted("github", "update_pull_request"))).toBe(false);
 	expect(cloudConnectorOperationReads(granted("gmail", "send_message"))).toBe(false);
 	// Another version or hash than this build's, or an operation it does not know, is a write.
 	const list = granted("github", "list_repositories");

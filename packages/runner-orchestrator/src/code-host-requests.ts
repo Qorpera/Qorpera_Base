@@ -10,6 +10,12 @@ import {
 	codeChangeRefusalPaths,
 } from "./code-change-records.ts";
 import {
+	type CodeGitHubSyncOutcome,
+	type CodeGitHubSyncRequest,
+	codeGitHubSyncOutcomeOf,
+	codeGitHubSyncRequestOf,
+} from "./code-github-sync.ts";
+import {
 	type archiveCodeArea,
 	type CodeChangePath,
 	type CodeChangeUndoInput,
@@ -158,9 +164,10 @@ export type CodeRequest =
 	| CodeLifecycleRequest
 	| CodeDownloadRequest
 	| CodeRestoreRequest
-	| CodeImportRequest;
+	| CodeImportRequest
+	| CodeGitHubSyncRequest;
 
-export type CodeRequestOutcome = CodeImportOutcome | CodeOtherOutcome;
+export type CodeRequestOutcome = CodeImportOutcome | CodeOtherOutcome | CodeGitHubSyncOutcome;
 type CodeOtherOutcome = { schema: "qorpera.code-request-outcome/v1" } & (
 	| {
 			state: "done";
@@ -234,6 +241,7 @@ export interface CodeHostRequestsOptions {
 	) => Promise<"passed" | "inherited" | "none" | "off" | "not_run">;
 	restore?: { run(request: CodeRestoreRequest, signal: AbortSignal): Promise<CodeRequestOutcome> };
 	imports?: { run(request: CodeImportRequest, signal: AbortSignal): Promise<CodeImportOutcome> };
+	githubSync?: { run(request: CodeGitHubSyncRequest, signal: AbortSignal): Promise<CodeGitHubSyncOutcome> };
 	owner: string;
 	machineIdSha256: string;
 	report?: (event: Record<string, unknown>) => void;
@@ -294,6 +302,7 @@ function requestOf(value: unknown): CodeRequest {
 	};
 	// An import's item is part C1's to read, closed: its input, progress and look as well.
 	if (entry.kind === "import") return codeImportRequestOf(value);
+	if (entry.kind === "github_sync") return codeGitHubSyncRequestOf(value);
 	if (entry.kind === "undo") {
 		const change = isRecord(entry.change) ? entry.change : {};
 		if (
@@ -422,6 +431,7 @@ export class CodeHostRequests {
 	readonly #verifyUndoChecks: CodeHostRequestsOptions["verifyUndoChecks"];
 	readonly #restore: CodeHostRequestsOptions["restore"];
 	readonly #imports: CodeHostRequestsOptions["imports"];
+	readonly #githubSync: CodeHostRequestsOptions["githubSync"];
 	readonly #owner: string;
 	readonly #machineIdSha256: string;
 	readonly #report: (event: Record<string, unknown>) => void;
@@ -457,6 +467,7 @@ export class CodeHostRequests {
 		this.#verifyUndoChecks = options.verifyUndoChecks;
 		this.#restore = options.restore;
 		this.#imports = options.imports;
+		this.#githubSync = options.githubSync;
 		this.#owner = options.owner;
 		this.#machineIdSha256 = options.machineIdSha256;
 		const report = options.report;
@@ -534,7 +545,12 @@ export class CodeHostRequests {
 				}),
 			);
 			for (const request of claimed) {
-				if (request.kind === "download" || request.kind === "restore" || request.kind === "import")
+				if (
+					request.kind === "download" ||
+					request.kind === "restore" ||
+					request.kind === "import" ||
+					request.kind === "github_sync"
+				)
 					this.#start(request, signal);
 			}
 		});
@@ -549,12 +565,16 @@ export class CodeHostRequests {
 	/** A download, a restore or an import, on beside the passes, under a signal of its own that ends with the
 	 * executor's. An import runs only when this executor has an import runner and runs no other: otherwise it was not
 	 * asked for, and it is put back at once. */
-	#start(request: CodeDownloadRequest | CodeRestoreRequest | CodeImportRequest, signal: AbortSignal): void {
+	#start(
+		request: CodeDownloadRequest | CodeRestoreRequest | CodeImportRequest | CodeGitHubSyncRequest,
+		signal: AbortSignal,
+	): void {
 		const runner = request.kind === "import" && this.#importing === undefined ? this.#imports : undefined;
 		const work: Promise<void> = withAbortScope(signal, (scoped) =>
 			this.#guarded(request, () => {
 				if (request.kind === "download") return this.#download(request, scoped);
 				if (request.kind === "restore") return this.#restoring(request, scoped);
+				if (request.kind === "github_sync") return this.#githubSyncing(request, scoped);
 				return runner ? this.#imported(runner, request, scoped) : this.#putBack(request, scoped);
 			}),
 		)
@@ -594,6 +614,7 @@ export class CodeHostRequests {
 		if (this.#imports !== undefined && this.#importing === undefined) kinds.push("import");
 		if (this.#hasQueryJobs()) kinds.push("query");
 		if (this.#hasLifecycleJobs()) kinds.push("lifecycle");
+		if (this.#githubSync !== undefined) kinds.push("github_sync");
 		const answer = await this.#call(
 			CODE_REQUEST_RPCS[0],
 			{ p_owner: this.#owner, p_machine_id_sha256: this.#machineIdSha256, p_limit: this.#limit, p_kinds: kinds },
@@ -1336,6 +1357,27 @@ export class CodeHostRequests {
 			return "busy";
 		}
 		return this.#said(request, outcome, finished);
+	}
+
+	async #githubSyncing(request: CodeGitHubSyncRequest, signal: AbortSignal): Promise<Ended> {
+		const runner = this.#githubSync;
+		if (!runner) {
+			const outcome: CodeRequestOutcome = { schema: SCHEMA, state: "busy" };
+			return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
+		}
+		let outcome: CodeRequestOutcome;
+		try {
+			const ended: unknown = await runner.run(request, signal);
+			outcome = codeGitHubSyncOutcomeOf(ended);
+		} catch (error) {
+			if (signal.aborted || (error instanceof CodeHostJobFailure && error.code === YIELDED))
+				outcome = { schema: SCHEMA, state: "busy" };
+			else {
+				outcome = { schema: SCHEMA, state: "failed", code: codeChangeErrorCode(error) };
+				this.#report({ event: "code-request-error", step: "job", ...named(request), error });
+			}
+		}
+		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
 	/** An import this executor did not ask for: it has no import runner, or one runs already. It is put back (`busy`)

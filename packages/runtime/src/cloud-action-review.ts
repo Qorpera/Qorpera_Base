@@ -66,6 +66,8 @@ const CONNECTOR_TITLES: Readonly<Record<string, string>> = {
 	github_create_issue: "Open a GitHub issue",
 	github_comment_on_issue: "Comment on a GitHub issue",
 	github_create_repository: "Create a GitHub repository",
+	github_create_pull_request: "Open a GitHub pull request",
+	github_update_pull_request: "Update a GitHub pull request",
 };
 
 const BUILT_INS = ["none", "money", "legal_terms", "delete_outside", "access_change", "not_requested"] as const;
@@ -511,7 +513,17 @@ export function cloudActionEffect(
 		// recorded change that can itself be undone, and a card would cost the minutes a wrong change must not stay in;
 		// a description changes only the record's words. Neither is reviewed.
 		case "manage_code":
-			return args.action === "status" ? "read" : "internal";
+			return args.action === "status" ||
+				args.action === "log" ||
+				args.action === "diff" ||
+				args.action === "show" ||
+				args.action === "branches" ||
+				args.action === "merge_preview" ||
+				args.action === "history"
+				? "read"
+				: args.action === "push" || args.action === "create_pr"
+					? "external"
+					: "internal";
 		case "manage_mail":
 			return args.action === "list_blocked"
 				? "read"
@@ -1468,18 +1480,38 @@ export function describeCloudAction(
 		add("destroys", destroys.length > 0 ? `It ${list(destroys)}.` : undefined, CONTENT_BYTES);
 		add("undo", "Cannot be undone: what it removes is gone.");
 	} else if (tool.name === "manage_code") {
-		// 20260930720000: not reviewed today (cloudActionEffect). These are its card's words should a member's yes be
-		// asked for an undo later: the repository, the change by its number, and why.
-		title =
-			args.action === "describe"
-				? "Describe a change in the company's code"
-				: args.andLater === true
-					? "Undo a change in the company's code, and every change after it"
-					: "Undo a change in the company's code";
 		const repository = [text(args.owner), text(args.name)].filter(Boolean).join("/");
-		target = [repository, text(args.change) && `change ${text(args.change)}`].filter(Boolean).join(", ") || null;
-		add("reason", args.reason);
-		add("customers will notice", args.notice);
+		if (args.action === "push" || args.action === "create_pr" || args.action === "sync" || args.action === "pull") {
+			title =
+				args.action === "push"
+					? "Push a branch to GitHub"
+					: args.action === "create_pr"
+						? "Open a GitHub pull request"
+						: args.action === "pull"
+							? "Pull updates from GitHub"
+							: "Sync status with GitHub";
+			const githubRepo = text(args.github);
+			target = [githubRepo || repository, text(args.remoteBranch || args.head)].filter(Boolean).join(" ") || null;
+			add("repository", repository || undefined);
+			add("github", githubRepo || undefined);
+			add("branch", args.remoteBranch ?? args.head);
+			add("base", args.base);
+			add("local ref", args.ref);
+			add("title", args.title);
+			quote("body", args.body, CONTENT_BYTES);
+			if (args.draft === true) add("draft", "yes");
+			if (args.allowDefaultBranch === true) add("allow default branch", "yes");
+		} else {
+			title =
+				args.action === "describe"
+					? "Describe a change in the company's code"
+					: args.andLater === true
+						? "Undo a change in the company's code, and every change after it"
+						: "Undo a change in the company's code";
+			target = [repository, text(args.change) && `change ${text(args.change)}`].filter(Boolean).join(", ") || null;
+			add("reason", args.reason);
+			add("customers will notice", args.notice);
+		}
 	} else if (tool.name === "apply_proposal") {
 		// Changes the agent saved from a computer, as the run's list described them (cloud-folder-proposals.ts): what
 		// changes, in order, never its files.
@@ -1517,6 +1549,20 @@ export function describeCloudAction(
 				? input.labels.filter((label): label is string => typeof label === "string").join(", ")
 				: undefined,
 		);
+	} else if (tool.name === "github_create_pull_request" || tool.name === "github_update_pull_request") {
+		title = CONNECTOR_TITLES[tool.name] ?? title;
+		const input = jsonObject(args.input ?? parsed);
+		const repository = [text(input.owner), text(input.repository)].filter(Boolean).join("/");
+		target =
+			repository && tool.name === "github_update_pull_request" && text(input.number)
+				? `${repository}#${text(input.number)}`
+				: repository || null;
+		add("title", input.title);
+		add("head", input.head);
+		add("base", input.base);
+		add("state", input.state);
+		if (input.draft === true) add("draft", "yes");
+		quote("body", input.body, CONTENT_BYTES);
 	} else if (tool.name === "github_create_repository") {
 		const input = jsonObject(args.input ?? parsed);
 		const visible = input.private === false;

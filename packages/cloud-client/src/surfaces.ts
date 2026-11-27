@@ -30,6 +30,7 @@ import {
 	type SurfaceReconciliation,
 	type SurfaceSession,
 	type SurfaceSessionArtifact,
+	type SurfaceSessionExternalPr,
 	type SurfaceSessionImages,
 	type SurfaceSessionMessage,
 	type SurfaceSummary,
@@ -564,6 +565,19 @@ export class CloudSurfacesClient {
 		return parseSurfaceSessionArtifact(data, "artifact");
 	}
 
+	async linkSurfaceTrackPr(
+		sessionId: string,
+		externalPr: SurfaceSessionExternalPr | null,
+		trackBranch?: string | null,
+	): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_link_surface_track_pr", {
+			p_session_id: sessionId,
+			p_external_pr: externalPr,
+			...(trackBranch !== undefined ? { p_track_branch: trackBranch } : {}),
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
 	async publishSurface(surfaceId: string): Promise<SurfaceSummary> {
 		const data = await this.#rpc("qorpera_publish_surface", { p_surface_id: surfaceId });
 		return parseSurfaceSummary(data, "surface");
@@ -707,6 +721,7 @@ export type {
 	SurfaceReconciliation,
 	SurfaceSession,
 	SurfaceSessionArtifact,
+	SurfaceSessionExternalPr,
 	SurfaceSessionMessage,
 	SurfaceSummary,
 	SurfaceWorkspace,
