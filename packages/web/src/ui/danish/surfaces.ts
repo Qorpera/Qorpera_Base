@@ -616,4 +616,7 @@ export const SURFACES: Record<string, string> = {
 	"Send note from {title}": "Send note fra {title}",
 	"Send note from {title}: {about}": "Send note fra {title}: {about}",
 	"Cancelled.": "Annulleret.",
+	"Copy ID": "Kopiér id",
+	"The ID could not be copied.": "Id’et kunne ikke kopieres.",
+	"{name} could not be renamed.": "{name} kunne ikke omdøbes.",
 };

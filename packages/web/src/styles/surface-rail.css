@@ -108,6 +108,8 @@
 	transition: background-color var(--motion-fast) ease;
 }
 .rail-agent-sched .rail-agent-hub-row { flex: 1; min-width: 0; }
+.rail-agent-sched:has(> .rail-agent-hub-row.menu-open) { background: var(--rail-hover); }
+.rail-agent-sched > .rail-agent-hub-row.menu-open { background: none; }
 .rail-agent-sched.is-paused .rail-agent-hub-copy strong { color: var(--rail-small); }
 .rail-automation-fig { position: relative; display: grid; flex: none; }
 .rail-automation-fig > .rail-automation-face {

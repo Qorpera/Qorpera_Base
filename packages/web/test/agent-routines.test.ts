@@ -264,6 +264,8 @@ function mocked(items: CloudRoutine[]) {
 		setLogin: vi.fn(
 			async (_routineId: string, _account: WebMemberConnection): Promise<WebRoutinePayer | null> => null,
 		),
+		rename: vi.fn(async () => {}),
+		delete: vi.fn(async () => {}),
 	} satisfies WebRoutines;
 }
 /** The page over routine calls that answer at once. `write`: a member who may write (contributors and up), as one
@@ -3336,5 +3338,158 @@ describe("who pays for a routine (20260930095000)", () => {
 			stop.abort();
 			document.body.replaceChildren();
 		}
+	});
+});
+
+describe("WebRoutines.rename and WebRoutines.delete", () => {
+	const EVENT_HOOK = "10000000-0000-4000-8000-000000000099";
+
+	it("renames a schedule or listener routine file in place, keeping other fields and retrying version_changed", async () => {
+		const fake = seeded({
+			text: routineText({
+				status: "paused",
+				trigger: { when: "event", hook: EVENT_HOOK, only: null },
+				timezone: "Europe/Copenhagen",
+			}),
+		});
+		const w = writer(fake);
+		const originalCommit = fake.folder.commit.getMockImplementation()!;
+		let conflicted = false;
+		fake.folder.commit.mockImplementation(async (key, units, signal) => {
+			if (!conflicted) {
+				conflicted = true;
+				fake.put(
+					PATH,
+					routineText({
+						status: "paused",
+						trigger: { when: "event", hook: EVENT_HOOK, only: null },
+						timezone: "Europe/Copenhagen",
+						instructions: "Updated by agent meanwhile.",
+					}),
+				);
+				return {
+					commitId: "10000000-0000-4000-8000-0000000000c1",
+					seq: 0,
+					replay: false,
+					units: [
+						{
+							unit: 0,
+							op: "write",
+							path: PATH,
+							to: null,
+							version: null,
+							outcome: "conflict",
+							reason: "version_changed",
+							problems: [],
+						},
+					],
+				};
+			}
+			return originalCommit(key, units, signal);
+		});
+
+		await w.routines.rename(ROUTINE_ID, FILE_ID, "  Answer Brooks mail  ");
+		const after = parsed(fake.text(PATH));
+		expect(after.title).toBe("Answer Brooks mail");
+		expect(after.status).toBe("paused");
+		expect(after.trigger).toEqual({ when: "event", hook: EVENT_HOOK, only: null });
+		expect(after.instructions).toBe("Updated by agent meanwhile.");
+		expect(fake.folder.commit).toHaveBeenCalledTimes(2);
+
+		fake.folder.commit.mockClear();
+		await w.routines.rename(ROUTINE_ID, FILE_ID, "Answer Brooks mail");
+		expect(fake.folder.commit).not.toHaveBeenCalled();
+	});
+
+	it("accepts a routine file whose frontmatter id matches routineId and refuses a different or concluded routine", async () => {
+		const byRoutineId = folderFake({ listsRoutines: true });
+		byRoutineId.put(
+			AGENT_PATH,
+			writeAgentFile({
+				id: staff.id,
+				name: "Nora",
+				role: "Designer",
+				agentKind: "agent",
+				status: "active",
+				colour: null,
+				figure: null,
+				model: null,
+				effort: null,
+				instructions: "Design.",
+			}),
+		);
+		byRoutineId.mkdir(ROUTINES);
+		byRoutineId.put(PATH, routineText({ id: ROUTINE_ID, title: "Old title" }));
+		const w1 = writer(byRoutineId);
+		await w1.routines.rename(ROUTINE_ID, FILE_ID, "New title");
+		expect(parsed(byRoutineId.text(PATH)).title).toBe("New title");
+
+		const concludedFake = seeded({ text: routineText({ status: "concluded", conclusion: "Done." }) });
+		await expect(writer(concludedFake).routines.rename(ROUTINE_ID, FILE_ID, "After")).rejects.toThrow(
+			WebRoutineEndedError,
+		);
+
+		const swappedFake = seeded({ text: routineText({ id: OTHER_FILE }) });
+		const swapped = writer(swappedFake);
+		swappedFake.folder.stateFolders.mockResolvedValueOnce({
+			agents: [{ staffAgentId: staff.id, file: AGENT_PATH }],
+			groups: [],
+			routines: [{ routineId: ROUTINE_ID, staffAgentId: staff.id, file: PATH }],
+		});
+		await expect(swapped.routines.rename(ROUTINE_ID, FILE_ID, "Wrong")).rejects.toThrow(WebRoutineChangedError);
+	});
+
+	it("deletes a routine file, retries version_changed, handles already-retired routines, and refuses unbacked active or swapped files", async () => {
+		const fake = seeded({
+			text: routineText({ status: "paused", trigger: { when: "event", hook: EVENT_HOOK, only: null } }),
+		});
+		const w = writer(fake);
+		const originalCommit = fake.folder.commit.getMockImplementation()!;
+		let conflicted = false;
+		fake.folder.commit.mockImplementation(async (key, units, signal) => {
+			if (!conflicted) {
+				conflicted = true;
+				fake.put(PATH, routineText({ status: "paused", trigger: { when: "event", hook: EVENT_HOOK, only: null } }));
+				return {
+					commitId: "10000000-0000-4000-8000-0000000000c2",
+					seq: 0,
+					replay: false,
+					units: [
+						{
+							unit: 0,
+							op: "delete",
+							path: PATH,
+							to: null,
+							version: null,
+							outcome: "conflict",
+							reason: "version_changed",
+							problems: [],
+						},
+					],
+				};
+			}
+			return originalCommit(key, units, signal);
+		});
+
+		await w.routines.delete(ROUTINE_ID, FILE_ID);
+		expect(fake.has(PATH)).toBe(false);
+		expect(fake.folder.commit).toHaveBeenCalledTimes(2);
+
+		await expect(w.routines.delete(ROUTINE_ID, FILE_ID)).resolves.toBeUndefined();
+
+		const unbacked = seeded({ text: null });
+		await expect(writer(unbacked, () => [indexRow("active")]).routines.delete(ROUTINE_ID, FILE_ID)).rejects.toThrow(
+			WebRoutineGoneError,
+		);
+
+		const swappedFake = seeded({ text: routineText({ id: OTHER_FILE }) });
+		const swapped = writer(swappedFake);
+		swappedFake.folder.stateFolders.mockResolvedValueOnce({
+			agents: [{ staffAgentId: staff.id, file: AGENT_PATH }],
+			groups: [],
+			routines: [{ routineId: ROUTINE_ID, staffAgentId: staff.id, file: PATH }],
+		});
+		await expect(swapped.routines.delete(ROUTINE_ID, FILE_ID)).rejects.toThrow(WebRoutineChangedError);
+		expect(swappedFake.has(PATH)).toBe(true);
 	});
 });

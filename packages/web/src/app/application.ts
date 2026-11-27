@@ -1544,6 +1544,40 @@ export function mountApplication(
 					current();
 					return bytes;
 				};
+				const withLegacyRoutine = async (
+					signal: AbortSignal,
+					run: (routines: ReturnType<typeof createWebRoutines>) => Promise<void>,
+				): Promise<void> => {
+					await withAbortScopes([controller.signal, signal], async (scopeSignal) => {
+						const current = () => {
+							scopeSignal.throwIfAborted();
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+							if (!controller.store.get().team?.capabilities.authorize)
+								throw new Error(t("Only founders and admins can change this."));
+						};
+						current();
+						const routines = createWebRoutines(cloud, controller.profile, scopeSignal, current, () => {
+							current();
+							const role = controller.store.get().team?.role;
+							if (!role) throw new Error(t("Company access changed."));
+							return new WebCompanyFiles(
+								cloud,
+								controller.profile,
+								controller.userId,
+								role,
+								scopeSignal,
+								current,
+							).folder();
+						});
+						await run(routines);
+					});
+				};
 				const surfaces = new SurfacesStore({
 					companyId: profile.profileId,
 					companyName: profile.profileName,
@@ -1598,6 +1632,10 @@ export function mountApplication(
 							.map((member) => ({ userId: member.userId, name: member.displayName || member.email })),
 					loadCloudFiles: loadSurfaceCloudFiles,
 					readCloudBinary: readSurfaceCloudBinary,
+					renameLegacyRoutine: (routineId, clientRoutineId, title, signal) =>
+						withLegacyRoutine(signal, (routines) => routines.rename(routineId, clientRoutineId, title)),
+					deleteLegacyRoutine: (routineId, clientRoutineId, signal) =>
+						withLegacyRoutine(signal, (routines) => routines.delete(routineId, clientRoutineId)),
 					uploadImage: async (surfaceId, clientInputId, file, signal) => {
 						const current = () => {
 							signal.throwIfAborted();

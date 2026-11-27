@@ -2566,6 +2566,19 @@ describe("removing an agent from the Changes list", () => {
 
 		const card = (id: string) =>
 			view.el.querySelector<HTMLElement>(`.surface-overview-card.is-agent[data-session="${id}"]`);
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+		card(routine.id)!.dispatchEvent(
+			new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+		);
+		const copyRow = [...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+			(item) => item.textContent?.trim() === "Copy ID",
+		)!;
+		expect(copyRow).toBeDefined();
+		copyRow.click();
+		await flush();
+		expect(writeText).toHaveBeenCalledWith(routine.id);
+
 		const chooseRemove = async (id: string) => {
 			card(id)!.dispatchEvent(
 				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),

@@ -27,6 +27,7 @@ import {
 import { isRecord } from "@qorpera/contracts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import {
+	deleteStateFile,
 	folderNames,
 	invalid,
 	parentPath,
@@ -175,6 +176,8 @@ export interface WebRoutines {
 	 * first, as a save's, then the pick. A routine that waited for a login runs again. The same null as `payer`; a
 	 * refusal is a `WebRoutineLoginRefusedError`. */
 	setLogin(routineId: string, account: WebMemberConnection): Promise<WebRoutinePayer | null>;
+	rename(routineId: string, clientRoutineId: string, title: string): Promise<void>;
+	delete(routineId: string, clientRoutineId: string): Promise<void>;
 }
 
 /** The routine has no file this member can change, or its file is gone: nothing was written. */
@@ -558,13 +561,18 @@ export function createWebRoutines(
 			};
 		});
 	};
-	/** A routine's file from the member's state folders (by the index's routine id). */
-	const routinePath = async (from: WebMemberFolder, routineId: string): Promise<string> => {
+	const findRoutinePath = async (from: WebMemberFolder, routineId: string): Promise<string | null> => {
 		const listed = (await from.stateFolders(signal)).routines;
 		check();
-		const path = listed?.find((item) => item.routineId === routineId)?.file;
-		if (!path || companyStatePath(path)?.kind !== "routine")
+		const path = listed?.find((item) => item.routineId === routineId)?.file ?? null;
+		if (path !== null && companyStatePath(path)?.kind !== "routine")
 			throw new WebRoutineGoneError("This routine has no file you can change.");
+		return path;
+	};
+	/** A routine's file from the member's state folders (by the index's routine id). */
+	const routinePath = async (from: WebMemberFolder, routineId: string): Promise<string> => {
+		const path = await findRoutinePath(from, routineId);
+		if (!path) throw new WebRoutineGoneError("This routine has no file you can change.");
 		return path;
 	};
 	/** A routine file's text, version and parse; null when nothing is at the path. */
@@ -865,6 +873,55 @@ export function createWebRoutines(
 				"qorpera_set_routine_login",
 				{ p_routine_id: routineId, p_connection_id: account.connectionId },
 				routineId,
+			);
+		},
+		async rename(routineId, clientRoutineId, title) {
+			const from = folder();
+			const nextTitle = title.trim();
+			const matchesRoutine = (id: string) => id === routineId || id === clientRoutineId;
+			await rewriteStateFile(
+				from,
+				{
+					locate: () => findRoutinePath(from, routineId),
+					rewrite: (text, at) => {
+						const parsed = parseStateFile(at, text);
+						if (!parsed.ok || parsed.file.kind !== "routine" || !matchesRoutine(parsed.file.id))
+							throw new WebRoutineChangedError("This routine's file has changed.");
+						if (parsed.file.status === "concluded") throw new WebRoutineEndedError("This routine has ended.");
+						return parsed.file.title === nextTitle ? null : setCompanyStateSettings(text, { title: nextTitle });
+					},
+					key: () => `web:routine-rename:${routineId}:${crypto.randomUUID()}`,
+					gone: "This routine has no file you can change.",
+					failure: "The routine could not be renamed.",
+				},
+				signal,
+				check,
+			);
+		},
+		async delete(routineId, clientRoutineId) {
+			const from = folder();
+			const matchesRoutine = (id: string) => id === routineId || id === clientRoutineId;
+			await deleteStateFile(
+				from,
+				{
+					locate: async (attempt) => {
+						const path = await findRoutinePath(from, routineId);
+						if (path !== null || attempt > 0) return path;
+						const row = (await list()).find((item) => item.routineId === routineId);
+						if (row && row.status !== "retired")
+							throw new WebRoutineGoneError("This routine has no file you can change.");
+						return null;
+					},
+					verify: (text, at) => {
+						const parsed = parseStateFile(at, text);
+						if (!parsed.ok || parsed.file.kind !== "routine" || !matchesRoutine(parsed.file.id))
+							throw new WebRoutineChangedError("This routine's file has changed.");
+					},
+					key: () => `web:routine-delete:${routineId}:${crypto.randomUUID()}`,
+					failure: "The routine could not be deleted.",
+				},
+				signal,
+				check,
 			);
 		},
 	};

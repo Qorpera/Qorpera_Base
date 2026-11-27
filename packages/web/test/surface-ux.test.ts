@@ -3695,3 +3695,436 @@ describe("seeded ops surface sidepanel", () => {
 		store.dispose();
 	});
 });
+
+describe("scheduled agent and working hub right-click menus", () => {
+	const PULSE_ID = "88888888-8888-4888-8888-888888888811";
+	const LEGACY_ID = "88888888-8888-4888-8888-888888888812";
+	const LEGACY_KEY = "88888888-8888-4888-8888-888888888813";
+	const TEAMMATE_ID = "99999999-9999-4999-8999-999999999902";
+	const EXPLORATION_ID = "88888888-8888-4888-8888-888888888814";
+	const VARIANT_ID = "33333333-3333-4333-8333-333333333315";
+
+	const pulse = {
+		id: PULSE_ID,
+		key: "cofounder-pulse",
+		title: "Co-Founder Pulse",
+		prompt: "Morning review",
+		scheduleSummary: "Every morning · 09:00",
+		targetSurfaceSlug: null,
+		outputMode: "decision_card" as const,
+		enabled: true,
+		status: "idle" as const,
+		lastRunAt: null,
+		lastOutcomeSummary: null,
+		nextRunAt: null,
+		ownable: true,
+		ownerUserId: userA.id,
+		offer: null,
+	};
+	const legacy = {
+		id: LEGACY_ID,
+		key: LEGACY_KEY,
+		title: "Daglig plan for Brooks",
+		prompt: "Plan",
+		scheduleSummary: "schedule",
+		targetSurfaceSlug: null,
+		outputMode: "surface_session" as const,
+		enabled: false,
+		status: "paused" as const,
+		lastRunAt: null,
+		lastOutcomeSummary: null,
+		nextRunAt: null,
+		ownable: false,
+		ownerUserId: null,
+		offer: null,
+	};
+
+	const menuLabels = () =>
+		[...document.querySelectorAll<HTMLElement>(".context-menu-item .context-menu-label")].map((item) =>
+			item.textContent?.trim(),
+		);
+	const menuItem = (label: string) =>
+		[...document.querySelectorAll<HTMLElement>(".context-menu-item")].find(
+			(item) => item.querySelector(".context-menu-label")?.textContent?.trim() === label,
+		);
+	const rightClick = (target: Element) => {
+		const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 20, clientY: 20 });
+		target.dispatchEvent(event);
+		return event;
+	};
+
+	async function setupRail(
+		options: {
+			role?: "owner" | "admin" | "contributor" | "viewer";
+			teammates?: boolean;
+			failLegacyRename?: boolean;
+			failLegacyDelete?: boolean;
+			withWorking?: boolean;
+		} = {},
+	) {
+		stubFigureMotion();
+		vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+		const dialogProto = HTMLDialogElement.prototype;
+		dialogProto.showModal ??= function (this: HTMLDialogElement) {
+			this.open = true;
+		};
+		dialogProto.close ??= function (this: HTMLDialogElement) {
+			this.open = false;
+		};
+		const role = options.role ?? "owner";
+		const f = fixture();
+		const cofounder = { ...staff, id: id(10), displayName: "Co-Founder", templateId: "co-founder" };
+		const company = new CompanyController(f.api, profileA, userA.id);
+		const members = [
+			{
+				userId: userA.id,
+				email: userA.email!,
+				displayName: "Jonas Krüger",
+				role,
+				joinedAt: "2026-09-01T00:00:00.000Z",
+				lastSeenAt: null,
+			},
+			...(options.teammates
+				? [
+						{
+							userId: TEAMMATE_ID,
+							email: "anna@example.invalid",
+							displayName: "Anna Lind",
+							role: "admin" as const,
+							joinedAt: "2026-09-01T00:00:00.000Z",
+							lastSeenAt: null,
+						},
+					]
+				: []),
+		];
+		company.store.set({
+			loading: false,
+			staff: [cofounder],
+			team: {
+				profileId: profileA.profileId,
+				role,
+				capabilities: {
+					read: true,
+					write: role !== "viewer",
+					authorize: role === "owner" || role === "admin",
+					manageMembers: role === "owner",
+				},
+				members,
+				invitations: [],
+			},
+		});
+		const website = summary();
+		const runningSession = session(["staged"], {
+			id: SESSION,
+			surfaceId: website.id,
+			title: "Hero refresh",
+			state: "running",
+		});
+		const variantSession = session(["staged"], {
+			id: VARIANT_ID,
+			surfaceId: website.id,
+			title: "Option A",
+			explorationId: EXPLORATION_ID,
+			state: "ready",
+		});
+		const exploration = {
+			id: EXPLORATION_ID,
+			surfaceId: website.id,
+			title: "Pricing directions",
+			status: "open" as const,
+			chosenSessionId: null,
+			variantSessionIds: [VARIANT_ID],
+			createdAt: "2026-11-26T00:00:00Z",
+			resolvedAt: null,
+		};
+		const updateAutomation = vi.fn(async (autoId: string, patch: { title?: string }) => ({
+			...pulse,
+			id: autoId,
+			title: patch.title ?? pulse.title,
+		}));
+		const deleteAutomation = vi.fn(async () => true);
+		const renameLegacyRoutine = vi.fn(async () => {
+			if (options.failLegacyRename) throw new Error("boom");
+		});
+		const deleteLegacyRoutine = vi.fn(async () => {
+			if (options.failLegacyDelete) throw new Error("boom");
+		});
+		const discardSurfaceSession = vi.fn(async (sessionId: string) => ({
+			...runningSession,
+			id: sessionId,
+			state: "discarded" as const,
+		}));
+		const discardExploration = vi.fn(async () => undefined);
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [website]),
+				listAutomations: vi.fn(async () => [pulse, legacy]),
+				getSurfaceWorkspace: vi.fn(async () =>
+					workspace(options.withWorking ? [runningSession, variantSession] : [], {
+						surface: website,
+						explorations: options.withWorking ? [exploration] : [],
+					}),
+				),
+				updateAutomation,
+				deleteAutomation,
+				discardSurfaceSession,
+				discardExploration,
+			}),
+			{ renameLegacyRoutine, deleteLegacyRoutine },
+		);
+		await store.load();
+		if (options.withWorking) await store.openSurface(website.slug);
+		attachSurfaces(company, store);
+		const container = document.createElement("aside");
+		const frame = document.createElement("div");
+		frame.className = "frame";
+		frame.append(container);
+		document.body.append(frame);
+		const render = () =>
+			renderRail(container, company, {
+				profiles: [profileA],
+				user: userA,
+				route: { name: "company", profileId: profileA.profileId, section: "surface", id: website.slug },
+				auth: new AuthController(f.cloud),
+				invitations: 0,
+				openSettings: () => {},
+				openFeedback: () => {},
+				openFriends: () => {},
+				agentActions: {},
+			});
+		render();
+		store.store.subscribe(render);
+		company.store.subscribe(render);
+		return {
+			company,
+			store,
+			container,
+			updateAutomation,
+			deleteAutomation,
+			renameLegacyRoutine,
+			deleteLegacyRoutine,
+			discardSurfaceSession,
+			discardExploration,
+			dispose() {
+				openMenu()?.close();
+				company.stop();
+				store.dispose();
+				frame.remove();
+			},
+		};
+	}
+
+	it("opens Rename, Copy ID, and Delete on both surface automations and legacy routines in a one-member company", async () => {
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+		const ctx = await setupRail();
+		try {
+			const pulseRow = ctx.container.querySelector<HTMLElement>(`[data-scheduled-agent="${PULSE_ID}"]`)!;
+			const pulseButton = pulseRow.querySelector<HTMLElement>(".rail-agent-hub-row")!;
+			const pulseEvent = rightClick(pulseButton);
+			expect(pulseEvent.defaultPrevented).toBe(true);
+			expect(pulseButton.classList.contains("menu-open")).toBe(true);
+			expect(menuLabels()).toEqual(["Rename", "Copy ID", "Delete"]);
+
+			menuItem("Copy ID")!.click();
+			await flush();
+			expect(writeText).toHaveBeenCalledWith(PULSE_ID);
+
+			rightClick(pulseButton);
+			menuItem("Rename")!.click();
+			await flush();
+			const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+			expect(input.value).toBe("Co-Founder Pulse");
+			input.value = "Daily Pulse";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+			document
+				.querySelector<HTMLFormElement>(".name-dialog")!
+				.dispatchEvent(new Event("submit", { cancelable: true }));
+			await flush();
+			expect(ctx.updateAutomation).toHaveBeenCalledWith(PULSE_ID, { title: "Daily Pulse" });
+			expect(ctx.container.querySelector(`[data-scheduled-agent="${PULSE_ID}"] strong`)?.textContent).toBe(
+				"Daily Pulse",
+			);
+
+			const legacyRow = ctx.container.querySelector<HTMLElement>(`[data-scheduled-agent="${LEGACY_ID}"]`)!;
+			const legacyEvent = rightClick(legacyRow);
+			expect(legacyEvent.defaultPrevented).toBe(true);
+			expect(menuLabels()).toEqual(["Rename", "Copy ID", "Delete"]);
+
+			menuItem("Rename")!.click();
+			await flush();
+			const legacyInput = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+			legacyInput.value = "Ny plan for Brooks";
+			legacyInput.dispatchEvent(new Event("input", { bubbles: true }));
+			document
+				.querySelector<HTMLFormElement>(".name-dialog")!
+				.dispatchEvent(new Event("submit", { cancelable: true }));
+			await flush();
+			expect(ctx.renameLegacyRoutine).toHaveBeenCalledWith(
+				LEGACY_ID,
+				LEGACY_KEY,
+				"Ny plan for Brooks",
+				expect.any(AbortSignal),
+			);
+			expect(ctx.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"] strong`)?.textContent).toBe(
+				"Ny plan for Brooks",
+			);
+
+			rightClick(ctx.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			menuItem("Delete")!.click();
+			await flush();
+			const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+			expect(dialog.querySelector("p")?.textContent).toBe(
+				"Delete Ny plan for Brooks? It is removed for everyone in the company.",
+			);
+			[...dialog.querySelectorAll<HTMLButtonElement>("button")].find((btn) => btn.textContent === "Cancel")!.click();
+			await flush();
+			expect(ctx.deleteLegacyRoutine).not.toHaveBeenCalled();
+
+			rightClick(ctx.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			menuItem("Delete")!.click();
+			await flush();
+			const confirmDelete = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+				(btn) => btn.textContent === "Delete",
+			)!;
+			confirmDelete.click();
+			await flush();
+			expect(ctx.deleteLegacyRoutine).toHaveBeenCalledWith(LEGACY_ID, LEGACY_KEY, expect.any(AbortSignal));
+			expect(ctx.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)).toBeNull();
+		} finally {
+			ctx.dispose();
+		}
+	});
+
+	it("preserves ownership transfer above Rename/Copy ID/Delete, respects member roles, reports errors, and supports sheet Delete", async () => {
+		const multi = await setupRail({ teammates: true });
+		try {
+			rightClick(multi.container.querySelector(`[data-scheduled-agent="${PULSE_ID}"]`)!);
+			expect(menuLabels()).toEqual(["Hand to Anna", "Rename", "Copy ID", "Delete"]);
+			openMenu()?.close();
+			await flush();
+
+			multi.container
+				.querySelector<HTMLButtonElement>(`[data-scheduled-agent="${PULSE_ID}"] .rail-agent-hub-row`)!
+				.click();
+			await vi.waitFor(() => expect(document.querySelector(".surface-schedule-sheet")).not.toBeNull());
+			const sheetDelete = [...document.querySelectorAll<HTMLButtonElement>(".surface-schedule-sheet button")].find(
+				(btn) => btn.textContent === "Delete",
+			)!;
+			sheetDelete.click();
+			await flush();
+			expect(document.querySelector(".surface-schedule-sheet")).toBeNull();
+			expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+			[...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+				.find((btn) => btn.textContent === "Delete")!
+				.click();
+			await flush();
+			expect(multi.deleteAutomation).toHaveBeenCalledWith(PULSE_ID);
+		} finally {
+			multi.dispose();
+		}
+
+		const contributor = await setupRail({ role: "contributor" });
+		try {
+			rightClick(contributor.container.querySelector(`[data-scheduled-agent="${PULSE_ID}"]`)!);
+			expect(menuLabels()).toEqual(["Rename", "Copy ID", "Delete"]);
+			openMenu()?.close();
+			await flush();
+
+			rightClick(contributor.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			expect(menuLabels()).toEqual(["Copy ID"]);
+		} finally {
+			contributor.dispose();
+		}
+
+		const viewer = await setupRail({ role: "viewer" });
+		try {
+			rightClick(viewer.container.querySelector(`[data-scheduled-agent="${PULSE_ID}"]`)!);
+			expect(menuLabels()).toEqual(["Copy ID"]);
+		} finally {
+			viewer.dispose();
+		}
+
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+			configurable: true,
+		});
+		const failing = await setupRail({ failLegacyRename: true, failLegacyDelete: true });
+		try {
+			rightClick(failing.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			menuItem("Copy ID")!.click();
+			await flush();
+			expect(failing.company.store.get().railError).toBe("The ID could not be copied.");
+
+			rightClick(failing.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			menuItem("Rename")!.click();
+			await flush();
+			const input = document.querySelector<HTMLInputElement>(".name-dialog-input")!;
+			input.value = "Will Fail";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+			document
+				.querySelector<HTMLFormElement>(".name-dialog")!
+				.dispatchEvent(new Event("submit", { cancelable: true }));
+			await flush();
+			expect(failing.company.store.get().railError).toBe("Daglig plan for Brooks could not be renamed.");
+
+			rightClick(failing.container.querySelector(`[data-scheduled-agent="${LEGACY_ID}"]`)!);
+			menuItem("Delete")!.click();
+			await flush();
+			[...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+				.find((btn) => btn.textContent === "Delete")!
+				.click();
+			await flush();
+			expect(failing.company.store.get().railError).toBe("Daglig plan for Brooks could not be deleted.");
+		} finally {
+			failing.dispose();
+		}
+	});
+
+	it("opens Copy ID and Remove on working sessions and explorations in the Agents hub", async () => {
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+		const ctx = await setupRail({ withWorking: true });
+		try {
+			const sessionRow = ctx.container.querySelector<HTMLElement>(`[data-hub-session="${SESSION}"]`)!;
+			expect(rightClick(sessionRow).defaultPrevented).toBe(true);
+			expect(menuLabels()).toEqual(["Copy ID", "Remove"]);
+			menuItem("Copy ID")!.click();
+			await flush();
+			expect(writeText).toHaveBeenCalledWith(SESSION);
+
+			rightClick(sessionRow);
+			menuItem("Remove")!.click();
+			await flush();
+			expect(document.querySelector('[role="alertdialog"] p')?.textContent).toBe(
+				"Remove Hero refresh? The agent stops and its unapproved changes are dropped.",
+			);
+			[...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+				.find((btn) => btn.textContent === "Remove")!
+				.click();
+			await flush();
+			expect(ctx.discardSurfaceSession).toHaveBeenCalledWith(SESSION);
+
+			const explorationRow = ctx.container.querySelector<HTMLElement>(`[data-hub-exploration="${EXPLORATION_ID}"]`)!;
+			expect(rightClick(explorationRow).defaultPrevented).toBe(true);
+			expect(menuLabels()).toEqual(["Copy ID", "Remove"]);
+			menuItem("Copy ID")!.click();
+			await flush();
+			expect(writeText).toHaveBeenCalledWith(EXPLORATION_ID);
+
+			rightClick(explorationRow);
+			menuItem("Remove")!.click();
+			await flush();
+			expect(document.querySelector('[role="alertdialog"] p')?.textContent).toBe(
+				"Remove Pricing directions? Its unapproved changes are dropped.",
+			);
+			[...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+				.find((btn) => btn.textContent === "Remove")!
+				.click();
+			await flush();
+			expect(ctx.discardExploration).toHaveBeenCalledWith(EXPLORATION_ID);
+		} finally {
+			ctx.dispose();
+		}
+	});
+});
