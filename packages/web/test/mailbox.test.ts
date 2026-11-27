@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
-import { type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
+import { disposeMailbox, isMailDraftEmpty, type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import {
 	type WebRoutine,
@@ -15,6 +15,7 @@ import {
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { formatPresentationDate, h } from "../src/ui/dom.ts";
+import { MAIL_INIT, MAIL_OPEN, MAIL_READY, MAIL_RENDER } from "../src/ui/mail-frame.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
@@ -3996,5 +3997,277 @@ describe("Digital Post", () => {
 			expect(main.querySelector(".mailbox-blocked-sender")?.textContent).toBe("retry@blocked.example"),
 		);
 		expect(calls(fake, "qorpera_member_mail_blocked_senders")).toHaveLength(2);
+	});
+});
+
+function handshakeMailFrame(frame: HTMLIFrameElement): {
+	readonly init: Record<string, unknown>;
+	readonly port: MessagePort;
+	readonly messages: unknown[];
+} {
+	const post = vi.spyOn(frame.contentWindow!, "postMessage");
+	const event = new MessageEvent("message", { data: { type: MAIL_READY } });
+	Object.defineProperty(event, "source", { value: frame.contentWindow });
+	window.dispatchEvent(event);
+	expect(post).toHaveBeenCalledTimes(1);
+	const [init, , transfer] = (post.mock.calls as unknown[][])[0]!;
+	const port = (transfer as MessagePort[])[0]!;
+	const messages: unknown[] = [];
+	port.addEventListener("message", (msg) => messages.push(msg.data));
+	port.start();
+	return { init: init as Record<string, unknown>, port, messages };
+}
+
+describe("HTML email", () => {
+	it("renders an HTML-only received email in a sandboxed iframe and falls back when HTML has no content", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { subject: "[Qorpera] Secret exposed", messages: 2 })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						text: "Plain fallback body.",
+						html: "<style>.empty { color: red; }</style>   ",
+					}),
+					received(2, {
+						text: undefined,
+						html: '<!doctype html><html><body><h1>Secret detected</h1><p>Check <a href="https://gitguardian.example/i/1">incident</a></p></body></html>',
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		const messages = [...main.querySelectorAll<HTMLElement>(".mailbox-message")];
+		expect(messages).toHaveLength(2);
+
+		const htmlBody = messages[1]!.querySelector<HTMLElement>(".mailbox-html-body");
+		expect(htmlBody).not.toBeNull();
+		expect(htmlBody!.getAttribute("title")).toBe("From outside the company");
+		const frame = htmlBody!.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
+		expect(frame).not.toBeNull();
+		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+		const { init } = handshakeMailFrame(frame);
+		expect(init).toMatchObject({ type: MAIL_INIT });
+		expect(String(init.bodyHtml)).toContain("<h1>Secret detected</h1>");
+
+		messages[0]!.querySelector<HTMLButtonElement>(".mailbox-fold")!.click();
+		const openedFirst = main.querySelectorAll<HTMLElement>(".mailbox-message")[0]!;
+		expect(openedFirst.querySelector(".mailbox-html-body")).toBeNull();
+		expect(openedFirst.querySelector(".mailbox-text-body")?.textContent).toBe("Plain fallback body.");
+	});
+
+	it("hides remote images until Show images is clicked in place without reloading the iframe", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						text: undefined,
+						html: '<div><p>Newsletter</p><img src="https://cdn.example/banner.png" alt="Banner"></div>',
+						htmlTruncated: true,
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		expect(main.querySelector(".mailbox-note")?.textContent).toBe("This email is longer; only its start is shown.");
+		expect(main.querySelector(".mailbox-html-bar")?.textContent).toContain("Images from outside are hidden.");
+		const frameBefore = main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
+		const { init, messages } = handshakeMailFrame(frameBefore);
+		expect(String(init.bodyHtml)).not.toContain("https://cdn.example/banner.png");
+
+		button(main, "Show images")!.click();
+		expect(main.querySelector(".mailbox-html-bar")).toBeNull();
+		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frameBefore);
+		await vi.waitFor(() => expect(messages).toHaveLength(1));
+		expect(messages[0]).toMatchObject({ type: MAIL_RENDER });
+		expect(String((messages[0] as Record<string, unknown>).bodyHtml)).toContain("https://cdn.example/banner.png");
+	});
+
+	it("opens clicked links in a new tab, shows Open link when popup is blocked, and prefills Write for mailto", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1)];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						text: undefined,
+						html: '<p><a href="https://gitguardian.example/inc/7">View</a></p>',
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		const frame = main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
+		const { port } = handshakeMailFrame(frame);
+
+		const fakeTab = { opener: window as unknown };
+		const openSpy = vi.spyOn(window, "open").mockReturnValueOnce(fakeTab as unknown as Window);
+		port.postMessage({ type: MAIL_OPEN, href: "https://gitguardian.example/inc/7" });
+		await vi.waitFor(() => expect(openSpy).toHaveBeenCalledWith("https://gitguardian.example/inc/7", "_blank"));
+		expect(fakeTab.opener).toBeNull();
+		expect(main.querySelector(".mailbox-html-bar")).toBeNull();
+
+		openSpy.mockReturnValueOnce(null);
+		port.postMessage({ type: MAIL_OPEN, href: "https://gitguardian.example/inc/8" });
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-html-bar a")?.textContent).toBe("Open link"));
+		const fallbackLink = main.querySelector<HTMLAnchorElement>(".mailbox-html-bar a")!;
+		expect(fallbackLink.getAttribute("href")).toBe("https://gitguardian.example/inc/8");
+		expect(fallbackLink.getAttribute("target")).toBe("_blank");
+		expect(fallbackLink.getAttribute("rel")).toBe("noopener noreferrer");
+		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frame);
+
+		port.postMessage({ type: MAIL_OPEN, href: "mailto:security@outside.example?subject=Report&body=Details" });
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-write-panel")).not.toBeNull());
+		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frame);
+		expect(texts(main.querySelector(".mailbox-write-panel")!, ".mailbox-chip-text")).toEqual([
+			"security@outside.example",
+		]);
+		expect(main.querySelector<HTMLInputElement>("[data-focus-key='write-subject']")?.value).toBe("Report");
+		expect(main.querySelector<HTMLTextAreaElement>("[data-focus-key='write-text']")?.value).toBe("Details");
+
+		port.postMessage({ type: MAIL_OPEN, href: "mailto:other@outside.example?subject=Overwrite&body=Lost" });
+		await vi.waitFor(() =>
+			expect(main.querySelector<HTMLAnchorElement>(".mailbox-html-bar a")?.getAttribute("href")).toBe(
+				"mailto:other@outside.example?subject=Overwrite&body=Lost",
+			),
+		);
+		expect(texts(main.querySelector(".mailbox-write-panel")!, ".mailbox-chip-text")).toEqual([
+			"security@outside.example",
+		]);
+		expect(main.querySelector<HTMLInputElement>("[data-focus-key='write-subject']")?.value).toBe("Report");
+		expect(main.querySelector<HTMLTextAreaElement>("[data-focus-key='write-text']")?.value).toBe("Details");
+
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: [], typed: "" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(true);
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: ["cc@outside.example"], typed: "" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(false);
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: [], typed: "cc@outside.example" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(false);
+	});
+
+	it("keeps mounted HTML iframes in place without reloading when toggling other messages or opening Reply", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [summary(1, { messages: 2 })];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, { text: "Older plain message." }),
+					received(2, { text: undefined, html: "<p>Newest HTML body.</p>" }),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		const frame = main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
+		const post = vi.spyOn(frame.contentWindow!, "postMessage");
+		const ready = new MessageEvent("message", { data: { type: MAIL_READY } });
+		Object.defineProperty(ready, "source", { value: frame.contentWindow });
+		window.dispatchEvent(ready);
+		expect(post).toHaveBeenCalledTimes(1);
+
+		const removeSpy = vi.spyOn(Node.prototype, "removeChild");
+		main.querySelector<HTMLButtonElement>(".mailbox-fold")!.click();
+		expect(main.querySelectorAll(".mailbox-message")[0]!.querySelector(".mailbox-text-body")?.textContent).toBe(
+			"Older plain message.",
+		);
+		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frame);
+		expect(removeSpy.mock.calls.some((call) => call[0] === frame || (call[0] as Node).contains?.(frame))).toBe(false);
+
+		button(main, "Reply")!.click();
+		expect(main.querySelector(".mailbox-reply-box")).not.toBeNull();
+		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frame);
+		expect(removeSpy.mock.calls.some((call) => call[0] === frame || (call[0] as Node).contains?.(frame))).toBe(false);
+	});
+
+	it("extracts folded snippet and forwarded text from HTML-only messages, hides account HTML, and disposes on leave", async () => {
+		const { main } = await mailbox((mail) => {
+			mail.threads = [
+				summary(1, { messages: 2 }),
+				summary(2, { subject: undefined, account: { site: "wolt.example" }, state: "handled" }),
+			];
+			mail.reads[thread(1)] = {
+				thread: thread(1),
+				address: ADDRESS.address,
+				messages: [
+					received(1, {
+						text: undefined,
+						html: "<style>.x{}</style><p>Earlier <strong>HTML</strong> notice.</p>",
+					}),
+					received(2, {
+						text: undefined,
+						html: "<div><h1>Alert</h1><p>Rotate your key immediately.</p></div>",
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+			mail.reads[thread(2)] = {
+				thread: thread(2),
+				address: ADDRESS.address,
+				messages: [
+					received(3, {
+						subject: undefined,
+						text: undefined,
+						html: "<p>Secret OTP 123456</p>",
+						account: { site: "wolt.example", lastUsedBy: ada.id, lastUsedAt: at(5) },
+					}),
+				],
+				more: false,
+				waiting: [],
+			};
+		});
+		await openFirst(main);
+		const first = main.querySelector<HTMLElement>(".mailbox-message")!;
+		expect(first.classList.contains("is-folded")).toBe(true);
+		expect(first.querySelector(".mailbox-snippet")?.textContent).toBe("Earlier HTML notice.");
+
+		const frame = main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
+		button(main, "Forward")!.click();
+		const textarea = reply(main).querySelector("textarea")!;
+		expect(textarea.value).toContain("Alert");
+		expect(textarea.value).toContain("Rotate your key immediately.");
+
+		const post = vi.spyOn(frame.contentWindow!, "postMessage");
+		button(main, "Back to Inbox")!.click();
+		const lateReady = new MessageEvent("message", { data: { type: MAIL_READY } });
+		Object.defineProperty(lateReady, "source", { value: frame.contentWindow });
+		window.dispatchEvent(lateReady);
+		expect(post).not.toHaveBeenCalled();
+
+		lines(main)[1]!.querySelector<HTMLButtonElement>(".mailbox-open")!.click();
+		await vi.waitFor(() => expect(main.querySelector(".mailbox-message.is-account")).not.toBeNull());
+		expect(main.querySelector(".mailbox-html-body")).toBeNull();
+		disposeMailbox(main);
 	});
 });

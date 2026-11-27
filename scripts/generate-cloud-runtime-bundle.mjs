@@ -8,25 +8,20 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929029199_runtime_bundle_activation_v291.sql";
-const activationVersion = 291;
-const previousActivationVersion = 290;
-const previousActivationSha256 = "f44cc2244854597a8d8e56c56b2270ceb81a71f3ec62813c689f9338743593af";
+const activation = "supabase/migrations/20260929029399_runtime_bundle_activation_v293.sql";
+const activationVersion = 293;
+const previousActivationVersion = 292;
+const previousActivationSha256 = "9c1525f5e2ba5f1d751e7703ab397235e50f95b6caba358242f6e95b9379d74e";
 const activationRequires = Object.freeze([
 	[
-		"20260930921000_quiet_approvals_and_file_ops",
-		"#2456 (single-door agent UX: quiet approvals & file ops): bundle 291 pairs with 20260930921000 in qorpera_folder_commit",
-		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)')), ''), '20260930921000') > 0",
+		"20260930926000_company_mail_bare_handle",
+		"#2467 (bare-handle company email addresses): bundle 293 pairs with the bare-handle branch of qorpera_mail_admit_local_part",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_mail_admit_local_part(uuid,text,uuid)')), ''), 'v_box := null;') > 0",
 	],
 	[
-		"20260930922000_surface_pull_only_and_cofounder_escalation",
-		"#2456 (single-door agent UX: pull-only Surfaces & Co-Founder escalation): bundle 291 pairs with qorpera_native_surface_steer_session",
-		"to_regprocedure('public.qorpera_native_surface_steer_session(uuid,uuid,text,text,uuid)') is not null",
-	],
-	[
-		"20260930923000_silence_operational_notices_and_worker_failures",
-		"#2456 (single-door agent UX: silent operational notices & worker failures): bundle 291 pairs with 20260930923000 in qorpera_list_staff_execution_activity",
-		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_list_staff_execution_activity(uuid)')), ''), '20260930923000') > 0",
+		"20260930927000_google_mailboxes",
+		"#2472 (Google mail in the Mailbox): bundle 293 pairs with qorpera_google_mailboxes",
+		"to_regclass('public.qorpera_google_mailboxes') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires

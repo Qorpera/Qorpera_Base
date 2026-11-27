@@ -45,18 +45,23 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 		const surface = currentSurface();
 		if (awaitingAsyncPublish) {
 			if (
-				surface.publishStatus === "idle" ||
-				(surface.publishStatus === undefined && !surface.hasUnpublishedChanges)
+				(surface.publishStatus === "idle" || surface.publishStatus === undefined) &&
+				!surface.hasUnpublishedChanges &&
+				surface.unpublishedChangeCount === 0
 			) {
 				awaitingAsyncPublish = false;
 				dialog.close();
 				return;
 			}
-			if (surface.publishStatus === "failed") awaitingAsyncPublish = false;
+			if (surface.publishStatus === "idle" || surface.publishStatus === "failed") {
+				awaitingAsyncPublish = false;
+			}
 		}
 		const look = store.lookOf(surface);
 		const entries = unpublishedChanges(state, surfaceId);
 		const total = Math.max(entries.length, surface.unpublishedChangeCount);
+		const hasUnpublished = total > 0 || surface.hasUnpublishedChanges;
+		const merging = store.isSurfaceMerging(surfaceId);
 		const host = hostOf(surface.liveUrl?.trim() || null);
 
 		const me = store.userId;
@@ -78,6 +83,8 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 		const renderKey = JSON.stringify([
 			surface.title,
 			surface.unpublishedChangeCount,
+			surface.hasUnpublishedChanges,
+			merging,
 			surface.publishStatus ?? "",
 			publishError,
 			beingFixed,
@@ -115,7 +122,8 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 								change.approvedByUserId && change.approvedByUserId !== me
 									? store.memberName(change.approvedByUserId)
 									: undefined;
-							const busy = rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing;
+							const busy =
+								rollingBack.has(change.id) || Boolean(state.busy[`undo:${change.id}`]) || publishing || merging;
 							const together =
 								change.kind === "folder_patch" || change.kind === "git_range" ? (change.undoBatchSize ?? 1) : 1;
 							return h(
@@ -163,6 +171,7 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 				: null;
 
 		const publishInProgress = publishing || surface.publishStatus === "publishing";
+		const publishDisabled = publishInProgress || merging;
 		const askLine = (userId: string, text: string, ...actions: HTMLElement[]) =>
 			h(
 				"div",
@@ -219,8 +228,8 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 			!askedMe &&
 			ask?.status !== "open" &&
 			!surface.autoPublish &&
-			total > 0 &&
-			!publishInProgress &&
+			hasUnpublished &&
+			!publishDisabled &&
 			teammates.length > 0;
 		const only = teammates.length === 1 ? teammates[0]! : null;
 		const askBtn = canAsk
@@ -278,16 +287,16 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 				)
 			: null;
 		const lastBtn =
-			total > 0 || publishInProgress
+			hasUnpublished || publishDisabled
 				? h(
 						"button",
 						{
 							type: "button",
 							class: "btn btn-primary",
-							disabled: publishInProgress,
+							disabled: publishDisabled,
 							"data-act": "confirm-publish",
 						},
-						publishInProgress ? t("Publishing…") : t("Publish"),
+						publishInProgress ? t("Publishing…") : merging ? t("Merging…") : t("Publish"),
 					)
 				: h("button", { type: "button", class: "btn btn-primary", "data-act": "cancel" }, t("Done"));
 
@@ -306,13 +315,18 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 							? t("Publish 1 change?")
 							: total > 1
 								? t("Publish {count} changes?", { count: total })
-								: t("Nothing to publish"),
+								: hasUnpublished
+									? t("Publish changes?")
+									: t("Nothing to publish"),
 					),
 					h("p", null, host ? `${surface.title} · ${host}` : surface.title),
 				),
 			),
 			...(publishError ? [h("p", { class: "surface-sheet-error", role: "alert" }, publishError)] : []),
 			...(beingFixed ? [h("p", { class: "surface-sheet-lead", role: "status" }, t("Being fixed"))] : []),
+			...(merging && !publishInProgress
+				? [h("p", { class: "surface-sheet-lead", role: "status" }, t("Waiting for changes to finish merging…"))]
+				: []),
 			...(list ? [list] : []),
 			...(askNote ? [askNote] : []),
 			...(picker ? [picker] : []),
@@ -373,7 +387,7 @@ export function openPublishSheet(store: SurfacesStore, initialSurface: SurfaceSu
 			return;
 		}
 		if (act === "confirm-publish") {
-			if (publishing) return;
+			if (publishing || store.isSurfaceMerging(surfaceId)) return;
 			publishing = true;
 			status.textContent = "";
 			render();

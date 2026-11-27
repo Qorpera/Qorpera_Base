@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-bwHpGhgbig0e9he45LXM/65QkHLqrd0Jtyx/sCvCxxU='; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email</title>
+<style data-qorpera-base>
+html { color-scheme: light; }
+body {
+	margin: 0;
+	padding: 0;
+	background: #ffffff;
+	color: #161615;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+	font-size: 15px;
+	line-height: 1.55;
+	overflow-wrap: break-word;
+}
+a { color: #1a56db; }
+img { max-width: 100%; }
+pre { overflow-x: auto; }
+blockquote {
+	margin: 8px 0;
+	padding-left: 12px;
+	border-left: 3px solid #d4d4d8;
+	color: #52525b;
+}
+[data-qorpera-mail-root] {
+	display: flow-root;
+	min-height: 1px;
+}
+img[data-qorpera-hidden-img="alt"] {
+	display: inline-block;
+	max-width: 100%;
+	padding: 2px 6px;
+	border: 1px dashed #d4d4d8;
+	border-radius: 4px;
+	color: #71717a;
+	font-size: 12px;
+	line-height: 1.4;
+}
+</style>
+<style data-qorpera-guard>
+html, body {
+	height: auto !important;
+	min-height: 0 !important;
+	max-height: none !important;
+	overflow-x: auto !important;
+	overflow-y: hidden !important;
+	position: static !important;
+}
+[data-qorpera-mail-root] {
+	display: flow-root !important;
+	height: auto !important;
+	max-height: none !important;
+	overflow: visible !important;
+	position: static !important;
+}
+img[data-qorpera-hidden-img="empty"],
+img[data-qorpera-broken="1"]:not([alt]),
+img[data-qorpera-broken="1"][alt=""] {
+	display: none !important;
+}
+</style>
+</head>
+<body>
+<script>
+"use strict";
+(() => {
+	if (window.parent === window) return;
+	const app = window.parent;
+	const apply = Reflect.apply;
+	const define = (target, name, value) =>
+		Object.defineProperty(target, name, { value, writable: false, configurable: false });
+	for (const name of Object.getOwnPropertyNames(window))
+		if (/^(?:webkit|moz)?RTC/.test(name)) define(window, name, undefined);
+	for (const name of ["Worker", "SharedWorker", "documentPictureInPicture"])
+		if (name in window) define(window, name, undefined);
+	for (const [target, name] of [
+		[Element.prototype, "setHTMLUnsafe"],
+		[ShadowRoot.prototype, "setHTMLUnsafe"],
+		[Element.prototype, "setHTML"],
+		[ShadowRoot.prototype, "setHTML"],
+		[Document, "parseHTMLUnsafe"],
+		[Document, "parseHTML"],
+	])
+		if (name in target) define(target, name, undefined);
+	define(Document.prototype, "write", function writeRefused() {});
+	define(Document.prototype, "writeln", function writelnRefused() {});
+	define(Document.prototype, "open", function openRefused() {
+		return this;
+	});
+	define(Document.prototype, "close", function closeRefused() {});
+
+	const send = MessagePort.prototype.postMessage;
+	const startPort = MessagePort.prototype.start;
+	const listen = EventTarget.prototype.addEventListener;
+	const unlisten = EventTarget.prototype.removeEventListener;
+	const dataOf = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data").get;
+	const FORBIDDEN =
+		"script, style, noscript, iframe, frame, frameset, object, embed, applet, portal, fencedframe, base, meta, link, template, foreignobject, animate, animatemotion, animatetransform, set, feimage";
+	const guard = document.querySelector("style[data-qorpera-guard]");
+	const root = document.createElement("div");
+	root.setAttribute("data-qorpera-mail-root", "");
+	document.body.insertBefore(root, document.body.firstChild);
+
+	let port = null;
+	let lastHeight = -1;
+	let raf = 0;
+
+	const post = (message) => {
+		if (!port) return;
+		try {
+			apply(send, port, [message]);
+		} catch {}
+	};
+
+	const measure = () => {
+		raf = 0;
+		const box = root.getBoundingClientRect().height;
+		const content = Math.max(root.scrollHeight, box, document.body.scrollHeight);
+		const scrollbar = document.body.scrollWidth > document.body.clientWidth + 1 ? 16 : 0;
+		const height = Math.max(0, Math.min(50000, Math.ceil(content + scrollbar)));
+		if (height !== lastHeight) {
+			lastHeight = height;
+			post({ type: "qorpera-mail-height", height });
+		}
+	};
+
+	const scheduleMeasure = () => {
+		if (!raf) raf = requestAnimationFrame(measure);
+	};
+
+	if (typeof ResizeObserver === "function") {
+		const observer = new ResizeObserver(scheduleMeasure);
+		observer.observe(root);
+		observer.observe(document.body);
+	}
+
+	const render = (payload) => {
+		if (!payload || typeof payload !== "object") return;
+		for (const old of document.head.querySelectorAll("style[data-qorpera-email-style]")) old.remove();
+		if (Array.isArray(payload.styles)) {
+			for (const css of payload.styles) {
+				if (typeof css !== "string" || !css) continue;
+				const style = document.createElement("style");
+				style.setAttribute("data-qorpera-email-style", "");
+				style.textContent = css;
+				document.head.insertBefore(style, guard);
+			}
+		}
+		root.removeAttribute("dir");
+		root.style.cssText = "";
+		if (typeof payload.bodyStyle === "string" && payload.bodyStyle) root.style.cssText = payload.bodyStyle;
+		if (typeof payload.bodyBg === "string" && payload.bodyBg && !root.style.backgroundColor)
+			root.style.backgroundColor = payload.bodyBg;
+		if (payload.bodyDir === "ltr" || payload.bodyDir === "rtl" || payload.bodyDir === "auto")
+			root.setAttribute("dir", payload.bodyDir);
+		const html = typeof payload.bodyHtml === "string" ? payload.bodyHtml : "";
+		const parsed = new DOMParser().parseFromString(`<!doctype html><body>${html}</body>`, "text/html");
+		for (const bad of parsed.body.querySelectorAll(FORBIDDEN)) bad.remove();
+		for (const el of parsed.body.querySelectorAll("*")) {
+			for (const attr of Array.from(el.attributes)) {
+				if (attr.name.toLowerCase().startsWith("on")) el.removeAttribute(attr.name);
+			}
+		}
+		const fragment = document.createDocumentFragment();
+		while (parsed.body.firstChild) fragment.appendChild(document.adoptNode(parsed.body.firstChild));
+		root.replaceChildren(fragment);
+		for (const img of root.querySelectorAll("img")) {
+			if (!img.hasAttribute("src")) continue;
+			apply(listen, img, ["load", scheduleMeasure, { once: true }]);
+			apply(listen, img, [
+				"error",
+				() => {
+					img.setAttribute("data-qorpera-broken", "1");
+					scheduleMeasure();
+				},
+				{ once: true },
+			]);
+		}
+		lastHeight = -1;
+		measure();
+		scheduleMeasure();
+	};
+
+	apply(listen, document, [
+		"click",
+		(event) => {
+			let link = null;
+			const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+			for (let index = 0; index < path.length; index++) {
+				const node = path[index];
+				if (node && node.nodeType === 1 && (node.localName === "a" || node.localName === "area") && node.hasAttribute("href")) {
+					link = node;
+					break;
+				}
+			}
+			if (!link) return;
+			event.preventDefault();
+			if (event.isTrusted !== true) return;
+			const href = (link.getAttribute("href") || "").trim();
+			if (!href || href.length > 4096) return;
+			if (href.startsWith("#")) {
+				let targetId = href.slice(1);
+				try {
+					targetId = decodeURIComponent(targetId);
+				} catch {}
+				if (!targetId) return;
+				for (const candidate of root.querySelectorAll("[id], [name]")) {
+					if (candidate.getAttribute("id") === targetId || candidate.getAttribute("name") === targetId) {
+						candidate.scrollIntoView();
+						return;
+					}
+				}
+				return;
+			}
+			if (/^(?:https?:|mailto:)/i.test(href)) post({ type: "qorpera-mail-open", href });
+		},
+		true,
+	]);
+
+	apply(listen, window, [
+		"keydown",
+		(event) => {
+			if (event.key === "Escape" && !event.isComposing) post({ type: "qorpera-mail-escape" });
+		},
+	]);
+
+	const init = (event) => {
+		const data = apply(dataOf, event, []);
+		if (event.source !== app || !data || data.type !== "qorpera-mail") return;
+		if (!event.ports || event.ports.length !== 1) return;
+		apply(unlisten, window, ["message", init]);
+		port = event.ports[0];
+		apply(listen, port, [
+			"message",
+			(msg) => {
+				const body = apply(dataOf, msg, []);
+				if (!body || typeof body !== "object") return;
+				if (body.type === "qorpera-mail-render") render(body);
+			},
+		]);
+		apply(startPort, port, []);
+		render(data);
+	};
+	apply(listen, window, ["message", init]);
+	app.postMessage({ type: "qorpera-mail-ready" }, "*");
+})();
+</script>
+</body>
+</html>

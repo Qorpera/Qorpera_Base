@@ -1693,25 +1693,36 @@ describe("the surface page", () => {
 			changes: [change(CHANGES[0], 1, "merging")],
 		}));
 		let currentPublishStatus: "idle" | "publishing" | "failed" = "failed";
+		let currentHasUnpublished = true;
+		let currentUnpublishedCount = 1;
+		let currentChangeStatus: "staged" | "merging" | "merged" = "staged";
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [
 				summary({
 					publishStatus: currentPublishStatus,
 					lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
-					hasUnpublishedChanges: true,
-					unpublishedChangeCount: 1,
+					hasUnpublishedChanges: currentHasUnpublished,
+					unpublishedChangeCount: currentUnpublishedCount,
 				}),
 			]),
 			getSurfaceWorkspace: vi.fn(async () =>
-				workspace([readySession, failedSession], {
-					surface: summary({
-						publishStatus: currentPublishStatus,
-						lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
-						hasUnpublishedChanges: true,
-						unpublishedChangeCount: 1,
-					}),
-					recentHistory: [session(["merged"], { state: "completed" })],
-				}),
+				workspace(
+					[
+						currentChangeStatus === "merged"
+							? { ...readySession, state: "completed", changes: [change(CHANGES[0], 1, "merged")] }
+							: { ...readySession, changes: [change(CHANGES[0], 1, currentChangeStatus)] },
+						failedSession,
+					],
+					{
+						surface: summary({
+							publishStatus: currentPublishStatus,
+							lastPublishError: currentPublishStatus === "failed" ? "Missing index.html" : null,
+							hasUnpublishedChanges: currentHasUnpublished,
+							unpublishedChangeCount: currentUnpublishedCount,
+						}),
+						recentHistory: [session(["merged"], { state: "completed" })],
+					},
+				),
 			),
 			replySurfaceSession,
 			approveSurfaceChange,
@@ -1738,12 +1749,14 @@ describe("the surface page", () => {
 		await flush();
 		expect(replySurfaceSession).toHaveBeenCalledWith(failedSession.id, expect.any(String));
 
+		currentChangeStatus = "merging";
 		await store.approveChange(readySession.id, CHANGES[0]);
 		view.update();
 		const pendingToast = view.el.querySelector(".surface-toast.is-pending");
 		expect(pendingToast).not.toBeNull();
 		expect(pendingToast?.textContent).toContain("Merging");
 		expect(pendingToast?.querySelector('[data-act="undo"]')).toBeNull();
+		expect(view.el.querySelector<HTMLButtonElement>(".surface-publish-main")?.disabled).toBe(true);
 
 		HTMLDialogElement.prototype.showModal = function () {
 			this.open = true;
@@ -1754,6 +1767,14 @@ describe("the surface page", () => {
 		};
 		const sheet = openPublishSheet(store, store.state.surfaces[0]!);
 		expect(sheet.el.querySelector(".surface-sheet-error")?.textContent).toBe("Missing index.html");
+		expect(sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')?.disabled).toBe(true);
+		expect(sheet.el.querySelector('[data-act="confirm-publish"]')?.textContent).toBe("Merging…");
+
+		currentChangeStatus = "merged";
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		expect(view.el.querySelector<HTMLButtonElement>(".surface-publish-main")?.disabled).toBe(false);
+		expect(sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')?.disabled).toBe(false);
 		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
 		await flush();
 		expect(sheet.el.open).toBe(true);
@@ -1761,7 +1782,26 @@ describe("the surface page", () => {
 
 		currentPublishStatus = "idle";
 		await store.refreshWorkspace(SURFACE);
+		expect(sheet.el.open).toBe(true);
+
+		sheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')!.click();
+		await flush();
+		expect(sheet.el.open).toBe(true);
+		currentPublishStatus = "idle";
+		currentHasUnpublished = false;
+		currentUnpublishedCount = 0;
+		await store.refreshWorkspace(SURFACE);
 		expect(sheet.el.open).toBe(false);
+
+		currentHasUnpublished = true;
+		currentUnpublishedCount = 0;
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		expect(view.el.querySelector(".surface-publish-main")).not.toBeNull();
+		const driftedSheet = openPublishSheet(store, store.state.surfaces[0]!);
+		expect(driftedSheet.el.querySelector(".surface-publish-heading h2")?.textContent).toBe("Publish changes?");
+		expect(driftedSheet.el.querySelector<HTMLButtonElement>('[data-act="confirm-publish"]')?.disabled).toBe(false);
+		driftedSheet.close();
 
 		view.dispose();
 		store.dispose();

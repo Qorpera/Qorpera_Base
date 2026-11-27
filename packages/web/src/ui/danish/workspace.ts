@@ -164,6 +164,9 @@ export const WORKSPACE: Record<string, string> = {
 	"Automated email": "Automatisk e-mail",
 	"This email is longer; only its start is shown.": "Denne e-mail er længere; kun starten vises.",
 	"This email's text is no longer kept.": "Denne e-mails tekst gemmes ikke længere.",
+	"Images from outside are hidden.": "Billeder udefra er skjult.",
+	"Show images": "Vis billeder",
+	"Open link": "Åbn link",
 	"This send waits for someone who can answer it.": "Denne afsendelse venter på en, der kan svare på den.",
 	"This answer needs your model account. Answer it in {name}'s thread, where you can choose one.":
 		"Dette svar kræver din modelkonto. Svar i tråden med {name}, hvor du kan vælge en.",

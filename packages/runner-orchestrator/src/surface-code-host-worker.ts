@@ -2069,10 +2069,10 @@ export class SurfaceCodeHostWorker {
 		}
 
 		const explicitHeadSha =
-			typeof pub.payload.liveHeadSha === "string"
-				? pub.payload.liveHeadSha
-				: typeof pub.liveHeadSha === "string"
-					? pub.liveHeadSha
+			typeof pub.liveHeadSha === "string"
+				? pub.liveHeadSha
+				: typeof pub.payload.liveHeadSha === "string"
+					? pub.payload.liveHeadSha
 					: null;
 
 		type PreparedPublish =
