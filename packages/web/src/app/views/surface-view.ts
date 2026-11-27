@@ -55,6 +55,8 @@ import { SurfaceStudioView } from "./surface-studio-view.ts";
 export interface SurfaceMount {
 	readonly el: HTMLElement;
 	update(): void;
+	park?(): void;
+	activate?(): void;
 	deactivate?(): void;
 	dispose(): void;
 }
@@ -351,6 +353,7 @@ export class SurfaceView {
 	#plusShuts = false;
 	#target: PointToChangeTarget | undefined;
 	#mount: SurfaceMount | undefined;
+	#mountParked = false;
 	#attachedReport: SurfaceReportView | undefined;
 	#localHost: HTMLElement | undefined;
 	#localFrame: HTMLIFrameElement | undefined;
@@ -618,7 +621,8 @@ export class SurfaceView {
 		window.addEventListener(
 			"message",
 			(event: MessageEvent) => {
-				if (!this.#localFrame || event.source !== this.#localFrame.contentWindow) return;
+				const localWindow = this.#localFrame?.contentWindow ?? null;
+				if (localWindow === null || event.source !== localWindow) return;
 				const data = event.data as { type?: unknown; target?: unknown } | null;
 				if (!data || data.type !== SURFACE_INSPECTOR_PICK_MESSAGE) return;
 				const picked = parsePointToChangeTarget(data.target);
@@ -668,6 +672,7 @@ export class SurfaceView {
 		if (!this.#mount) return;
 		this.#mount.dispose();
 		this.#mount = undefined;
+		this.#mountParked = false;
 		this.#mountedFor = "";
 		this.#mountSlot.replaceChildren();
 	}
@@ -792,7 +797,7 @@ export class SurfaceView {
 		if (!this.#input.disabled) this.#input.focus({ preventScroll: true });
 	}
 
-	// WHY: Park a warm SurfaceView in the LRU without tearing down its DOM/iframe mount, detaching global listeners while inactive.
+	// WHY: Keep a warm SurfaceView shell in the LRU while clearing live door/local iframes and global listeners that detach destroys.
 	park(): void {
 		if (this.#deactivated || this.#disposed || this.#parked) return;
 		this.#parked = true;
@@ -806,6 +811,20 @@ export class SurfaceView {
 		this.#viewportResizeObserver = undefined;
 		this.#notchResizeObserver?.disconnect();
 		this.#notchResizeObserver = undefined;
+		this.#primaryDoor.clear();
+		for (const entry of this.#compareDoors.values()) entry.stage.clear();
+		if (this.#localFrame && this.#localHost) {
+			this.#localHost.replaceChildren();
+			this.#localFrame = undefined;
+			this.#localCover = undefined;
+			this.#localHost.classList.remove("is-opening", "is-shown");
+		}
+		this.#localSiteShown = "";
+		this.#framesShown = "";
+		if (this.#mount?.park) {
+			this.#mount.park();
+			this.#mountParked = true;
+		}
 		this.#active.abort();
 		const ownSurfaceId = this.#lastSurfaceId || this.surface?.id;
 		if (ownSurfaceId) {
@@ -834,6 +853,7 @@ export class SurfaceView {
 		if (this.#deactivated) return;
 		this.#deactivated = true;
 		this.#parked = false;
+		this.#mountParked = false;
 		this.#cancelReady?.();
 		this.#cancelReady = undefined;
 		this.#address.close();
@@ -1725,6 +1745,7 @@ export class SurfaceView {
 		const key = `${surface.id}:${surface.siteSlug ?? ""}:${surface.archetype}:${look.kind}`;
 		if (key !== this.#mountedFor) {
 			this.#mount?.dispose();
+			this.#mountParked = false;
 			this.#clearLocalLoadTimer();
 			this.#localHost = undefined;
 			this.#localFrame = undefined;
@@ -1777,6 +1798,9 @@ export class SurfaceView {
 						),
 				);
 			}
+		} else if (this.#mount && this.#mountParked) {
+			this.#mountParked = false;
+			this.#mount.activate?.();
 		}
 		this.#mount?.update();
 	}

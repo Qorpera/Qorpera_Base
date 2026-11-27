@@ -242,4 +242,26 @@ describe("connector client", () => {
 		);
 		expect(fetch).not.toHaveBeenCalled();
 	});
+
+	it("carries a structured start failure reason from the broker when present", async () => {
+		const cloud = cloudWith(() => ticket);
+		const bank = { name: "Nordea", country: "DK", psuType: "business" as const };
+		const inactiveFetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json(
+				{ schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "bank_service_inactive" },
+				{ status: 403 },
+			),
+		);
+		await expect(
+			createWebConnectors(cloud, profile, inactiveFetch).beginSignIn("bank", undefined, undefined, bank),
+		).rejects.toMatchObject({ reason: "bank_service_inactive" });
+		const opaqueFetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, { status: 403 }),
+		);
+		const error = await createWebConnectors(cloud, profile, opaqueFetch)
+			.beginSignIn("bank", undefined, undefined, bank)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
+		expect((error as { reason?: unknown }).reason).toBeUndefined();
+	});
 });

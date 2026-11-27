@@ -106,6 +106,13 @@ export class EnableBankingSessionEnded extends Error {
 	}
 }
 
+export class EnableBankingApplicationInactive extends ConnectorRequestError {
+	constructor() {
+		super("forbidden", "Enable Banking: Application is not active");
+		this.name = "EnableBankingApplicationInactive";
+	}
+}
+
 /** RS256 JWT for the application, valid `TOKEN_SECONDS` from `now`. */
 export function enableBankingToken(app: EnableBankingApp, key: KeyObject, now: Date): string {
 	const issued = Math.floor(now.getTime() / 1000);
@@ -182,6 +189,11 @@ export class EnableBankingClient {
 			// A body that isn't JSON says nothing more than its status.
 		}
 		if (SESSION_ENDED.has(code)) throw new EnableBankingSessionEnded(code);
+		if (
+			response.status === 403 &&
+			(code === "APPLICATION_NOT_ACTIVE" || code === "APP_NOT_ACTIVE" || /application is not active/i.test(message))
+		)
+			throw new EnableBankingApplicationInactive();
 		const detail = `Enable Banking: ${message || code || `answered ${response.status}`}`;
 		if (response.status === 429 || code === "ASPSP_RATE_LIMIT_EXCEEDED")
 			throw new ConnectorRequestError("rate_limited", detail);
