@@ -39,8 +39,10 @@ import {
 import {
 	BANK_CONNECTOR_ID,
 	type CloudBankChoice,
+	CloudBankStartError,
 	CloudConnectorOAuthError,
 	type CloudConnectorOAuthFlows,
+	type CloudConnectorOAuthStarted,
 	connectorReturnLocation,
 } from "./cloud-connector-oauth.ts";
 import {
@@ -1195,13 +1197,32 @@ export class HttpCloudSecretBrokerService {
 					if ((summary.connectorId === BANK_CONNECTOR_ID) !== (start.bank !== undefined))
 						throw new Error("Connector authorization start is invalid");
 					const bank = start.bank;
-					const started = bank
-						? await withAbortScopes(
+					let started: CloudConnectorOAuthStarted;
+					if (bank) {
+						try {
+							started = await withAbortScopes(
 								[],
 								(signal) => oauth.beginBank({ ...begin, bank, ticketExpiresAt: summary.expiresAt }, signal),
 								20_000,
-							)
-						: oauth.begin(begin);
+							);
+						} catch (error) {
+							if (error instanceof CloudBankStartError) {
+								console.error(
+									`Bank sign-in start failed (reason: ${error.reason}${error.providerReason ? `, provider: ${error.providerReason}` : ""}).`,
+								);
+								response(
+									reply,
+									403,
+									{ schema: "qorpera.cloud-connector-oauth-failed/v1", reason: error.reason },
+									cors,
+								);
+								return;
+							}
+							throw error;
+						}
+					} else {
+						started = oauth.begin(begin);
+					}
 					response(
 						reply,
 						200,
