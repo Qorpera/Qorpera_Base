@@ -30,6 +30,11 @@ export function shownKey(container: HTMLElement, key: string): void {
 	if (shown && container.firstElementChild === shown.element) shown.key = key;
 }
 
+export function isShown(container: HTMLElement, key: string): boolean {
+	const shown = shownIn.get(container);
+	return shown?.key === key && container.firstElementChild === shown.element && shown.element.isConnected;
+}
+
 /** A block's title (`blockFrame`). It takes the focus from a control that went when the page has none left (`show`),
  * so it can be focused, though not tabbed to. */
 const BLOCK_TITLE = ".interface-block > h2";

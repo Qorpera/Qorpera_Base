@@ -39,6 +39,19 @@ function headersFor(path) {
 	return Object.fromEntries(headers);
 }
 
+const RAW_MAIL_HTML = [
+	"<!doctype html><html><head><style>.card { padding: 24px; border: 1px solid #d0d7de; border-radius: 8px; font-family: sans-serif; } .cta { display: inline-block; padding: 10px 16px; background: #1a56db; color: #fff; text-decoration: none; }</style></head>",
+	'<body style="margin: 0; padding: 12px"><div class="card"><h1>Generic High Entropy Secret exposed</h1>',
+	"<p>GitGuardian detected a secret in Qorpera/Qorpera_Base.</p>",
+	'<p style="margin-top: 24px"><a class="cta" href="https://dashboard.gitguardian.example/incidents/42">Inspect incident</a></p>',
+	'<img id="hero" src="https://127.0.0.1.invalid/hero.png" alt="Hero banner" width="240" height="80">',
+	'<img id="pixel" src="https://127.0.0.1.invalid/tracker.gif" width="1" height="1">',
+	`<div style="width:10px;height:10px;background-image:url('https://127.0.0.1.invalid/unclosed.gif?id=42'"></div>`,
+	`<div style='width:10px;height:10px;background-image:url("https://127.0.0.1.invalid/escaped\\"")'></div>`,
+	'<script>window.parent.postMessage("XSS_RAN", "*");</script>',
+	"</div></body></html>",
+].join("");
+
 const previewHtml = await readFile(join(web, "public/mail-preview/index.html"));
 const appBundle = await build({
 	stdin: {
@@ -48,16 +61,7 @@ window.__xss = false;
 window.addEventListener("message", (event) => {
 	if (event.data === "XSS_RAN") window.__xss = true;
 });
-const raw = [
-	"<!doctype html><html><head><style>.card { padding: 24px; border: 1px solid #d0d7de; border-radius: 8px; font-family: sans-serif; } .cta { display: inline-block; padding: 10px 16px; background: #1a56db; color: #fff; text-decoration: none; }</style></head>",
-	'<body style="margin: 0; padding: 12px"><div class="card"><h1>Generic High Entropy Secret exposed</h1>',
-	"<p>GitGuardian detected a secret in Qorpera/Qorpera_Base.</p>",
-	'<p style="margin-top: 24px"><a class="cta" href="https://dashboard.gitguardian.example/incidents/42">Inspect incident</a></p>',
-	'<img id="hero" src="https://127.0.0.1.invalid/hero.png" alt="Hero banner" width="240" height="80">',
-	'<img id="pixel" src="https://127.0.0.1.invalid/tracker.gif" width="1" height="1">',
-	'<script>window.parent.postMessage("XSS_RAN", "*");</script>',
-	"</div></body></html>",
-].join("");
+const raw = ${JSON.stringify(RAW_MAIL_HTML)};
 const first = sanitizeMailHtml(raw, { allowRemoteImages: false });
 window.__remoteCount = first.remoteImageCount;
 const mailFrame = new MailFrame(first, "From outside the company", {
@@ -139,7 +143,7 @@ try {
 	const frame = page.frameLocator("iframe.mailbox-html-frame");
 	await frame.locator("h1").waitFor({ state: "visible" });
 	assert.equal(await frame.locator("h1").textContent(), "Generic High Entropy Secret exposed");
-	assert.equal(await page.evaluate(() => window.__remoteCount), 1);
+	assert.equal(await page.evaluate(() => window.__remoteCount), 3);
 
 	await page.waitForFunction(() => {
 		const el = document.querySelector("iframe.mailbox-html-frame");
@@ -170,7 +174,14 @@ try {
 						img.addEventListener("error", () => reject(new Error("hero image failed to load")), { once: true });
 					}),
 	);
-	assert.deepEqual(remoteRequests, ["https://127.0.0.1.invalid/hero.png"]);
+	assert.ok(
+		remoteRequests.includes("https://127.0.0.1.invalid/hero.png"),
+		`expected hero.png request after Show images, got ${JSON.stringify(remoteRequests)}`,
+	);
+	assert.ok(
+		!remoteRequests.some((url) => url.includes("tracker.gif")),
+		`tracking pixel must stay blocked even after Show images: ${JSON.stringify(remoteRequests)}`,
+	);
 
 	await page.evaluate(() => window.__injectRawXss());
 	await frame.locator("#after").waitFor({ state: "visible" });

@@ -209,21 +209,107 @@ function replaceCssFunction(css: string, pattern: RegExp, replacement: string): 
 	return out + css.slice(cursor);
 }
 
+function readCssEscape(css: string, slashIndex: number): { readonly text: string; readonly next: number } {
+	const after = slashIndex + 1;
+	if (after >= css.length) return { text: "", next: css.length };
+	const ch = css[after]!;
+	if (ch === "\r") return { text: "", next: css[after + 1] === "\n" ? after + 2 : after + 1 };
+	if (ch === "\n" || ch === "\f") return { text: "", next: after + 1 };
+	const hexMatch = /^[0-9a-fA-F]{1,6}[\t\n\f\r ]?/.exec(css.slice(after, after + 7));
+	if (hexMatch) {
+		const digits = /^[0-9a-fA-F]{1,6}/.exec(hexMatch[0])![0];
+		const code = Number.parseInt(digits, 16);
+		const char =
+			code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) ? "\ufffd" : String.fromCodePoint(code);
+		return { text: char, next: after + hexMatch[0].length };
+	}
+	return { text: ch, next: after + 1 };
+}
+
+function classifyCssUrl(rawUrl: string, allowRemoteImages: boolean, counter: { remoteImages: number } | null): string {
+	const trimmed = rawUrl.trim();
+	const data = safeRasterDataUri(trimmed);
+	if (data) return `url("${data}")`;
+	const https = safeHttpsImageUrl(trimmed);
+	if (https && counter) {
+		counter.remoteImages += 1;
+		return allowRemoteImages ? `url("${escapeCssUrl(https)}")` : "none";
+	}
+	return "none";
+}
+
 function sanitizeCssUrls(css: string, allowRemoteImages: boolean, counter: { remoteImages: number } | null): string {
-	return css.replace(
-		/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)"'\s][^)]*))\s*\)/gi,
-		(_match, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
-			const raw = (dq ?? sq ?? bare ?? "").trim();
-			const data = safeRasterDataUri(raw);
-			if (data) return `url("${data}")`;
-			const https = safeHttpsImageUrl(raw);
-			if (https && counter) {
-				counter.remoteImages += 1;
-				return allowRemoteImages ? `url("${escapeCssUrl(https)}")` : "none";
+	const pattern = /(?<![A-Za-z0-9_-])url\s*\(/gi;
+	let out = "";
+	let cursor = 0;
+	for (;;) {
+		const match = pattern.exec(css);
+		if (!match) break;
+		out += css.slice(cursor, match.index);
+		let index = match.index + match[0].length;
+		while (index < css.length && /[\t\n\f\r ]/.test(css[index]!)) index += 1;
+		let raw = "";
+		const opener = css[index];
+		if (opener === '"' || opener === "'") {
+			index += 1;
+			while (index < css.length) {
+				const ch = css[index]!;
+				if (ch === "\\") {
+					const esc = readCssEscape(css, index);
+					raw += esc.text;
+					index = esc.next;
+					continue;
+				}
+				if (ch === opener) {
+					index += 1;
+					break;
+				}
+				raw += ch;
+				index += 1;
 			}
-			return "none";
-		},
-	);
+			let depth = 1;
+			let quote = "";
+			while (index < css.length && depth > 0) {
+				const ch = css[index]!;
+				if (quote) {
+					if (ch === "\\") index = readCssEscape(css, index).next;
+					else {
+						if (ch === quote) quote = "";
+						index += 1;
+					}
+					continue;
+				}
+				if (ch === "\\") {
+					index = readCssEscape(css, index).next;
+					continue;
+				}
+				if (ch === '"' || ch === "'") quote = ch;
+				else if (ch === "(") depth += 1;
+				else if (ch === ")") depth -= 1;
+				index += 1;
+			}
+		} else {
+			while (index < css.length) {
+				const ch = css[index]!;
+				if (ch === "\\") {
+					const esc = readCssEscape(css, index);
+					raw += esc.text;
+					index = esc.next;
+					continue;
+				}
+				if (ch === ")") {
+					index += 1;
+					break;
+				}
+				raw += ch;
+				index += 1;
+			}
+		}
+		out += classifyCssUrl(raw, allowRemoteImages, counter);
+		cursor = index;
+		pattern.lastIndex = cursor;
+	}
+	return out + css.slice(cursor);
 }
 
 function sanitizeCss(css: string, allowRemoteImages: boolean, counter: { remoteImages: number }): string {
@@ -234,7 +320,7 @@ function sanitizeCss(css: string, allowRemoteImages: boolean, counter: { remoteI
 	cleaned = replaceCssFunction(cleaned, /\bexpression\s*\(/gi, "none");
 	cleaned = cleaned.replace(/(?:-moz-binding|behavior)\s*:[^;{}]*/gi, "");
 	cleaned = cleaned.replace(/\bposition\s*:\s*fixed\b/gi, "position: static");
-	cleaned = cleaned.replace(/@font-face\s*\{[^}]*\}/gi, (block) => sanitizeCssUrls(block, false, null));
+	cleaned = cleaned.replace(/@font-face\s*\{[^}]*(?:\}|$)/gi, (block) => sanitizeCssUrls(block, false, null));
 	cleaned = sanitizeCssUrls(cleaned, allowRemoteImages, counter);
 	return cleaned.trim();
 }

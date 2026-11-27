@@ -173,6 +173,29 @@ describe("sanitizeMailHtml", () => {
 		expect(allowed.bodyHtml).toContain("https://cdn.example/inline.png");
 	});
 
+	it("blocks unclosed url() at EOF, escaped quotes inside url(), and unclosed @font-face", () => {
+		const unclosedQuoted = `<div style="background-image:url('https://tracker.example/o.gif?id=42'">A</div>`;
+		const unclosedBare = `<div style="background-image:url(https://tracker.example/bare.gif">B</div>`;
+		const escapedQuote = `<div style='background-image:url("https://tracker.example/p\\"")'>C</div>`;
+		const hexEscapedQuote = `<div style='background-image:url("https://tracker.example/p\\22 ")'>D</div>`;
+		const unclosedFontFace = `<style>@font-face { font-family: X; src: url("https://fonts.example/a.woff2")</style><p>E</p>`;
+
+		for (const sample of [unclosedQuoted, unclosedBare, escapedQuote, hexEscapedQuote]) {
+			const blocked = sanitizeMailHtml(sample, { allowRemoteImages: false });
+			expect(blocked.remoteImageCount).toBe(1);
+			expect(blocked.bodyHtml).not.toContain("https://tracker.example");
+			expect(blocked.bodyHtml).not.toMatch(/url\s*\(/i);
+
+			const allowed = sanitizeMailHtml(sample, { allowRemoteImages: true });
+			expect(allowed.remoteImageCount).toBe(1);
+			expect(allowed.bodyHtml).toContain("https://tracker.example/");
+		}
+
+		const fontBlocked = sanitizeMailHtml(unclosedFontFace, { allowRemoteImages: true });
+		expect(fontBlocked.remoteImageCount).toBe(0);
+		expect(fontBlocked.styles.join("\n")).not.toContain("fonts.example");
+	});
+
 	it("blocks remote images by default, allows raster data URIs, deduplicates src+srcset, and drops tracking pixels", () => {
 		const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB";
 		const svg = "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=";

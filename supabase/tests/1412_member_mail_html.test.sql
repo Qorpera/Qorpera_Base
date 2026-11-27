@@ -116,10 +116,12 @@ from (select pg_temp.mh_message(pg_temp.mh_thread_of(current_setting('qorpera_te
 
 select pg_temp.base_assert(
 		public.qorpera_mail_html_snippet('<style>a{color:red}</style><script>alert(1)</script><p>Hello &lt;world&gt; &amp;lt;ok</p>') = 'Hello <world> &lt;ok'
+		and public.qorpera_mail_html_snippet('<style type="text/css">.a{color:red}</style><p>Keep visible body</p><style>.b{color:blue}</style>') = 'Keep visible body'
+		and public.qorpera_mail_html_snippet('<script>one()</script><div>Between scripts</div><script>two()</script>') = 'Between scripts'
 		and public.qorpera_mail_html_snippet('<style>unclosed css forever') is null
 		and public.qorpera_mail_html_snippet('   ') is null
 		and public.qorpera_mail_html_snippet(null) is null,
-	'HTML snippet helper strips tags, styles, scripts, unclosed style, and decodes entities safely');
+	'HTML snippet helper strips tags, multiple style/script blocks, unclosed style, and decodes entities safely');
 
 select pg_temp.base_assert(
 		not has_function_privilege(role, 'public.qorpera_mail_html_snippet(text)', 'EXECUTE')

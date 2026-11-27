@@ -47,7 +47,7 @@ import {
 } from "../company-mail.ts";
 import { mailList, mailRow, mailSummary } from "../interface-mail.ts";
 import type { QuotedText } from "../quotes.ts";
-import { messageText, show, shownKey } from "./interface.ts";
+import { isShown, messageText, show, shownKey } from "./interface.ts";
 import { type DigitalPostClient, DigitalPostView } from "./settings-digital-post.ts";
 import { type HookAction, type HooksClient, HooksView } from "./settings-hooks.ts";
 
@@ -202,13 +202,50 @@ interface MailFrameEntry {
 
 const uis = new WeakMap<HTMLElement, MailboxUi>();
 const mailFrames = new WeakMap<MailboxUi, Map<string, MailFrameEntry>>();
+const htmlTextCache = new WeakMap<MailboxUi, Map<string, { readonly html: string; readonly text: string }>>();
 const frameSignals = new WeakMap<MailboxUi, AbortSignal>();
 
 function disposeFrames(ui: MailboxUi): void {
 	const frames = mailFrames.get(ui);
-	if (!frames) return;
-	for (const entry of frames.values()) entry.frame.dispose();
-	frames.clear();
+	if (frames) {
+		for (const entry of frames.values()) entry.frame.dispose();
+		frames.clear();
+	}
+	htmlTextCache.get(ui)?.clear();
+}
+
+function cachedHtmlText(ui: MailboxUi, key: string, html: string, usedTexts?: Set<string>): string {
+	let cache = htmlTextCache.get(ui);
+	if (!cache) {
+		cache = new Map();
+		htmlTextCache.set(ui, cache);
+	}
+	const existing = cache.get(key);
+	if (existing && existing.html === html) {
+		usedTexts?.add(key);
+		return existing.text;
+	}
+	const text = mailHtmlToText(html);
+	cache.set(key, { html, text });
+	usedTexts?.add(key);
+	return text;
+}
+
+function pruneMailCaches(ui: MailboxUi, usedFrames: Set<string>, usedTexts: Set<string>): void {
+	const frames = mailFrames.get(ui);
+	if (frames) {
+		for (const [frameKey, entry] of frames) {
+			if (usedFrames.has(frameKey)) continue;
+			entry.frame.dispose();
+			frames.delete(frameKey);
+		}
+	}
+	const texts = htmlTextCache.get(ui);
+	if (texts) {
+		for (const textKey of texts.keys()) {
+			if (!usedTexts.has(textKey)) texts.delete(textKey);
+		}
+	}
 }
 
 export function disposeMailbox(container: HTMLElement): void {
@@ -641,7 +678,9 @@ export function renderMailbox(
 	}
 	const targetFocus = moveFocus ?? ui.pendingFocus?.target;
 	if (googleReturn?.signIn.companyId === profileId.toLowerCase()) void finishGoogle(page);
-	show(container, key, () => settle(container.firstElementChild, drawPage(page)), targetFocus);
+	if (!isShown(container, key) && !patchOpenThread(container, page, key, targetFocus)) {
+		show(container, key, () => settle(container.firstElementChild, drawPage(page)), targetFocus);
+	}
 	if (targetFocus !== undefined) {
 		const waitingForThread = ui.open !== null && mail?.threads[ui.open] === undefined;
 		const drawn = [...container.querySelectorAll<HTMLElement>("[data-focus-key]")].some(
@@ -767,6 +806,7 @@ function drawPage(page: Page): HTMLElement {
 	const mail = company.store.get().mail;
 	const off = mail !== undefined && !mailShown(mail);
 	const usedFrames = new Set<string>();
+	const usedTexts = new Set<string>();
 	const body = !mail
 		? spinner(t("Reading the mail"))
 		: off
@@ -774,18 +814,11 @@ function drawPage(page: Page): HTMLElement {
 			: ui.letter
 				? letterView(page, ui.letter)
 				: ui.open
-					? threadView(page, ui.open, usedFrames)
+					? threadView(page, ui.open, usedFrames, usedTexts)
 					: ui.tab === "addresses"
 						? addressesView(page)
 						: listView(page);
-	const frames = mailFrames.get(ui);
-	if (frames) {
-		for (const [frameKey, entry] of frames) {
-			if (usedFrames.has(frameKey)) continue;
-			entry.frame.dispose();
-			frames.delete(frameKey);
-		}
-	}
+	pruneMailCaches(ui, usedFrames, usedTexts);
 	const reading = mail !== undefined && !off && (ui.letter !== null || ui.open !== null);
 	const writing = ui.writing && canWrite(page) && mail !== undefined && !off;
 	return h(
@@ -1470,10 +1503,22 @@ function initials(name: string): string {
 		.toLocaleUpperCase(presentationLocale());
 }
 
-function threadView(page: Page, thread: string, usedFrames: Set<string>): HTMLElement {
-	const { company, ui } = page;
-	const read = company.store.get().mail?.threads[thread];
-	const summary = mailSummary(company, thread);
+function threadEnvKey(page: Page): string {
+	return JSON.stringify([
+		page.profileId,
+		controllerKey(page.company),
+		page.company.userId,
+		presentationLocale(),
+		presentationTimeZone(),
+		new Date().toDateString(),
+		page.ui.tab,
+		page.ui.open,
+		canWrite(page),
+	]);
+}
+
+function threadChrome(page: Page, thread: string, summary: MailThreadSummary | undefined): [HTMLElement, HTMLElement] {
+	const { ui } = page;
 	const handler = summary?.handledBy?.staffAgentId;
 	const account = summary?.account;
 	const title = account
@@ -1494,7 +1539,7 @@ function threadView(page: Page, thread: string, usedFrames: Set<string>): HTMLEl
 		},
 		icon("back"),
 	);
-	const parts: (HTMLElement | null)[] = [
+	return [
 		h(
 			"div",
 			{ class: "mailbox-toolbar" },
@@ -1515,6 +1560,34 @@ function threadView(page: Page, thread: string, usedFrames: Set<string>): HTMLEl
 			summary ? h("span", { class: "mailbox-label" }, summary.address) : null,
 		),
 	];
+}
+
+function olderMessagesBar(page: Page, thread: string, older: "idle" | "loading" | "error"): HTMLElement {
+	const loading = older === "loading";
+	return h(
+		"div",
+		{ class: "mailbox-older" },
+		older === "error" ? h("p", { role: "alert" }, t("Older messages can't be read.")) : null,
+		h(
+			"button",
+			{
+				type: "button",
+				class: "mailbox-text",
+				disabled: loading,
+				"aria-busy": loading ? "true" : null,
+				"data-focus-key": "older-messages",
+				onclick: () => CompanyMail.of(page.company)?.olderMessages(thread),
+			},
+			loading ? t("Reading older messages") : t("Show older messages"),
+		),
+	);
+}
+
+function threadView(page: Page, thread: string, usedFrames: Set<string>, usedTexts: Set<string>): HTMLElement {
+	const { company } = page;
+	const read = company.store.get().mail?.threads[thread];
+	const summary = mailSummary(company, thread);
+	const parts: (HTMLElement | null)[] = [...threadChrome(page, thread, summary)];
 	if (read === undefined) parts.push(spinner(t("Reading the email")));
 	else if (read.status === "gone")
 		parts.push(h("p", { class: "mailbox-none" }, t("This email thread is no longer here.")));
@@ -1532,41 +1605,311 @@ function threadView(page: Page, thread: string, usedFrames: Set<string>): HTMLEl
 		);
 	else {
 		const shown = read.thread;
-		const loading = read.older === "loading";
-		if (shown.more)
-			parts.push(
-				h(
-					"div",
-					{ class: "mailbox-older" },
-					read.older === "error" ? h("p", { role: "alert" }, t("Older messages can't be read.")) : null,
-					h(
-						"button",
-						{
-							type: "button",
-							class: "mailbox-text",
-							disabled: loading,
-							"aria-busy": loading ? "true" : null,
-							"data-focus-key": "older-messages",
-							onclick: () => CompanyMail.of(company)?.olderMessages(thread),
-						},
-						loading ? t("Reading older messages") : t("Show older messages"),
-					),
-				),
-			);
+		if (shown.more) parts.push(olderMessagesBar(page, thread, read.older));
 		const last = shown.messages.at(-1);
 		parts.push(
 			h(
 				"ol",
 				{ class: "mailbox-messages" },
 				...shown.messages.map((message) =>
-					messageItem(page, thread, message, message === last, summary, usedFrames),
+					messageItem(page, thread, message, message === last, summary, usedFrames, usedTexts),
 				),
 			),
 			...shown.waiting.map((send) => draftItem(page, thread, send)),
 			replyArea(page, thread, summary, last),
 		);
 	}
-	return h("div", { class: "mailbox-thread" }, ...parts);
+	return h("div", { class: "mailbox-thread", "data-thread": thread, "data-patch-env": threadEnvKey(page) }, ...parts);
+}
+
+function messageSigs(
+	page: Page,
+	thread: string,
+	message: MailMessage,
+	newest: boolean,
+	summary: MailThreadSummary | undefined,
+): {
+	readonly key: string;
+	readonly open: boolean;
+	readonly allowRemote: boolean;
+	readonly sig: string;
+	readonly htmlFrameSig: string | null;
+} {
+	const { ui, company } = page;
+	const key = messageKey(thread, message);
+	const open = ui.expanded[key] ?? newest;
+	const allowRemote = ui.remoteImages[key] === true;
+	const blockedHref = ui.blockedLink?.message === key ? ui.blockedLink.href : null;
+	const state = company.store.get();
+	const base = [
+		key,
+		open,
+		cachedJson(message),
+		summary?.address ?? null,
+		cachedStaffJson(state.staff),
+		cachedTeamMembersJson(state.team?.members),
+	];
+	const sig = JSON.stringify([...base, allowRemote, blockedHref]);
+	const htmlFrameSig =
+		open && message.kind === "received" && !message.account && message.html ? JSON.stringify(base) : null;
+	return { key, open, allowRemote, sig, htmlFrameSig };
+}
+
+function htmlBars(
+	page: Page,
+	key: string,
+	html: string,
+	htmlEntry: MailFrameEntry,
+	allowRemote: boolean,
+): HTMLElement[] {
+	const { ui } = page;
+	const bars: HTMLElement[] = [];
+	if (!allowRemote && htmlEntry.sanitized.remoteImageCount > 0) {
+		bars.push(
+			h(
+				"div",
+				{ class: "mailbox-html-bar" },
+				h("span", { class: "mailbox-muted" }, t("Images from outside are hidden.")),
+				h(
+					"button",
+					{
+						type: "button",
+						class: "mailbox-text",
+						"data-focus-key": `show-images:${key}`,
+						onclick: (event: MouseEvent) => {
+							ui.remoteImages = { ...ui.remoteImages, [key]: true };
+							const next = sanitizeMailHtml(html, { allowRemoteImages: true });
+							htmlEntry.allowRemote = true;
+							htmlEntry.sanitized = next;
+							htmlEntry.frame.update(next);
+							(event.currentTarget as HTMLElement).closest(".mailbox-html-bar")?.remove();
+							if (!page.syncKey?.()) page.redraw();
+						},
+					},
+					t("Show images"),
+				),
+			),
+		);
+	}
+	const blocked = ui.blockedLink?.message === key ? ui.blockedLink : null;
+	if (blocked) {
+		bars.push(
+			h(
+				"div",
+				{ class: "mailbox-html-bar" },
+				h(
+					"a",
+					{
+						class: "mailbox-text",
+						href: blocked.href,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						onclick: () => {
+							ui.blockedLink = null;
+							page.redraw();
+						},
+					},
+					t("Open link"),
+				),
+				h("span", { class: "mailbox-muted mailbox-link-url" }, blocked.href),
+			),
+		);
+	}
+	return bars;
+}
+
+function patchOpenThread(container: HTMLElement, page: Page, key: string, targetFocus: string | undefined): boolean {
+	const root = container.firstElementChild;
+	if (!(root instanceof HTMLElement) || !root.matches(".mailbox")) return false;
+	if (root.dataset.interface !== page.name || root.dataset.profile !== page.profileId) return false;
+	const { ui, company } = page;
+	if (ui.open === null || ui.letter !== null) return false;
+	const mail = company.store.get().mail;
+	if (!mail || !mailShown(mail)) return false;
+	const read = mail.threads[ui.open];
+	if (!read || read.status !== "ready") return false;
+	const threadEl = root.querySelector<HTMLElement>(".mailbox-thread");
+	if (!threadEl || threadEl.dataset.thread !== ui.open || threadEl.dataset.patchEnv !== threadEnvKey(page))
+		return false;
+	const listEl = threadEl.querySelector<HTMLOListElement>(".mailbox-messages");
+	if (!listEl) return false;
+	const existingFrames = mailFrames.get(ui);
+	if (
+		!existingFrames ||
+		![...existingFrames.values()].some((entry) => entry.frame.frame.isConnected && listEl.contains(entry.frame.frame))
+	)
+		return false;
+
+	const active = document.activeElement;
+	const focused = active instanceof HTMLElement && container.contains(active) ? active : null;
+	const focusKey = focused?.dataset.focusKey;
+	const caret =
+		active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+			? ([active.selectionStart, active.selectionEnd] as const)
+			: undefined;
+	const savedScrolls = new Map(
+		[...root.querySelectorAll<HTMLElement>("[data-scroll-key]")].map((each) => [
+			each.dataset.scrollKey,
+			each.scrollTop,
+		]),
+	);
+
+	root.classList.add("is-settled");
+	const writing = ui.writing && canWrite(page);
+	root.classList.toggle("is-writing", writing);
+
+	const oldSide = root.querySelector(":scope > .mailbox-frame > .mailbox-side");
+	oldSide?.replaceWith(side(page));
+
+	const mainEl = root.querySelector<HTMLElement>(":scope > .mailbox-frame > .mailbox-main");
+	const scrollEl = mainEl?.querySelector<HTMLElement>(":scope > .mailbox-scroll");
+	if (mainEl && scrollEl) {
+		const oldNotice = mainEl.querySelector(":scope > .notice");
+		if (ui.error) {
+			const nextNotice = notice("danger", ui.error);
+			if (oldNotice) oldNotice.replaceWith(nextNotice);
+			else scrollEl.before(nextNotice);
+		} else {
+			oldNotice?.remove();
+		}
+	}
+
+	const summary = mailSummary(company, ui.open);
+	const [nextToolbar, nextHead] = threadChrome(page, ui.open, summary);
+	threadEl.querySelector(":scope > .mailbox-toolbar")?.replaceWith(nextToolbar);
+	threadEl.querySelector(":scope > .mailbox-thread-head")?.replaceWith(nextHead);
+
+	const oldOlder = threadEl.querySelector(":scope > .mailbox-older");
+	if (read.thread.more) {
+		const nextOlder = olderMessagesBar(page, ui.open, read.older);
+		if (oldOlder) oldOlder.replaceWith(nextOlder);
+		else listEl.before(nextOlder);
+	} else {
+		oldOlder?.remove();
+	}
+
+	const existingByKey = new Map<string, HTMLLIElement>();
+	for (const child of [...listEl.children]) {
+		if (child instanceof HTMLLIElement && child.dataset.messageKey) {
+			existingByKey.set(child.dataset.messageKey, child);
+		}
+	}
+	const usedFrames = new Set<string>();
+	const usedTexts = new Set<string>();
+	const last = read.thread.messages.at(-1);
+	const desired: HTMLLIElement[] = [];
+	for (const message of read.thread.messages) {
+		const newest = message === last;
+		const {
+			key: msgKey,
+			open,
+			allowRemote,
+			sig,
+			htmlFrameSig,
+		} = messageSigs(page, ui.open, message, newest, summary);
+		const existing = existingByKey.get(msgKey);
+		if (existing && existing.dataset.messageSig === sig) {
+			if (open && message.kind === "received" && message.html) {
+				const frameEntry = existingFrames.get(msgKey);
+				if (frameEntry && frameEntry.html === message.html) {
+					frameEntry.page = page;
+					usedFrames.add(msgKey);
+				}
+			}
+			if (!open && message.kind === "received" && message.html && !message.text?.trim()) {
+				usedTexts.add(msgKey);
+			}
+			desired.push(existing);
+			continue;
+		}
+		if (
+			existing &&
+			htmlFrameSig &&
+			existing.dataset.htmlFrameSig === htmlFrameSig &&
+			message.kind === "received" &&
+			message.html
+		) {
+			const frameEntry = mailFrameFor(page, msgKey, message.html, allowRemote, usedFrames);
+			const barsHost = existing.querySelector<HTMLElement>(".mailbox-html-bars");
+			if (frameEntry && barsHost && existing.contains(frameEntry.frame.frame)) {
+				replace(barsHost, ...htmlBars(page, msgKey, message.html, frameEntry, allowRemote));
+				existing.dataset.messageSig = sig;
+				desired.push(existing);
+				continue;
+			}
+		}
+		desired.push(messageItem(page, ui.open, message, newest, summary, usedFrames, usedTexts) as HTMLLIElement);
+	}
+	const desiredSet = new Set<Element>(desired);
+	for (const child of [...listEl.children]) {
+		if (!desiredSet.has(child)) child.remove();
+	}
+	let nextSibling: HTMLLIElement | null = null;
+	for (let index = desired.length - 1; index >= 0; index -= 1) {
+		const node = desired[index]!;
+		if (node.parentElement !== listEl || node.nextElementSibling !== nextSibling) {
+			if (nextSibling) nextSibling.before(node);
+			else listEl.append(node);
+		}
+		nextSibling = node;
+	}
+
+	const hadReply = threadEl.querySelector(":scope > .mailbox-reply") !== null;
+	while (listEl.nextElementSibling) listEl.nextElementSibling.remove();
+	for (const send of read.thread.waiting) threadEl.append(draftItem(page, ui.open, send));
+	const nextReply = replyArea(page, ui.open, summary, last);
+	if (nextReply) {
+		if (hadReply && nextReply.matches(".mailbox-reply")) nextReply.classList.add("is-settled");
+		threadEl.append(nextReply);
+	}
+
+	const oldWrite = root.querySelector(":scope > .mailbox-write-panel");
+	if (writing) {
+		const nextWrite = writePanel(page);
+		if (oldWrite) {
+			nextWrite.classList.add("is-settled");
+			oldWrite.replaceWith(nextWrite);
+		} else {
+			const oldToastNode = root.querySelector(":scope > .mailbox-toast");
+			if (oldToastNode) oldToastNode.before(nextWrite);
+			else root.append(nextWrite);
+		}
+	} else {
+		oldWrite?.remove();
+	}
+
+	const oldToast = root.querySelector(":scope > .mailbox-toast");
+	if (ui.toast) {
+		const nextToast = toast(page, ui.toast.text, ui.toast.agent);
+		if (oldToast?.textContent === nextToast.textContent) nextToast.classList.add("is-settled");
+		if (oldToast) oldToast.replaceWith(nextToast);
+		else root.append(nextToast);
+	} else {
+		oldToast?.remove();
+	}
+
+	pruneMailCaches(ui, usedFrames, usedTexts);
+	shownKey(container, key);
+
+	const findControl = (named: string | undefined) =>
+		named === undefined
+			? undefined
+			: [...container.querySelectorAll<HTMLElement>("[data-focus-key]")].find(
+					(each) => each.dataset.focusKey === named,
+				);
+	const again = findControl(targetFocus) ?? (focused && !focused.isConnected ? findControl(focusKey) : undefined);
+	if (again) {
+		again.focus({ preventScroll: true });
+		const field = again instanceof HTMLInputElement || again instanceof HTMLTextAreaElement ? again : undefined;
+		if (field && again.dataset.focusKey === focusKey && caret && field === document.activeElement) {
+			field.setSelectionRange(caret[0], caret[1]);
+		}
+	}
+	for (const each of root.querySelectorAll<HTMLElement>("[data-scroll-key]")) {
+		const top = savedScrolls.get(each.dataset.scrollKey);
+		if (top !== undefined) each.scrollTop = top;
+	}
+	return true;
 }
 
 function openMailLink(page: Page, key: string, href: string): void {
@@ -1597,15 +1940,27 @@ function openMailLink(page: Page, key: string, href: string): void {
 				.trim()
 				.slice(0, 200) ?? "";
 		const body = parsed.searchParams.get("body")?.slice(0, 20_000) ?? "";
-		ui.write = {
-			...newDraft(),
-			to: { chips: [...new Set(addresses)].slice(0, MOST_RECIPIENTS), typed: "" },
-			subject,
-			text: body,
-		};
+		const emptyDraft =
+			!ui.busy &&
+			!ui.write.to.typed.trim() &&
+			!ui.write.to.chips.length &&
+			!ui.write.subject.trim() &&
+			!ui.write.text.trim();
+		if (emptyDraft) {
+			ui.write = {
+				...newDraft(),
+				to: { chips: [...new Set(addresses)].slice(0, MOST_RECIPIENTS), typed: "" },
+				subject,
+				text: body,
+			};
+			ui.writing = true;
+			ui.blockedLink = null;
+			page.redraw(subject ? "write-text" : "write-subject");
+			return;
+		}
 		ui.writing = true;
-		ui.blockedLink = null;
-		page.redraw(subject ? "write-text" : "write-subject");
+		ui.blockedLink = { message: key, href: parsed.href };
+		page.redraw("write-to");
 		return;
 	}
 	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
@@ -1680,15 +2035,17 @@ function messageItem(
 	newest: boolean,
 	summary: MailThreadSummary | undefined,
 	usedFrames: Set<string>,
+	usedTexts: Set<string>,
 ): HTMLElement {
 	const { ui } = page;
+	const { key, open, allowRemote, sig, htmlFrameSig } = messageSigs(page, thread, message, newest, summary);
 	const received = message.kind === "received";
 	if (received && message.account) {
 		const account = message.account;
 		const used = account.unknown ? undefined : account.lastUsedBy;
 		return h(
 			"li",
-			{ class: "mailbox-message is-account" },
+			{ class: "mailbox-message is-account", "data-message-key": key, "data-message-sig": sig },
 			h("span", { class: "mailbox-lock", "aria-hidden": "true" }, icon("lock")),
 			h(
 				"span",
@@ -1702,8 +2059,6 @@ function messageItem(
 			h("time", { class: "mailbox-time", datetime: message.at }, when(message.at)),
 		);
 	}
-	const key = messageKey(thread, message);
-	const open = ui.expanded[key] ?? newest;
 	const toggle = () => {
 		ui.expanded = { ...ui.expanded, [key]: !open };
 		page.redraw(`message:${key}`);
@@ -1725,11 +2080,11 @@ function messageItem(
 	const text = message.text ?? "";
 	const html = received ? (message.html ?? "") : "";
 	if (!open) {
-		const flatSource = text.trim() ? text : html ? mailHtmlToText(html) : "";
+		const flatSource = text.trim() ? text : html ? cachedHtmlText(ui, key, html, usedTexts) : "";
 		const flat = flatSource.replace(/\s+/g, " ").trim();
 		return h(
 			"li",
-			{ class: "mailbox-message is-folded" },
+			{ class: "mailbox-message is-folded", "data-message-key": key, "data-message-sig": sig },
 			h(
 				"button",
 				{
@@ -1755,7 +2110,6 @@ function messageItem(
 				: message.status === "cancelled"
 					? h("span", { class: "mailbox-status is-failed" }, t("Cancelled"))
 					: h("span", { class: "mailbox-status" }, t("Sending"));
-	const allowRemote = ui.remoteImages[key] === true;
 	const htmlEntry = received && html ? mailFrameFor(page, key, html, allowRemote, usedFrames) : null;
 	const showHtml = htmlEntry !== null;
 	const truncated = showHtml ? received && message.htmlTruncated : received && message.textTruncated;
@@ -1764,59 +2118,16 @@ function messageItem(
 		truncated ? t("This email is longer; only its start is shown.") : null,
 		message.textCleared ? t("This email's text is no longer kept.") : null,
 	].filter((note): note is string => note !== null);
-	const imageBar =
-		showHtml && !allowRemote && htmlEntry.sanitized.remoteImageCount > 0
-			? h(
-					"div",
-					{ class: "mailbox-html-bar" },
-					h("span", { class: "mailbox-muted" }, t("Images from outside are hidden.")),
-					h(
-						"button",
-						{
-							type: "button",
-							class: "mailbox-text",
-							"data-focus-key": `show-images:${key}`,
-							onclick: (event: MouseEvent) => {
-								ui.remoteImages = { ...ui.remoteImages, [key]: true };
-								const next = sanitizeMailHtml(html, { allowRemoteImages: true });
-								htmlEntry.allowRemote = true;
-								htmlEntry.sanitized = next;
-								htmlEntry.frame.update(next);
-								(event.currentTarget as HTMLElement).closest(".mailbox-html-bar")?.remove();
-								if (!page.syncKey?.()) page.redraw();
-							},
-						},
-						t("Show images"),
-					),
-				)
-			: null;
-	const blocked = showHtml && ui.blockedLink?.message === key ? ui.blockedLink : null;
-	const blockedBar = blocked
-		? h(
-				"div",
-				{ class: "mailbox-html-bar" },
-				h(
-					"a",
-					{
-						class: "mailbox-text",
-						href: blocked.href,
-						target: "_blank",
-						rel: "noopener noreferrer",
-						onclick: () => {
-							ui.blockedLink = null;
-							page.redraw();
-						},
-					},
-					t("Open link"),
-				),
-				h("span", { class: "mailbox-muted mailbox-link-url" }, blocked.href),
-			)
-		: null;
 	const files = message.attachments.map((attachment) => attachment.filename).join(", ");
 	const to = received ? summary?.address : message.to.join(", ");
 	return h(
 		"li",
-		{ class: "mailbox-message" },
+		{
+			class: "mailbox-message",
+			"data-message-key": key,
+			"data-message-sig": sig,
+			...(showHtml && htmlFrameSig ? { "data-html-frame-sig": htmlFrameSig } : {}),
+		},
 		avatar,
 		h(
 			"div",
@@ -1845,8 +2156,9 @@ function messageItem(
 				h("span", { class: "mailbox-when" }, status, h("time", { datetime: message.at }, fmtTime(message.at))),
 			),
 			notes.length ? h("p", { class: "mailbox-note" }, notes.join(" ")) : null,
-			imageBar,
-			blockedBar,
+			showHtml
+				? h("div", { class: "mailbox-html-bars" }, ...htmlBars(page, key, html, htmlEntry, allowRemote))
+				: null,
 			showHtml
 				? h("div", { class: "mailbox-html-body", title: t("From outside the company") }, htmlEntry.frame.frame)
 				: text
