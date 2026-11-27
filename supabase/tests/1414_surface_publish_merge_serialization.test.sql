@@ -42,6 +42,7 @@ declare
 	v_c1 uuid;
 	v_c2 uuid := '14140000-0000-4000-8000-000000000022';
 	v_c3 uuid := '14140000-0000-4000-8000-000000000023';
+	v_c5 uuid;
 	v_sha0 text := repeat('0', 40);
 	v_sha1 text := repeat('1', 40);
 	v_sha2 text := repeat('2', 40);
@@ -315,12 +316,10 @@ begin
 		profile_id, surface_id, session_id, seq, title, kind, parent_sha, head_sha, status
 	) values (
 		v_company, v_surface, v_session2, 5, 'Auto-publish merge', 'git_range', repeat('5', 40), repeat('6', 40), 'staged'
-	);
+	) returning id into v_c5;
 	perform pg_temp.spms_as(v_owner);
 	set local role authenticated;
-	perform public.qorpera_approve_surface_change(
-		(select id from public.qorpera_surface_changes where surface_id = v_surface and seq = 5), true
-	);
+	perform public.qorpera_approve_surface_change(v_c5, true);
 	perform public.qorpera_publish_surface(v_surface);
 	reset role;
 
@@ -355,6 +354,33 @@ begin
 		(select published_head_sha = repeat('6', 40) and live_head_sha = repeat('7', 40) and unpublished_change_count = 1
 		 from public.qorpera_surfaces where id = v_surface),
 		'head drift with zero remaining unpublished change rows still preserves unpublished_change_count=1'
+	);
+
+	perform pg_temp.spms_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_publish_surface(v_surface);
+	reset role;
+	v_claimed := pg_temp.spms_service($q$select public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo')$q$);
+	select (elem ->> 'jobId')::uuid into strict v_pub_job
+	from jsonb_array_elements(v_claimed -> 'publishes') elem
+	where (elem ->> 'surfaceId')::uuid = v_surface;
+	perform pg_temp.spms_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_publish_surface(v_surface);
+	reset role;
+	perform public.qorpera_surface_build_waiter_fail('publish', v_pub_job, E'PREVIEW_BUILD_NO_HOURS\nNo computer hours left.');
+	perform pg_temp.spms_assert(
+		(select publish_status = 'publishing' from public.qorpera_surfaces where id = v_surface),
+		'waiter_fail preserves publishing status when another publish_surface is queued'
+	);
+	v_claimed := pg_temp.spms_service($q$select public.qorpera_surface_claim_pending_jobs_for_lane(16, 'code_repo')$q$);
+	select (elem ->> 'jobId')::uuid into strict v_pub_job2
+	from jsonb_array_elements(v_claimed -> 'publishes') elem
+	where (elem ->> 'surfaceId')::uuid = v_surface;
+	perform public.qorpera_surface_build_waiter_fail('publish', v_pub_job2, E'PREVIEW_BUILD_NO_HOURS\nNo computer hours left.');
+	perform pg_temp.spms_assert(
+		(select publish_status = 'failed' from public.qorpera_surfaces where id = v_surface),
+		'waiter_fail sets failed status when no other publish_surface is queued'
 	);
 end $$;
 

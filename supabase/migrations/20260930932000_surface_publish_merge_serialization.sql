@@ -8,7 +8,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
 		or to_regprocedure('public.qorpera_surface_complete_publish(uuid,text,text,text,uuid)') is null
-		or to_regprocedure('public.qorpera_surface_preview_build_settle(uuid)') is null then
+		or to_regprocedure('public.qorpera_surface_preview_build_settle(uuid)') is null
+		or to_regprocedure('public.qorpera_surface_build_waiter_fail(text,uuid,text)') is null then
 		raise exception 'Surface publish/merge serialization (20260930932000) requires prior surface publish, merge, claim, and preview build migrations';
 	end if;
 end $$;
@@ -22,7 +23,8 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_surface_complete_merge(uuid,text,text,text,uuid,text[],text,jsonb,uuid)'::regprocedure,
 		'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
 		'public.qorpera_surface_complete_publish(uuid,text,text,text,uuid)'::regprocedure,
-		'public.qorpera_surface_preview_build_settle(uuid)'::regprocedure
+		'public.qorpera_surface_preview_build_settle(uuid)'::regprocedure,
+		'public.qorpera_surface_build_waiter_fail(text,uuid,text)'::regprocedure
 	);
 
 create function pg_temp.spms_patch(p_target regprocedure, p_edits text[])
@@ -478,6 +480,34 @@ $new$			update public.qorpera_surfaces
 					public.qorpera_surface_preview_build_detail('PREVIEW_BUILD_FAILED', 'The build was dropped.')),
 				updated_at = v_now
 			where id = v_job.surface_id;$new$
+	]
+);
+
+select pg_temp.spms_patch(
+	'public.qorpera_surface_build_waiter_fail(text,uuid,text)'::regprocedure,
+	array[
+$old$	if v_job.id is not null then
+		update public.qorpera_surfaces
+		set publish_status = 'failed', last_publish_error = p_detail, updated_at = v_now
+		where id = v_job.surface_id;
+	end if;$old$,
+$new$	if v_job.id is not null then
+		update public.qorpera_surfaces
+		set
+			publish_status = case
+				when exists (
+					select 1 from public.qorpera_surface_jobs q
+					where q.surface_id = v_job.surface_id
+						and q.kind = 'publish_surface'
+						and q.status = 'queued'
+						and q.id <> v_job.id
+				) then 'publishing'
+				else 'failed'
+			end,
+			last_publish_error = p_detail,
+			updated_at = v_now
+		where id = v_job.surface_id;
+	end if;$new$
 	]
 );
 
