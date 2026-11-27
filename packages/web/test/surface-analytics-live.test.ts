@@ -183,6 +183,12 @@ async function chartOption(host: HTMLElement) {
 
 beforeEach(() => {
 	vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => null);
+	HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) {
+		this.setAttribute("open", "");
+	};
+	HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) {
+		this.removeAttribute("open");
+	};
 });
 
 afterEach(() => {
@@ -350,7 +356,7 @@ describe("live asks: the page's cache", () => {
 		let calls = 0;
 		const numbers = new FakeLive(async () => {
 			calls += 1;
-			if (calls === 1) throw new Error("did not answer (502)");
+			if (calls <= 2) throw new Error("did not answer (502)");
 			return NUMBERS["orders-now"]!;
 		});
 		const asks = new SurfaceAsks({ numbers }, life.signal);
@@ -513,16 +519,17 @@ describe("live asks on the page", () => {
 		life.abort();
 	});
 
-	it("keeps answers across re-plans and lets go of a question the layout no longer names", async () => {
+	it("keeps answers across re-plans, asks a failed question again, and lets go of one the layout no longer names", async () => {
 		const life = new AbortController();
 		const numbers = numbersLive();
 		const view = layoutView({ numbers }, life.signal);
 		mount(planOf(view, NOW_LAYOUT));
 		await settle();
-		const watched = numbers.watches.length;
+		const watched = numbers.watches.map((watch) => watch.asked.question);
 		const again = mount(planOf(view, NOW_LAYOUT));
 		expect(again.querySelector(".studio-fact dd")?.textContent).toBe((48250).toLocaleString("en"));
-		expect(numbers.watches).toHaveLength(watched);
+		await settle();
+		expect(numbers.watches.map((watch) => watch.asked.question)).toEqual([...watched, "money-balance"]);
 		const fewer = {
 			schema: SURFACE_LAYOUT_SCHEMA,
 			tabs: [
