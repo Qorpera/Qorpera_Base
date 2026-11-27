@@ -335,12 +335,12 @@ export interface StudioInspectSnapshot {
 
 export type StudioInspectAskAnswer =
 	| { readonly state: "answered"; readonly columns: readonly string[]; readonly rows: readonly (readonly unknown[])[] }
-	| { readonly state: "refused" | "unavailable"; readonly words: string };
+	| { readonly state: "refused" | "not connected" | "unavailable"; readonly words: string };
 
 export interface StudioInspectAskReport {
 	readonly block: string;
 	readonly ask: string;
-	readonly state: "answered" | "refused" | "unavailable";
+	readonly state: "answered" | "refused" | "not connected" | "unavailable";
 	readonly rows?: number;
 	readonly value?: string;
 	readonly words?: string;
@@ -378,7 +378,14 @@ export function studioInspectAsker(dataTools: readonly CloudNativeTool[]): Studi
 		} catch (error) {
 			if (context.signal.aborted) throw error;
 			const words = error instanceof Error ? error.message.replace(/^REFUSED: /, "").slice(0, 300) : "";
-			return { state: / that you may read$/.test(words) ? "refused" : "unavailable", words };
+			return {
+				state: / that you may read$/.test(words)
+					? "refused"
+					: words.startsWith("Not connected:")
+						? "not connected"
+						: "unavailable",
+				words,
+			};
 		}
 	};
 }

@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { type CloudCompanyFolderBytes, CloudCompanyFolderClient } from "@qorpera/runtime/cloud-company-folder-client";
+import {
+	type CloudCompanyFolderBytes,
+	CloudCompanyFolderClient,
+	CloudCompanyFolderError,
+} from "@qorpera/runtime/cloud-company-folder-client";
 import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import { NATIVE_HOST_CALLS, NativeHostDispatch } from "@qorpera/runtime/cloud-native-host-dispatch";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
@@ -86,4 +90,21 @@ it("keeps SQL's refusal through both gates: a question the run may not read is r
 		state: "refused",
 		words: "No question qorpera/money-now that you may read",
 	});
+});
+
+it("answers a source the company has not connected in SQL's words, while any other 55000 still says work is stopped", async () => {
+	const words = "Not connected: orders count once card payments are connected or an order is added by hand";
+	const unconnected = await hostOf(() =>
+		Response.json({ code: "55000", message: words, details: null, hint: null }, { status: 400 }),
+	);
+	expect(await unconnected.folder.companyNumbers("orders-now", {}, AbortSignal.timeout(5_000))).toEqual({
+		state: "not_connected",
+		words,
+	});
+	const stopped = await hostOf(() =>
+		Response.json({ code: "55000", message: "Company is being deleted", details: null, hint: null }, { status: 400 }),
+	);
+	const error = await stopped.folder.companyNumbers("orders-now", {}, AbortSignal.timeout(5_000)).catch((e) => e);
+	expect(error).toBeInstanceOf(CloudCompanyFolderError);
+	expect(error).toMatchObject({ failure: "stopped" });
 });

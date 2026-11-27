@@ -559,6 +559,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "A member's Google mail in the Mailbox",
 		text: "An owner or admin can now bring their Google mail straight into the company's Mailbox (either by signing in at Google from Inbox or reusing a Gmail account already connected in Settings → Company connections). Their address then shows among the mailboxes (list_hooks), and its mail reaches you as any company mail does: new mail starts the routines that listen to that mailbox, while the older mail brought in at the start never does. Email you send from that address leaves through Gmail from the member's own address and shows in their Gmail. It carries no attached files, and while Google asks the member to sign in again it is refused: tell them to sign in again in the Mailbox.",
 	},
+	{
+		id: "analytics-round-2",
+		kind: "behaviour",
+		date: "2026-11-27",
+		title: "Unconnected numbers say so; one chart a tab",
+		text: "A platform number whose source the company has not connected (card payments, a published site, the bank) now answers data_query with words starting Not connected: that say what would connect it; a connected source with nothing happening still answers real zeros. Never read or write that as zero: on an Analytics page keep its block bound (it fills itself once connected) and tell the member what to connect. A Studio page preview reports such a number as not connected. Every Analytics tab now has one big chart and at most four figures, month charts start at the first month with data, and an estimate is drawn dashed and called one.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
