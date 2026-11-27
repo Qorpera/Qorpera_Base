@@ -181,6 +181,17 @@ interface Reply extends Draft {
 	readonly message: MailMessageRef;
 }
 
+export function isMailDraftEmpty(draft: Pick<Draft, "to" | "cc" | "subject" | "text">): boolean {
+	return (
+		!draft.to.typed.trim() &&
+		!draft.to.chips.length &&
+		!draft.cc.typed.trim() &&
+		!draft.cc.chips.length &&
+		!draft.subject.trim() &&
+		!draft.text.trim()
+	);
+}
+
 const newDraft = (): Draft => ({
 	writer: null,
 	to: { chips: [], typed: "" },
@@ -1940,12 +1951,7 @@ function openMailLink(page: Page, key: string, href: string): void {
 				.trim()
 				.slice(0, 200) ?? "";
 		const body = parsed.searchParams.get("body")?.slice(0, 20_000) ?? "";
-		const emptyDraft =
-			!ui.busy &&
-			!ui.write.to.typed.trim() &&
-			!ui.write.to.chips.length &&
-			!ui.write.subject.trim() &&
-			!ui.write.text.trim();
+		const emptyDraft = !ui.busy && isMailDraftEmpty(ui.write);
 		if (emptyDraft) {
 			ui.write = {
 				...newDraft(),

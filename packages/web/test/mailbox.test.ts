@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CompanyController } from "../src/app/company.ts";
 import { CompanyMail } from "../src/app/company-mail.ts";
-import { disposeMailbox, type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
+import { disposeMailbox, isMailDraftEmpty, type MailboxManage, renderMailbox } from "../src/app/views/mailbox.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
 import {
 	type WebRoutine,
@@ -3700,6 +3700,31 @@ describe("HTML email", () => {
 		]);
 		expect(main.querySelector<HTMLInputElement>("[data-focus-key='write-subject']")?.value).toBe("Report");
 		expect(main.querySelector<HTMLTextAreaElement>("[data-focus-key='write-text']")?.value).toBe("Details");
+
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: [], typed: "" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(true);
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: ["cc@outside.example"], typed: "" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(false);
+		expect(
+			isMailDraftEmpty({
+				to: { chips: [], typed: "" },
+				cc: { chips: [], typed: "cc@outside.example" },
+				subject: "",
+				text: "",
+			}),
+		).toBe(false);
 	});
 
 	it("keeps mounted HTML iframes in place without reloading when toggling other messages or opening Reply", async () => {
