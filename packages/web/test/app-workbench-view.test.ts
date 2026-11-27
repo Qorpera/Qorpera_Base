@@ -511,7 +511,13 @@ describe("AppWorkbenchView", () => {
 		await flush();
 		view.update();
 		expect(combineSurfaceTracks).toHaveBeenCalledWith(SURFACE, [SESSION, SESSION_2], false);
-		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Combined preview (2 tracks)");
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Combined (2 tracks)");
+
+		expect(view.el.querySelector(".workbench-track-head-top .workbench-track-head-title")?.textContent).toBe(
+			"New sidebar",
+		);
+		expect(view.el.querySelector('.workbench-track-head-top [data-act="discard-track"]')).not.toBeNull();
+		expect(view.el.querySelector('.workbench-track-head-row [data-act="ship-publish-track"]')).not.toBeNull();
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="combine-land"]')!.click();
 		view.update();
@@ -829,6 +835,30 @@ describe("AppWorkbenchView", () => {
 			},
 		);
 		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		const getSurfaceAppRuntimeConfig = vi.fn(async () => ({
+			surfaceId: webApp.id,
+			profileId: COMPANY,
+			slug: webApp.slug,
+			siteId: HOSTED_SITE,
+			deploymentKind: "static" as const,
+			linkedDatabaseName: null,
+			runtimeEnvConfig: {},
+			canManage: true,
+			grants: [],
+			availableSecrets: [],
+		}));
+		const setSurfaceAppRuntimeConfig = vi.fn(async () => ({
+			surfaceId: webApp.id,
+			profileId: COMPANY,
+			slug: webApp.slug,
+			siteId: HOSTED_SITE,
+			deploymentKind: "static" as const,
+			linkedDatabaseName: "shop",
+			runtimeEnvConfig: { API_BASE_URL: "https://api.example.com" },
+			canManage: true,
+			grants: [],
+			availableSecrets: [],
+		}));
 		const client = fakeClient({
 			listSurfaces: vi.fn(async () => [webApp]),
 			getSurfaceWorkspace: vi.fn(async () =>
@@ -836,6 +866,8 @@ describe("AppWorkbenchView", () => {
 			),
 			selectSurfaceTrackPreview,
 			listCompanyCodeRepositories: vi.fn(async () => []),
+			getSurfaceAppRuntimeConfig,
+			setSurfaceAppRuntimeConfig,
 		});
 		const store = storeWith(client);
 		await store.load();
@@ -926,9 +958,29 @@ describe("AppWorkbenchView", () => {
 		expect(tracksRail.hidden).toBe(false);
 		expect(panel.hidden).toBe(false);
 
+		const previewTabBtn = () =>
+			view.el.querySelector<HTMLButtonElement>('.workbench-tab-group [data-act="panel-tab"][data-tab="preview"]')!;
+		previewTabBtn().click();
+		view.update();
+		expect(panel.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('.workbench [data-act="toggle-panel"]')!.click();
+		view.update();
+		expect(panel.hidden).toBe(true);
+		previewTabBtn().click();
+		view.update();
+		expect(panel.hidden).toBe(false);
+
 		view.el.querySelector<HTMLButtonElement>('.workbench-repo-chip[data-act="open-source"]')!.click();
 		await flush();
 		expect(view.el.querySelector('.surface-address-page[data-page="source"]')).not.toBeNull();
+		view.el.querySelector<HTMLButtonElement>(".surface-address-back")!.click();
+		await flush();
+		view.el.querySelector<HTMLButtonElement>('[data-key="runtime-config"]')!.click();
+		await flush();
+		view.el.querySelector<HTMLButtonElement>('[data-key="runtime-save"]')!.click();
+		await flush();
+		expect(setSurfaceAppRuntimeConfig).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector(".surface-address-saved")?.textContent).toContain("Saved");
 
 		unsub();
 		view.dispose();

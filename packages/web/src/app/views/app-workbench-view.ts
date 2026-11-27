@@ -1310,12 +1310,88 @@ export class AppWorkbenchView {
 			const meta = trackStateMeta(selected);
 			const shipArmed = this.#armedKey === `ship:${selected.id}`;
 			const shipPublishArmed = this.#armedKey === `ship-publish:${selected.id}`;
+			const rowActions = [
+				selected.state === "failed"
+					? h(
+							"button",
+							{
+								type: "button",
+								class: "btn btn-small",
+								"data-act": "retry-track",
+								"data-session": selected.id,
+							},
+							icon("reload"),
+							h("span", null, t("Retry")),
+						)
+					: null,
+				!isHistory && sessionOpenChanges(selected).length > 0 && !showingThisTrackPreview
+					? h(
+							"button",
+							{
+								type: "button",
+								class: "btn btn-small",
+								disabled: previewBusy,
+								"data-act": "preview-track",
+								"data-session": selected.id,
+							},
+							icon("globe"),
+							h("span", null, t("Preview")),
+						)
+					: null,
+				shippable
+					? h(
+							"button",
+							{
+								type: "button",
+								class: `btn btn-small${shipArmed ? " is-confirming" : ""}`,
+								disabled: shipBusy,
+								title: t("Merge this track into Base without publishing live yet"),
+								"data-act": "ship-track",
+								"data-session": selected.id,
+							},
+							approveLabel(t("Ship"), shipArmed),
+						)
+					: null,
+				shippable
+					? h(
+							"button",
+							{
+								type: "button",
+								class: `btn btn-small btn-primary${shipPublishArmed ? " is-confirming" : ""}`,
+								disabled: shipBusy,
+								title: t("Merge this track into Base and publish live"),
+								"data-act": "ship-publish-track",
+								"data-session": selected.id,
+							},
+							approveLabel(t("Ship & publish"), shipPublishArmed),
+						)
+					: null,
+			].filter((item): item is HTMLButtonElement => item !== null);
 			replace(
 				this.#trackHead,
 				h(
 					"div",
-					{ class: "workbench-track-head-info" },
+					{ class: "workbench-track-head-top" },
 					h("h2", { class: "workbench-track-head-title", title: selected.title }, selected.title),
+					!isHistory
+						? h(
+								"button",
+								{
+									type: "button",
+									class: "workbench-icon-btn is-danger",
+									title: t("Discard track"),
+									"aria-label": t("Discard track"),
+									disabled: discardBusy,
+									"data-act": "discard-track",
+									"data-session": selected.id,
+								},
+								icon("trash"),
+							)
+						: null,
+				),
+				h(
+					"div",
+					{ class: "workbench-track-head-row" },
 					h(
 						"div",
 						{ class: "workbench-track-head-badges" },
@@ -1347,80 +1423,7 @@ export class AppWorkbenchView {
 								)
 							: null,
 					),
-				),
-				h(
-					"div",
-					{ class: "workbench-track-head-actions" },
-					selected.state === "failed"
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small",
-									"data-act": "retry-track",
-									"data-session": selected.id,
-								},
-								icon("reload"),
-								h("span", null, t("Retry")),
-							)
-						: null,
-					!isHistory && sessionOpenChanges(selected).length > 0 && !showingThisTrackPreview
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small",
-									disabled: previewBusy,
-									"data-act": "preview-track",
-									"data-session": selected.id,
-								},
-								icon("globe"),
-								h("span", null, t("Preview")),
-							)
-						: null,
-					shippable
-						? h(
-								"button",
-								{
-									type: "button",
-									class: `btn btn-small${shipArmed ? " is-confirming" : ""}`,
-									disabled: shipBusy,
-									title: t("Merge this track into Base without publishing live yet"),
-									"data-act": "ship-track",
-									"data-session": selected.id,
-								},
-								approveLabel(t("Ship"), shipArmed),
-							)
-						: null,
-					shippable
-						? h(
-								"button",
-								{
-									type: "button",
-									class: `btn btn-small btn-primary${shipPublishArmed ? " is-confirming" : ""}`,
-									disabled: shipBusy,
-									title: t("Merge this track into Base and publish live"),
-									"data-act": "ship-publish-track",
-									"data-session": selected.id,
-								},
-								approveLabel(t("Ship & publish"), shipPublishArmed),
-							)
-						: null,
-					!isHistory
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "workbench-icon-btn is-danger",
-									title: t("Discard track"),
-									"aria-label": t("Discard track"),
-									disabled: discardBusy,
-									"data-act": "discard-track",
-									"data-session": selected.id,
-								},
-								icon("trash"),
-							)
-						: null,
+					rowActions.length > 0 ? h("div", { class: "workbench-track-head-actions" }, ...rowActions) : null,
 				),
 			);
 		}
@@ -2136,7 +2139,7 @@ export class AppWorkbenchView {
 			const trackCount = (workspace?.activeSessions ?? []).filter((session) =>
 				session.changes.some((change) => toggled.has(change.id)),
 			).length;
-			return trackCount >= 2 ? t("Combined preview ({count} tracks)", { count: trackCount }) : t("Combined preview");
+			return trackCount >= 2 ? t("Combined ({count} tracks)", { count: trackCount }) : t("Combined preview");
 		}
 		if (preview.previewScope === "track" && selected && preview.selectedSessionId === selected.id) {
 			return t("Isolated track preview");
@@ -2609,7 +2612,7 @@ export class AppWorkbenchView {
 				? t("Working… press Stop to pause")
 				: discarded
 					? t("This track was discarded. Start a new track to continue.")
-					: t("Continue discussing or refine this track…");
+					: t("Reply or refine this track…");
 
 		if (running && resolved) {
 			replace(
@@ -2750,15 +2753,11 @@ export class AppWorkbenchView {
 			case "panel-tab": {
 				const tab = target.dataset.tab as WorkbenchPanelTab | undefined;
 				if (!tab) return;
-				if (this.#panelOpen && this.#panelTab === tab && target.classList.contains("workbench-tab-btn")) {
-					this.#panelOpen = false;
-				} else {
-					this.#panelOpen = true;
-					this.#panelTab = tab;
-					if (this.#tracksOpen && this.#isTightRowLayout()) {
-						this.#tracksOpen = false;
-						this.#tracksUserPinned = false;
-					}
+				this.#panelOpen = true;
+				this.#panelTab = tab;
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
+					this.#tracksOpen = false;
+					this.#tracksUserPinned = false;
 				}
 				this.update(surface);
 				return;

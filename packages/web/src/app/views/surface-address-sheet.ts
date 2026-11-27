@@ -371,6 +371,8 @@ export class SurfaceAddress {
 	#runtimeConfig: SurfaceAppRuntimeConfig | null | undefined;
 	#runtimeLoading = false;
 	#savingRuntime = false;
+	#runtimeSaved = false;
+	#runtimeSavedTimer: ReturnType<typeof setTimeout> | undefined;
 	#grantingSecret = false;
 	#revokingGrantId: string | null = null;
 	#runtimeEnvRows: Array<{ id: number; key: string; value: string }> = [];
@@ -408,6 +410,7 @@ export class SurfaceAddress {
 		});
 		this.#runtimeDbField.setAttribute("aria-label", t("Linked company database (optional)"));
 		this.#runtimeDbField.placeholder = t("e.g. shop");
+		this.#runtimeDbField.addEventListener("input", () => this.#clearRuntimeSaved());
 		this.#runtimeSecretSelect.setAttribute("aria-label", t("Secret to grant"));
 		this.#runtimeScopeSelect.setAttribute("aria-label", t("Secret scope"));
 		this.#runtimeTargetSelect.setAttribute("aria-label", t("Target environment"));
@@ -459,6 +462,7 @@ export class SurfaceAddress {
 			this.#runtimeConfig = undefined;
 			this.#runtimeLoading = false;
 			this.#savingRuntime = false;
+			this.#clearRuntimeSaved(false);
 			this.#grantingSecret = false;
 			this.#revokingGrantId = null;
 			this.#runtimeEnvRows = [];
@@ -585,6 +589,7 @@ export class SurfaceAddress {
 		if (this.#timer !== undefined) clearTimeout(this.#timer);
 		this.#timer = undefined;
 		this.#cancelSlugCheck();
+		this.#clearRuntimeSaved(false);
 		this.#disarm(false);
 		this.#sheet.hidden = true;
 		this.#sheet.replaceChildren();
@@ -1221,6 +1226,7 @@ export class SurfaceAddress {
 			source ? [source.repositoryKey ?? "", source.repositorySubpath ?? "", source.defaultBranch] : null,
 			this.#runtimeLoading,
 			this.#savingRuntime,
+			this.#runtimeSaved,
 			this.#grantingSecret,
 			this.#revokingGrantId ?? "",
 			this.#runtimeEnvRows.map((row) => row.id),
@@ -1664,7 +1670,29 @@ export class SurfaceAddress {
 		}
 	}
 
+	#clearRuntimeSaved(repaint = true): void {
+		if (this.#runtimeSavedTimer !== undefined) {
+			clearTimeout(this.#runtimeSavedTimer);
+			this.#runtimeSavedTimer = undefined;
+		}
+		if (!this.#runtimeSaved) return;
+		this.#runtimeSaved = false;
+		if (repaint) this.#paint();
+	}
+
+	#markRuntimeSaved(): void {
+		if (this.#runtimeSavedTimer !== undefined) clearTimeout(this.#runtimeSavedTimer);
+		this.#runtimeSaved = true;
+		this.#runtimeSavedTimer = setTimeout(() => {
+			this.#runtimeSavedTimer = undefined;
+			if (!this.#runtimeSaved || this.#setup.signal.aborted) return;
+			this.#runtimeSaved = false;
+			this.#paint();
+		}, 2500);
+	}
+
 	#openRuntime(binding: SurfaceRuntimeConfigBinding): void {
+		this.#clearRuntimeSaved(false);
 		this.#go({ kind: "runtime" });
 		void this.#loadRuntime(binding);
 	}
@@ -1728,6 +1756,7 @@ export class SurfaceAddress {
 		}
 		const target = this.#target;
 		this.#savingRuntime = true;
+		this.#clearRuntimeSaved(false);
 		this.#problem = undefined;
 		this.#paint();
 		this.#setup.changed();
@@ -1738,6 +1767,7 @@ export class SurfaceAddress {
 				if (updated) {
 					this.#runtimeConfig = updated;
 					this.#syncRuntimeFields(updated);
+					this.#markRuntimeSaved();
 				}
 				this.#changed();
 			},
@@ -1845,6 +1875,7 @@ export class SurfaceAddress {
 								"data-key": `runtime-env-key-${row.id}`,
 								oninput: (event: Event) => {
 									row.key = (event.target as HTMLInputElement).value;
+									this.#clearRuntimeSaved();
 								},
 							});
 							const valueInput = h("input", {
@@ -1857,6 +1888,7 @@ export class SurfaceAddress {
 								"data-key": `runtime-env-val-${row.id}`,
 								oninput: (event: Event) => {
 									row.value = (event.target as HTMLInputElement).value;
+									this.#clearRuntimeSaved();
 								},
 							});
 							return h(
@@ -1875,6 +1907,7 @@ export class SurfaceAddress {
 												disabled: this.#savingRuntime,
 												"data-key": `runtime-env-rm-${row.id}`,
 												onclick: () => {
+													this.#clearRuntimeSaved(false);
 													this.#runtimeEnvRows = this.#runtimeEnvRows.filter((item) => item.id !== row.id);
 													this.#paint();
 												},
@@ -1991,6 +2024,7 @@ export class SurfaceAddress {
 										"data-key": "runtime-add-env",
 										disabled: this.#savingRuntime || this.#runtimeEnvRows.length >= 64,
 										onclick: () => {
+											this.#clearRuntimeSaved(false);
 											this.#runtimeEnvRows.push({ id: ++this.#runtimeEnvRowSeq, key: "", value: "" });
 											this.#paint();
 										},
@@ -2005,6 +2039,14 @@ export class SurfaceAddress {
 						? h(
 								"div",
 								{ class: "surface-address-end" },
+								this.#runtimeSaved
+									? h(
+											"span",
+											{ class: "surface-address-saved", role: "status" },
+											icon("check"),
+											h("span", null, t("Saved")),
+										)
+									: null,
 								h(
 									"button",
 									{

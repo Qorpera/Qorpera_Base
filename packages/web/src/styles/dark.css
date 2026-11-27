@@ -287,6 +287,7 @@
 :root[data-theme="dark"] .workbench-tab-btn.is-active { background: rgba(255, 255, 255, 0.12); box-shadow: none; }
 :root[data-theme="dark"] .workbench-track-item.is-selected { background: rgba(255, 255, 255, 0.08); box-shadow: none; }
 :root[data-theme="dark"] :is(
+	.surface-address-saved,
 	.workbench-track-state.is-ready,
 	.workbench-track-state.is-done,
 	.workbench-track-meta-chip.is-ok,
