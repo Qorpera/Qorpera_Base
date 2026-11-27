@@ -1762,13 +1762,35 @@ export function mountApplication(
 						});
 					}
 				}
-				// The bank's sign-in sent the member back to the Bank page they started it on, which finishes it. No other
-				// connector is signed in from the web since Company connections left Settings (10 Nov 2026).
 				if (connectorReturn?.connector === "bank") {
 					const bankReturn = connectorReturn;
 					const loadedOps = lazyOpsModule.get();
 					if (loadedOps) loadedOps.bank.noteBankReturn(bankReturn);
 					else void lazyOpsModule.load().then(({ bank: { noteBankReturn } }) => noteBankReturn(bankReturn));
+				} else if (connectorReturn) {
+					const serviceReturn = connectorReturn;
+					const openReturnedSettings = () => {
+						if (disposed || company !== controller) return;
+						const route = currentRoute();
+						if (
+							route.name === "company" &&
+							route.section === "home" &&
+							(resolvingRoute !== undefined || !homeReason)
+						)
+							settingsAfterHome = "company-connections";
+						else openSettings("company-connections");
+					};
+					const loadedSettings = lazySettingsModule.get();
+					if (loadedSettings) {
+						loadedSettings.settingsServices.noteConnectorReturn(serviceReturn);
+						queueMicrotask(openReturnedSettings);
+					} else {
+						void lazySettingsModule.load().then((mod) => {
+							if (disposed || company !== controller) return;
+							mod.settingsServices.noteConnectorReturn(serviceReturn);
+							openReturnedSettings();
+						});
+					}
 				}
 				connectorReturn = undefined;
 				computerPanels = createComputerPanels(controller, profile, userId);
