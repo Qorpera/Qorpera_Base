@@ -21,7 +21,10 @@ import {
 	type BuildAppImageFn,
 	buildAppImageWithScript,
 	buildNativeAppEnvSpec,
+	isDefiniteAppHostDeployRefusal,
 	type NativeEdgeHostingConfig,
+	resolveAppRuntimeEnv,
+	revokeCompanyDataDirectLogin,
 	triggerBlueGreenAppDeploy,
 } from "./native-webapp-deploy.ts";
 import {
@@ -63,6 +66,7 @@ export interface CodeChangeLandedEvent {
 }
 
 export interface AppAutoRedeployHooks {
+	readonly runtimeEnvManagedByReload?: boolean;
 	currentReleaseId(site: string, signal: AbortSignal): Promise<string | null>;
 	loadBuildSecrets?(
 		site: string,
@@ -162,7 +166,10 @@ function parseHealthUrl(raw: unknown): string {
 
 export function parseAppDeployConfig(
 	raw: string | unknown,
-	options?: { readonly allowRuntimeSecretInjection?: boolean },
+	options?: {
+		readonly allowRuntimeSecretInjection?: boolean;
+		readonly allowDatabaseUrlInjection?: boolean;
+	},
 ): AppAutoRedeployConfig {
 	let decoded: unknown = raw;
 	if (typeof raw === "string") {
@@ -251,8 +258,11 @@ export function parseAppDeployConfig(
 	if (typeof injectDatabaseUrl !== "boolean") {
 		throw new RangeError("deploy.json injectDatabaseUrl must be boolean");
 	}
-	if ((injectRuntimeSecrets || injectDatabaseUrl) && !options?.allowRuntimeSecretInjection) {
+	if (injectRuntimeSecrets && !options?.allowRuntimeSecretInjection) {
 		throw new RangeError("deploy.json runtime secret injection is not yet supported by app-host");
+	}
+	if (injectDatabaseUrl && !options?.allowDatabaseUrlInjection) {
+		throw new RangeError("deploy.json database URL injection is not yet supported by app-host");
 	}
 	return Object.freeze({
 		schema: APP_DEPLOY_CONFIG_SCHEMA,
@@ -443,7 +453,7 @@ export async function runPostLandAppAutoRedeploy(options: {
 	let runtimeEnvUpdated = false;
 	let previousRuntimeEnv: Buffer | null = null;
 	try {
-		if (config.injectRuntimeSecrets) {
+		if (config.injectRuntimeSecrets && !hooks.runtimeEnvManagedByReload) {
 			if (!hooks.loadRuntimeSecrets || !secretsManager) {
 				throw new Error("APP_SECRETS_DELIVERY_UNAVAILABLE");
 			}
@@ -619,7 +629,14 @@ export function createNativeEdgeAutoRedeploy(
 		);
 		if (!configResult) return null;
 
-		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig));
+		const canInjectRuntimeSecrets = Boolean(options.nativeEdge.broker);
+		const canInjectDatabaseUrl = Boolean(
+			options.nativeEdge.companyDataUrl && options.nativeEdge.companyDataDirectLoginToken,
+		);
+		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig), {
+			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
+			allowDatabaseUrlInjection: canInjectDatabaseUrl,
+		});
 		const match = shouldAutoRedeployOnCodeChange(parsedConfig, {
 			kind: "landed",
 			repo: `${repository.owner}/${repository.name}`,
@@ -678,16 +695,80 @@ export function createNativeEdgeAutoRedeploy(
 		const vcpuLimit =
 			typeof lookup.vcpuLimit === "number" && Number.isFinite(lookup.vcpuLimit) ? lookup.vcpuLimit : 1;
 
+		const runtimeEnvConfig: Record<string, string> = {};
+		if (
+			lookup.runtimeEnvConfig &&
+			typeof lookup.runtimeEnvConfig === "object" &&
+			!Array.isArray(lookup.runtimeEnvConfig)
+		) {
+			for (const [k, v] of Object.entries(lookup.runtimeEnvConfig as Record<string, unknown>)) {
+				if (typeof v === "string") runtimeEnvConfig[k] = v;
+			}
+		}
+		const linkedDatabaseName =
+			typeof lookup.linkedDatabaseName === "string" && lookup.linkedDatabaseName.length > 0
+				? lookup.linkedDatabaseName
+				: null;
+		const hasGrantedSecrets =
+			parsedConfig.targetEnv === "prod"
+				? lookup.hasRuntimeProdSecrets === true
+				: lookup.hasRuntimeDevSecrets === true;
+		const shouldInjectSecrets = parsedConfig.injectRuntimeSecrets || hasGrantedSecrets;
+		const shouldInjectDatabaseUrl = parsedConfig.injectDatabaseUrl || linkedDatabaseName !== null;
+		if (shouldInjectSecrets && !canInjectRuntimeSecrets) {
+			throw new Error("APP_SECRETS_BROKER_UNAVAILABLE");
+		}
+		if (parsedConfig.injectDatabaseUrl && !linkedDatabaseName) {
+			throw new Error("APP_LINKED_DATABASE_NOT_CONFIGURED");
+		}
+		if (shouldInjectDatabaseUrl && !canInjectDatabaseUrl) {
+			throw new Error("COMPANY_DATA_DIRECT_LOGIN_UNAVAILABLE");
+		}
+
 		const releaseImages = new Map<string, string>([[currentDeploymentId, currentImageRef]]);
 		let startedNewOnAppHost = false;
 		let promotedNewInDb = false;
+		let provisionedNewDbLogin = false;
 		const envSpec = buildNativeAppEnvSpec({
 			port: appPort,
 			repositoryOwner: repository.owner,
 			repositoryName: repository.name,
 			companyDataUrl: options.nativeEdge.companyDataUrl,
+			companyDataPublicUrl: options.nativeEdge.companyDataPublicUrl,
 			objectStorageUrl: options.nativeEdge.objectStorageUrl,
+			runtimeEnvConfig,
 		});
+		const resolveDeployEnv = async (
+			deploymentId: string,
+			hookSignal: AbortSignal,
+			directLoginGeneration?: string,
+		) => {
+			return await resolveAppRuntimeEnv({
+				baseEnvSpec: envSpec,
+				siteId,
+				environmentId: claim.environmentId,
+				deploymentId,
+				...(directLoginGeneration !== undefined ? { directLoginGeneration } : {}),
+				targetEnv: parsedConfig.targetEnv,
+				hasRuntimeSecrets: shouldInjectSecrets,
+				linkedDatabaseName: shouldInjectDatabaseUrl ? linkedDatabaseName : null,
+				nativeEdge: options.nativeEdge,
+				signal: hookSignal,
+			});
+		};
+		const revokeDirectLoginBestEffort = async (principal: string, generation?: string): Promise<void> => {
+			if (!options.nativeEdge.companyDataUrl || !options.nativeEdge.companyDataDirectLoginToken) return;
+			await revokeCompanyDataDirectLogin({
+				companyDataUrl: options.nativeEdge.companyDataUrl,
+				directLoginToken: options.nativeEdge.companyDataDirectLoginToken,
+				environmentId: claim.environmentId,
+				database: null,
+				principal,
+				...(generation !== undefined ? { generation } : {}),
+				fetchImpl: options.nativeEdge.companyDataFetchImpl,
+				signal: AbortSignal.timeout(5_000),
+			}).catch(() => undefined);
+		};
 		const repoKey = `${claim.environmentId}:${repository.owner.toLowerCase()}/${repository.name.toLowerCase()}`;
 		const changeKey = `${repoKey}:${change}`;
 
@@ -724,7 +805,10 @@ export function createNativeEdgeAutoRedeploy(
 			rawConfig: configResult.rawConfig,
 			siteId,
 			paths: configResult.paths,
+			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
+			allowDatabaseUrlInjection: canInjectDatabaseUrl,
 			hooks: {
+				runtimeEnvManagedByReload: true,
 				currentReleaseId: async () => currentDeploymentId,
 				build: async (_input, hookSignal) => {
 					const runBuild = async (): Promise<{ releaseId: string }> => {
@@ -847,21 +931,35 @@ export function createNativeEdgeAutoRedeploy(
 				reload: async (input, hookSignal) => {
 					const ociImageRef = releaseImages.get(input.releaseId);
 					if (!ociImageRef) throw new Error("AUTO_REDEPLOY_IMAGE_MISSING");
-					const deployed = await triggerBlueGreenAppDeploy({
-						appHostInternalUrl,
-						controlToken: appHostControlToken,
-						deploymentId: input.releaseId,
-						siteId,
-						slug,
-						ociImageRef,
-						healthPath,
-						idleTimeoutSec,
-						memoryMb,
-						vcpuLimit,
-						env: envSpec,
-						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
-						signal: hookSignal,
-					});
+					const resolved = await resolveDeployEnv(input.releaseId, hookSignal);
+					provisionedNewDbLogin = resolved.secretNames.includes("DATABASE_URL");
+					let deployed: { upstreamAddr: string };
+					try {
+						deployed = await triggerBlueGreenAppDeploy({
+							appHostInternalUrl,
+							controlToken: appHostControlToken,
+							deploymentId: input.releaseId,
+							siteId,
+							slug,
+							ociImageRef,
+							healthPath,
+							idleTimeoutSec,
+							memoryMb,
+							vcpuLimit,
+							env: resolved.runtimeEnv,
+							...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+							signal: hookSignal,
+						});
+					} catch (error) {
+						if (provisionedNewDbLogin) {
+							await revokeDirectLoginBestEffort(input.releaseId);
+						}
+						if (error instanceof Error) {
+							const masked = maskAppLogText(resolved.mask, error.message);
+							if (masked !== error.message) throw new Error(masked);
+						}
+						throw error;
+					}
 					startedNewOnAppHost = true;
 					await switchLiveDeployment(input.releaseId, deployed.upstreamAddr, "release", hookSignal);
 					promotedNewInDb = true;
@@ -870,23 +968,41 @@ export function createNativeEdgeAutoRedeploy(
 					if (!input.previousReleaseId || (!startedNewOnAppHost && !promotedNewInDb)) return;
 					const previousImage = releaseImages.get(input.previousReleaseId);
 					if (!previousImage) throw new Error("AUTO_REDEPLOY_PREVIOUS_IMAGE_MISSING");
-					const restored = await triggerBlueGreenAppDeploy({
-						appHostInternalUrl,
-						controlToken: appHostControlToken,
-						deploymentId: input.previousReleaseId,
-						siteId,
-						slug,
-						ociImageRef: previousImage,
-						healthPath,
-						idleTimeoutSec,
-						memoryMb,
-						vcpuLimit,
-						env: envSpec,
-						...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
-						signal: hookSignal,
-					});
+					const rollbackGeneration = input.failedReleaseId;
+					const resolved = await resolveDeployEnv(input.previousReleaseId, hookSignal, rollbackGeneration);
+					const provisionedRollbackDbLogin = resolved.secretNames.includes("DATABASE_URL");
+					let restored: { upstreamAddr: string };
+					try {
+						restored = await triggerBlueGreenAppDeploy({
+							appHostInternalUrl,
+							controlToken: appHostControlToken,
+							deploymentId: input.previousReleaseId,
+							siteId,
+							slug,
+							ociImageRef: previousImage,
+							healthPath,
+							idleTimeoutSec,
+							memoryMb,
+							vcpuLimit,
+							env: resolved.runtimeEnv,
+							...(options.nativeEdge.appHostFetchImpl ? { fetchImpl: options.nativeEdge.appHostFetchImpl } : {}),
+							signal: hookSignal,
+						});
+					} catch (error) {
+						if (provisionedRollbackDbLogin && isDefiniteAppHostDeployRefusal(error)) {
+							await revokeDirectLoginBestEffort(input.previousReleaseId, rollbackGeneration);
+						}
+						if (error instanceof Error) {
+							const masked = maskAppLogText(resolved.mask, error.message);
+							if (masked !== error.message) throw new Error(masked);
+						}
+						throw error;
+					}
 					if (promotedNewInDb) {
 						await switchLiveDeployment(input.previousReleaseId, restored.upstreamAddr, "back", hookSignal);
+					}
+					if (provisionedNewDbLogin) {
+						await revokeDirectLoginBestEffort(input.failedReleaseId);
 					}
 				},
 			},

@@ -154,6 +154,8 @@ interface Config {
 		builderScriptPath?: string;
 		registryPrefix?: string;
 		companyDataUrl?: string;
+		companyDataDirectLoginTokenCredential?: string;
+		companyDataPublicUrl?: string;
 		objectStorageUrl?: string;
 	} | null;
 	snapshots: {
@@ -249,6 +251,8 @@ function webHostingConfig(value: unknown): Config["webHosting"] {
 		"builderScriptPath",
 		"registryPrefix",
 		"companyDataUrl",
+		"companyDataDirectLoginTokenCredential",
+		"companyDataPublicUrl",
 		"objectStorageUrl",
 	]);
 	if (Object.keys(input).some((k) => !allowed.has(k))) throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
@@ -280,6 +284,17 @@ function webHostingConfig(value: unknown): Config["webHosting"] {
 						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
 					})();
 	const companyDataUrl = input.companyDataUrl === undefined ? undefined : internalHttpOrigin(input.companyDataUrl);
+	const companyDataDirectLoginTokenCredential =
+		input.companyDataDirectLoginTokenCredential === undefined
+			? undefined
+			: typeof input.companyDataDirectLoginTokenCredential === "string" &&
+					/^qorpera-(?:web|data)-[a-z0-9-]{1,64}$/.test(input.companyDataDirectLoginTokenCredential)
+				? input.companyDataDirectLoginTokenCredential
+				: (() => {
+						throw new Error("CODING_EXECUTOR_CONFIG_INVALID");
+					})();
+	const companyDataPublicUrl =
+		input.companyDataPublicUrl === undefined ? undefined : internalHttpOrigin(input.companyDataPublicUrl);
 	const objectStorageUrl = input.objectStorageUrl === undefined ? undefined : internalHttpOrigin(input.objectStorageUrl);
 	return {
 		routerInternalUrl,
@@ -289,6 +304,8 @@ function webHostingConfig(value: unknown): Config["webHosting"] {
 		...(builderScriptPath !== undefined ? { builderScriptPath } : {}),
 		...(registryPrefix !== undefined ? { registryPrefix } : {}),
 		...(companyDataUrl !== undefined ? { companyDataUrl } : {}),
+		...(companyDataDirectLoginTokenCredential !== undefined ? { companyDataDirectLoginTokenCredential } : {}),
+		...(companyDataPublicUrl !== undefined ? { companyDataPublicUrl } : {}),
 		...(objectStorageUrl !== undefined ? { objectStorageUrl } : {}),
 	};
 }
@@ -583,7 +600,27 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 				...(config.webHosting.builderScriptPath ? { builderScriptPath: config.webHosting.builderScriptPath } : {}),
 				...(config.webHosting.registryPrefix ? { registryPrefix: config.webHosting.registryPrefix } : {}),
 				...(config.webHosting.companyDataUrl ? { companyDataUrl: config.webHosting.companyDataUrl } : {}),
+				...(config.webHosting.companyDataDirectLoginTokenCredential
+					? {
+							companyDataDirectLoginToken: await credential(
+								config.webHosting.companyDataDirectLoginTokenCredential,
+							),
+						}
+					: {}),
+				...(config.webHosting.companyDataPublicUrl
+					? { companyDataPublicUrl: config.webHosting.companyDataPublicUrl }
+					: {}),
 				...(config.webHosting.objectStorageUrl ? { objectStorageUrl: config.webHosting.objectStorageUrl } : {}),
+				...(config.broker
+					? {
+							broker: {
+								origin: config.broker.origin,
+								executorToken: await credential(config.broker.executorTokenCredential),
+								executorOwner: config.owner,
+								machineIdSha256,
+							},
+						}
+					: {}),
 			}
 		: undefined;
 	const repoBuildTails = new Map<string, Promise<unknown>>();

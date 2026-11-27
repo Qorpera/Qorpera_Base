@@ -704,4 +704,452 @@ describe("app-auto-redeploy", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+
+	it("injects broker secrets and scoped DATABASE_URL on createNativeEdgeAutoRedeploy reload and rollback without tmpfs secretsManager", async () => {
+		const root = await mkdtemp(join(tmpdir(), "qorpera-native-redeploy-secrets-"));
+		const companyId = randomUUID();
+		const environmentId = randomUUID();
+		const siteId = randomUUID();
+		const oldDepId = randomUUID();
+		const newDepId = randomUUID();
+		const machineSha = "d".repeat(64);
+		const oldImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"a".repeat(64)}`;
+		const newImage = `127.0.0.1:5000/qorpera-apps/billing@sha256:${"b".repeat(64)}`;
+		const stripeSecret = "sk-live-redeploy-secret-445566";
+		const dbUrl = "postgresql://billing_rw:redeploy-db-pass-332211@10.99.0.10:5432/co_billing?sslmode=require";
+		const rawDeployConfig = JSON.stringify({
+			autoRedeploy: true,
+			site: "billing-app",
+			paths: ["src/**"],
+			buildCommand: "npm run build",
+			reloadCommand: "reload",
+			healthUrl: "http://127.0.0.1:3000/health",
+			healthAttempts: 1,
+			healthIntervalMs: 0,
+			injectRuntimeSecrets: true,
+			injectDatabaseUrl: true,
+		});
+		const claim = {
+			profileId: companyId,
+			environmentId,
+			repository: { host: "qorpera", owner: "acme", name: "billing", baseBranch: "main" },
+		} as never;
+		try {
+			const registerEnvSpecs: Array<Record<string, string>> = [];
+			const appHostBodies: Array<Record<string, unknown>> = [];
+			const directLoginEvents: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
+			let appHostSeq = 0;
+			let reloadDeployMode: "ok" | "timeout_abort" = "ok";
+			let rollbackDeployMode: "ok" | "http_500" | "timeout_abort" = "ok";
+			const control = {
+				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
+					if (method === "qorpera_code_site_for_auto_redeploy") {
+						return {
+							schema: "qorpera.code-site-auto-redeploy/v1",
+							found: true,
+							companyId,
+							siteId,
+							slug: "billing-app",
+							kind: "server",
+							tree: SHA_AFTER,
+							dockerfile: null,
+							currentDeploymentId: oldDepId,
+							currentImageRef: oldImage,
+							existingDeploymentId: null,
+							existingImageRef: null,
+							appPort: 3000,
+							healthPath: "/health",
+							idleTimeoutSec: 600,
+							memoryMb: 512,
+							vcpuLimit: 1,
+							runtimeEnvConfig: { PUBLIC_BILLING_MODE: "live" },
+							linkedDatabaseName: "billing",
+							hasRuntimeDevSecrets: false,
+							hasRuntimeProdSecrets: true,
+						};
+					}
+					if (method === "qorpera_web_code_deployment_register") {
+						registerEnvSpecs.push((args.p_env_spec ?? {}) as Record<string, string>);
+						return {
+							schema: "qorpera.web-code-deployment/v1",
+							state: "ready",
+							siteId,
+							slug: "billing-app",
+							versionId: randomUUID(),
+							deploymentId: newDepId,
+							versionNumber: 2,
+							kind: "server",
+						};
+					}
+					if (method === "qorpera_code_site_auto_redeploy_switch") {
+						return {
+							schema: "qorpera.code-site-auto-redeploy-switch/v1",
+							state: "live",
+							siteId,
+							deploymentId: args.p_deployment_id,
+							versionId: randomUUID(),
+							upstreamAddr: args.p_upstream_addr,
+						};
+					}
+					throw new Error(`unexpected rpc ${method}`);
+				}),
+			};
+			const autoRedeploy = createNativeEdgeAutoRedeploy({
+				control,
+				codeHostJobs: {
+					run: async (_c, _e, _s, fn) => await fn({} as never, {} as never),
+				},
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+					companyDataUrl: "http://127.0.0.1:8091",
+					companyDataPublicUrl: "https://data.qorpera.com",
+					companyDataDirectLoginToken: "direct-tok",
+					companyDataFetchImpl: async (url, init) => {
+						const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+						directLoginEvents.push({ method: init.method, url, ...(body ? { body } : {}) });
+						if (init.method === "DELETE") {
+							return { status: 200, body: JSON.stringify({ revoked: true }) };
+						}
+						return {
+							status: 200,
+							body: JSON.stringify({
+								connectionString: dbUrl,
+								host: "10.99.0.10",
+								port: 5432,
+								database: "co_billing",
+								schema: "public",
+								user: "billing_rw",
+							}),
+						};
+					},
+					broker: {
+						origin: "https://broker.internal",
+						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: machineSha,
+						fetchImpl: async () =>
+							new Response(
+								JSON.stringify({
+									schema: "qorpera.app-secrets/v1",
+									siteId,
+									slug: "billing-app",
+									scope: "runtime",
+									targetEnv: "prod",
+									secrets: { STRIPE_KEY: stripeSecret },
+								}),
+								{ status: 200, headers: { "content-type": "application/json" } },
+							),
+					},
+					buildAppImage: async () => ({ ociImageRef: newImage, builtMs: 12 }),
+					appHostFetchImpl: async (_url, init) => {
+						appHostSeq += 1;
+						const parsed = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+						appHostBodies.push(parsed);
+						if (reloadDeployMode === "timeout_abort" && parsed.deployment_id === newDepId) {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+						}
+						if (rollbackDeployMode === "http_500" && parsed.deployment_id === oldDepId) {
+							return { status: 500, body: "rollback container failed" };
+						}
+						if (rollbackDeployMode === "timeout_abort" && parsed.deployment_id === oldDepId) {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+						}
+						return {
+							status: 200,
+							body: JSON.stringify({ upstream_addr: `127.0.0.1:${46440 + appHostSeq}` }),
+						};
+					},
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: rawDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+
+			const ctx = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 9 },
+				new AbortController().signal,
+			);
+			expect(ctx).not.toBeNull();
+			expect(ctx!.allowRuntimeSecretInjection).toBe(true);
+			expect(ctx!.allowDatabaseUrlInjection).toBe(true);
+			expect(ctx!.hooks.runtimeEnvManagedByReload).toBe(true);
+
+			const config = parseAppDeployConfig(ctx!.rawConfig, {
+				allowRuntimeSecretInjection: ctx!.allowRuntimeSecretInjection === true,
+				allowDatabaseUrlInjection: ctx!.allowDatabaseUrlInjection === true,
+			});
+			const res = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "9",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctx!.paths ?? [],
+				},
+				hooks: {
+					...ctx!.hooks,
+					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(res.status).toBe("rolled_back");
+			expect(registerEnvSpecs).toHaveLength(1);
+			expect(registerEnvSpecs[0]?.PUBLIC_BILLING_MODE).toBe("live");
+			expect(registerEnvSpecs[0]?.STRIPE_KEY).toBeUndefined();
+			expect(registerEnvSpecs[0]?.DATABASE_URL).toBeUndefined();
+
+			expect(appHostBodies).toHaveLength(2);
+			for (const body of appHostBodies) {
+				expect(body.env).toMatchObject({
+					PUBLIC_BILLING_MODE: "live",
+					QORPERA_COMPANY_DATA_PUBLIC_URL: "https://data.qorpera.com",
+					STRIPE_KEY: stripeSecret,
+					DATABASE_URL: dbUrl,
+				});
+			}
+			expect(directLoginEvents[0]?.body).toEqual({
+				database: "billing",
+				access: "read-write",
+				connectionLimit: 4,
+				principal: newDepId,
+			});
+			expect(directLoginEvents[1]?.body).toEqual({
+				database: "billing",
+				access: "read-write",
+				connectionLimit: 4,
+				principal: oldDepId,
+				generation: newDepId,
+			});
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${newDepId}`),
+				),
+			).toBe(true);
+
+			directLoginEvents.length = 0;
+			rollbackDeployMode = "http_500";
+			const ctxRbFail = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 11 },
+				new AbortController().signal,
+			);
+			const resRbFail = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "11",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxRbFail!.paths ?? [],
+				},
+				hooks: {
+					...ctxRbFail!.hooks,
+					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resRbFail.status).toBe("rollback_failed");
+			expect(
+				directLoginEvents.some(
+					(e) =>
+						e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${oldDepId}&generation=${newDepId}`),
+				),
+			).toBe(true);
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${oldDepId}`),
+				),
+			).toBe(false);
+
+			directLoginEvents.length = 0;
+			rollbackDeployMode = "timeout_abort";
+			const ctxRbTimeout = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 12 },
+				new AbortController().signal,
+			);
+			const resRbTimeout = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "12",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxRbTimeout!.paths ?? [],
+				},
+				hooks: {
+					...ctxRbTimeout!.hooks,
+					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resRbTimeout.status).toBe("rollback_failed");
+			expect(directLoginEvents.some((e) => e.method === "DELETE")).toBe(false);
+			rollbackDeployMode = "ok";
+
+			directLoginEvents.length = 0;
+			reloadDeployMode = "timeout_abort";
+			const ctxReloadTimeout = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 13 },
+				new AbortController().signal,
+			);
+			const resReloadTimeout = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "13",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxReloadTimeout!.paths ?? [],
+				},
+				hooks: {
+					...ctxReloadTimeout!.hooks,
+					probeHealth: async () => ({ ok: true, status: 200 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resReloadTimeout.status).toBe("rolled_back");
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${newDepId}`),
+				),
+			).toBe(true);
+			reloadDeployMode = "ok";
+
+			expect(() =>
+				parseAppDeployConfig(
+					{
+						site: "billing-app",
+						buildCommand: "npm run build",
+						reloadCommand: "reload",
+						healthUrl: "http://127.0.0.1:3000/health",
+						injectRuntimeSecrets: true,
+					},
+					{ allowRuntimeSecretInjection: false, allowDatabaseUrlInjection: true },
+				),
+			).toThrow(/runtime secret injection/);
+			expect(() =>
+				parseAppDeployConfig(
+					{
+						site: "billing-app",
+						buildCommand: "npm run build",
+						reloadCommand: "reload",
+						healthUrl: "http://127.0.0.1:3000/health",
+						injectDatabaseUrl: true,
+					},
+					{ allowRuntimeSecretInjection: true, allowDatabaseUrlInjection: false },
+				),
+			).toThrow(/database URL injection/);
+
+			const implicitDeployConfig = JSON.stringify({
+				autoRedeploy: true,
+				site: "billing-app",
+				paths: ["src/**"],
+				buildCommand: "npm run build",
+				reloadCommand: "reload",
+				healthUrl: "http://127.0.0.1:3000/health",
+				healthAttempts: 1,
+				healthIntervalMs: 0,
+			});
+			appHostBodies.length = 0;
+			const implicitAutoRedeploy = createNativeEdgeAutoRedeploy({
+				control,
+				codeHostJobs: {
+					run: async (_c, _e, _s, fn) => await fn({} as never, {} as never),
+				},
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+					companyDataUrl: "http://127.0.0.1:8091",
+					companyDataPublicUrl: "https://data.qorpera.com",
+					companyDataDirectLoginToken: "direct-tok",
+					companyDataFetchImpl: async () => ({
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrl,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_billing",
+							schema: "public",
+							user: "billing_rw",
+						}),
+					}),
+					broker: {
+						origin: "https://broker.internal",
+						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: machineSha,
+						fetchImpl: async () =>
+							new Response(
+								JSON.stringify({
+									schema: "qorpera.app-secrets/v1",
+									siteId,
+									slug: "billing-app",
+									scope: "runtime",
+									targetEnv: "prod",
+									secrets: { STRIPE_KEY: stripeSecret },
+								}),
+								{ status: 200, headers: { "content-type": "application/json" } },
+							),
+					},
+					buildAppImage: async () => ({ ociImageRef: newImage, builtMs: 12 }),
+					appHostFetchImpl: async (_url, init) => {
+						appHostSeq += 1;
+						appHostBodies.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+						return {
+							status: 200,
+							body: JSON.stringify({ upstream_addr: `127.0.0.1:${46540 + appHostSeq}` }),
+						};
+					},
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: implicitDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+			const implicitCtx = await implicitAutoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 10 },
+				new AbortController().signal,
+			);
+			expect(implicitCtx).not.toBeNull();
+			const implicitRes = await runPostLandAppAutoRedeploy({
+				config: parseAppDeployConfig(implicitCtx!.rawConfig),
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "10",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: implicitCtx!.paths ?? [],
+				},
+				hooks: {
+					...implicitCtx!.hooks,
+					probeHealth: async () => ({ ok: true, status: 200 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(implicitRes.status).toBe("deployed");
+			expect(appHostBodies[0]?.env).toMatchObject({
+				PUBLIC_BILLING_MODE: "live",
+				STRIPE_KEY: stripeSecret,
+				DATABASE_URL: dbUrl,
+			});
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 });

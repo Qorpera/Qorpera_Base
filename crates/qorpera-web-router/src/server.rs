@@ -1517,9 +1517,16 @@ async fn handle_public(
         return handle_member_pass(state, &site, scope, &host_s, &client_ip_s, req).await;
     }
 
+    let static_credential_on_platform_host = scope == HostScope::OwnHost
+        && canonical_redirect.is_none()
+        && site
+            .live_deployment
+            .as_ref()
+            .is_some_and(|dep| dep.kind == DeploymentKind::Static && dep.has_credential_inputs);
     let is_public = global_public_enabled
         && site.is_public
-        && !matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_));
+        && !matches!(scope, HostScope::NextHost | HostScope::PreviewSlot(_))
+        && !static_credential_on_platform_host;
     let now_unix = if canonical_redirect.is_some() || !is_public {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

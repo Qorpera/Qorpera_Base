@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,13 +11,16 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { readCodeChecks } from "../src/code-checks.ts";
 import { codeSiteCollectAnswer, codeSiteReported } from "../src/code-site.ts";
 import { type CodeSiteUploadFile, CodeSiteUploads } from "../src/code-site-uploads.ts";
-import { CompanyMachineSecretsManager } from "../src/company-machine-secrets.ts";
+import { CompanyMachineSecretsManager, maskAppLogText } from "../src/company-machine-secrets.ts";
 import {
 	buildNativeAppEnvSpec,
 	deployCodeSiteToNativeEdge,
 	fetchAppLogs,
 	NATIVE_WEB_HOSTING_RPCS,
 	parseNativeCodeSiteSpec,
+	provisionCompanyDataDirectLogin,
+	resolveAppRuntimeEnv,
+	revokeCompanyDataDirectLogin,
 	stopHostedAppDeployment,
 	triggerBlueGreenAppDeploy,
 } from "../src/native-webapp-deploy.ts";
@@ -799,5 +802,365 @@ describe.skipIf(!hasRustBinaries)("cross-process E2E: live qorpera-web-router + 
 				fetchImpl: async () => ({ status: 500, body: "boom" }),
 			}),
 		).rejects.toThrow("APP_HOST_STOP_FAILED_500");
+	});
+});
+
+describe("hosted app runtime env, broker secret resolution, direct-login DB provisioning, and edge nftables", () => {
+	it("merges non-secret runtimeEnvConfig and companyDataPublicUrl while rejecting platform/reserved overrides", () => {
+		expect(
+			buildNativeAppEnvSpec({
+				port: 4000,
+				repositoryOwner: "company",
+				repositoryName: "portal",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataPublicUrl: "https://data.qorpera.com",
+				runtimeEnvConfig: {
+					PUBLIC_APP_NAME: "Portal",
+					PORT: "9999",
+					NODE_ENV: "development",
+					DATABASE_URL: "postgres://spoofed",
+					QORPERA_COMPANY_DATA_URL: "http://evil",
+					BAD_CTRL: "line1\nline2",
+				},
+			}),
+		).toEqual({
+			PUBLIC_APP_NAME: "Portal",
+			PORT: "4000",
+			NODE_ENV: "production",
+			QORPERA_REPOSITORY: "company/portal",
+			QORPERA_COMPANY_DATA_URL: "http://127.0.0.1:8088",
+			QORPERA_COMPANY_DATA_PUBLIC_URL: "https://data.qorpera.com",
+		});
+	});
+
+	it("provisions and revokes scoped Postgres direct-login credentials per principal", async () => {
+		const calls: Array<{ url: string; method: string; body?: string; auth?: string }> = [];
+		const conn = "postgresql://qorpera_app_1:s3cr3tpass@10.99.0.10:5432/co_shop?sslmode=require";
+		const result = await provisionCompanyDataDirectLogin({
+			companyDataUrl: "http://127.0.0.1:8088/",
+			directLoginToken: "direct-admin-tok",
+			environmentId: ENVIRONMENT,
+			database: "shop",
+			principal: DEPLOYMENT_ID,
+			fetchImpl: async (url, init) => {
+				calls.push({
+					url,
+					method: init.method,
+					...(init.body !== undefined ? { body: init.body } : {}),
+					auth: init.headers.authorization,
+				});
+				return {
+					status: 200,
+					body: JSON.stringify({
+						connectionString: conn,
+						host: "10.99.0.10",
+						port: 5432,
+						database: "co_shop",
+						schema: "public",
+						user: "qorpera_app_1",
+					}),
+				};
+			},
+		});
+		expect(result.connectionString).toBe(conn);
+		expect(calls).toEqual([
+			{
+				url: `http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login`,
+				method: "POST",
+				auth: "Bearer direct-admin-tok",
+				body: JSON.stringify({
+					database: "shop",
+					access: "read-write",
+					connectionLimit: 4,
+					principal: DEPLOYMENT_ID,
+				}),
+			},
+		]);
+
+		const revoked = await revokeCompanyDataDirectLogin({
+			companyDataUrl: "http://127.0.0.1:8088/",
+			directLoginToken: "direct-admin-tok",
+			environmentId: ENVIRONMENT,
+			database: "shop",
+			principal: DEPLOYMENT_ID,
+			fetchImpl: async (url, init) => {
+				calls.push({ url, method: init.method, auth: init.headers.authorization });
+				return { status: 200, body: JSON.stringify({ revoked: true }) };
+			},
+		});
+		expect(revoked).toBe(true);
+		expect(calls[1]).toEqual({
+			url: `http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login/shop?principal=${DEPLOYMENT_ID}`,
+			method: "DELETE",
+			auth: "Bearer direct-admin-tok",
+		});
+
+		await expect(
+			provisionCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "tok",
+				environmentId: "not-a-uuid",
+				database: "shop",
+			}),
+		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_ENV_INVALID");
+
+		await expect(
+			provisionCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "tok",
+				environmentId: ENVIRONMENT,
+				database: "qorpera",
+			}),
+		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_DATABASE_INVALID");
+
+		await expect(
+			provisionCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "tok",
+				environmentId: ENVIRONMENT,
+				database: "shop",
+				fetchImpl: async () => ({ status: 503, body: "unavailable" }),
+			}),
+		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_FAILED_503");
+
+		await expect(
+			provisionCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "tok",
+				environmentId: ENVIRONMENT,
+				database: "shop",
+				fetchImpl: async () => ({ status: 200, body: JSON.stringify({ connectionString: "http://not-pg" }) }),
+			}),
+		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_INVALID_RESPONSE");
+	});
+
+	it("resolves broker secrets and per-deployment DATABASE_URL with read-only dev previews", async () => {
+		const baseEnvSpec = Object.freeze({
+			PORT: "3000",
+			NODE_ENV: "production",
+			QORPERA_REPOSITORY: "company/portal",
+			PUBLIC_ORIGIN: "https://portal.example.com",
+		});
+		const secretVal = "sk-live-secret-token-778899";
+		const dbUrlProd = "postgresql://app_prod:db-pass-998877@10.99.0.10:5432/co_shop?sslmode=require";
+		const dbUrlDev = "postgresql://app_dev:db-pass-112233@10.99.0.10:5432/co_shop?sslmode=require";
+		const directPayloads: Array<Record<string, unknown>> = [];
+
+		const resolved = await resolveAppRuntimeEnv({
+			baseEnvSpec,
+			siteId: SITE_ID,
+			environmentId: ENVIRONMENT,
+			deploymentId: DEPLOYMENT_ID,
+			targetEnv: "prod",
+			hasRuntimeSecrets: true,
+			linkedDatabaseName: "shop",
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-tok",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataDirectLoginToken: "direct-tok",
+				companyDataFetchImpl: async (_url, init) => {
+					directPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlProd,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_prod",
+						}),
+					};
+				},
+				broker: {
+					origin: "https://broker.internal",
+					executorToken: "exec-tok",
+					executorOwner: "node-1",
+					machineIdSha256: MACHINE_SHA,
+					fetchImpl: async () =>
+						new Response(
+							JSON.stringify({
+								schema: "qorpera.app-secrets/v1",
+								siteId: SITE_ID,
+								slug: "portal",
+								scope: "runtime",
+								targetEnv: "prod",
+								secrets: {
+									STRIPE_API_KEY: secretVal,
+									PORT: "99999999",
+								},
+							}),
+							{ status: 200, headers: { "content-type": "application/json" } },
+						),
+				},
+			},
+		});
+
+		expect(baseEnvSpec).not.toHaveProperty("STRIPE_API_KEY");
+		expect(baseEnvSpec).not.toHaveProperty("DATABASE_URL");
+		expect(resolved.runtimeEnv).toEqual({
+			PORT: "3000",
+			NODE_ENV: "production",
+			QORPERA_REPOSITORY: "company/portal",
+			PUBLIC_ORIGIN: "https://portal.example.com",
+			STRIPE_API_KEY: secretVal,
+			DATABASE_URL: dbUrlProd,
+		});
+		expect(directPayloads[0]).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: DEPLOYMENT_ID,
+		});
+		expect(resolved.secretNames).toEqual(["DATABASE_URL", "STRIPE_API_KEY"]);
+		const masked = maskAppLogText(resolved.mask, `failed connecting ${dbUrlProd} with ${secretVal}`);
+		expect(masked).not.toContain(secretVal);
+		expect(masked).not.toContain(dbUrlProd);
+
+		const previewDepId = "66666666-6666-4666-8666-666666666666";
+		const resolvedDev = await resolveAppRuntimeEnv({
+			baseEnvSpec,
+			siteId: SITE_ID,
+			environmentId: ENVIRONMENT,
+			deploymentId: previewDepId,
+			targetEnv: "dev",
+			hasRuntimeSecrets: false,
+			linkedDatabaseName: "shop",
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-tok",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataDirectLoginToken: "direct-tok",
+				companyDataFetchImpl: async (_url, init) => {
+					directPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlDev,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_dev",
+						}),
+					};
+				},
+			},
+		});
+		expect(resolvedDev.runtimeEnv.DATABASE_URL).toBe(dbUrlDev);
+		expect(directPayloads[1]).toEqual({
+			database: "shop",
+			access: "read-only",
+			connectionLimit: 2,
+			principal: previewDepId,
+		});
+
+		const rollbackGenCalls: Array<{ method: string; url: string; body?: string }> = [];
+		const resolvedRollback = await resolveAppRuntimeEnv({
+			baseEnvSpec,
+			siteId: SITE_ID,
+			environmentId: ENVIRONMENT,
+			deploymentId: DEPLOYMENT_ID,
+			directLoginGeneration: previewDepId,
+			targetEnv: "prod",
+			hasRuntimeSecrets: false,
+			linkedDatabaseName: "shop",
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-tok",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataDirectLoginToken: "direct-tok",
+				companyDataFetchImpl: async (url, init) => {
+					rollbackGenCalls.push({ method: init.method, url, ...(init.body ? { body: init.body } : {}) });
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlProd,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_prod_rb",
+						}),
+					};
+				},
+			},
+		});
+		expect(resolvedRollback.runtimeEnv.DATABASE_URL).toBe(dbUrlProd);
+		expect(JSON.parse(rollbackGenCalls[0]!.body!)).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: DEPLOYMENT_ID,
+			generation: previewDepId,
+		});
+
+		const revokeUrls: string[] = [];
+		const revokedNoDb = await revokeCompanyDataDirectLogin({
+			companyDataUrl: "http://127.0.0.1:8088",
+			directLoginToken: "direct-tok",
+			environmentId: ENVIRONMENT,
+			database: null,
+			principal: DEPLOYMENT_ID,
+			generation: previewDepId,
+			fetchImpl: async (url, init) => {
+				expect(init.method).toBe("DELETE");
+				revokeUrls.push(url);
+				return { status: 200, body: JSON.stringify({ revoked: true }) };
+			},
+		});
+		expect(revokedNoDb).toBe(true);
+		expect(revokeUrls[0]).toBe(
+			`http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login?principal=${DEPLOYMENT_ID}&generation=${previewDepId}`,
+		);
+		expect(
+			await revokeCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "direct-tok",
+				environmentId: ENVIRONMENT,
+				database: null,
+			}),
+		).toBe(false);
+
+		await expect(
+			resolveAppRuntimeEnv({
+				baseEnvSpec,
+				siteId: SITE_ID,
+				environmentId: ENVIRONMENT,
+				deploymentId: DEPLOYMENT_ID,
+				targetEnv: "prod",
+				hasRuntimeSecrets: true,
+				linkedDatabaseName: null,
+				nativeEdge: { routerInternalUrl: "http://127.0.0.1:8094", controlToken: "edge-tok" },
+			}),
+		).rejects.toThrow("APP_SECRETS_BROKER_UNAVAILABLE");
+
+		await expect(
+			resolveAppRuntimeEnv({
+				baseEnvSpec,
+				siteId: SITE_ID,
+				environmentId: ENVIRONMENT,
+				deploymentId: DEPLOYMENT_ID,
+				targetEnv: "prod",
+				hasRuntimeSecrets: false,
+				linkedDatabaseName: "shop",
+				nativeEdge: { routerInternalUrl: "http://127.0.0.1:8094", controlToken: "edge-tok" },
+			}),
+		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_UNAVAILABLE");
+	});
+
+	it("keeps company_data_endpoints allow rule before @blocked_v4 reject in nftables-edge.nft and validates install-web-hosting.sh syntax", () => {
+		const nft = readFileSync(join(REPO_ROOT, "deploy/web-hosting/nftables-edge.nft"), "utf8");
+		expect(nft).toContain("set company_data_endpoints {");
+		expect(nft).toContain("type ipv4_addr . inet_service");
+		const allowRule = 'iifname "qweb0" ip daddr . tcp dport @company_data_endpoints accept';
+		const blockRule = 'iifname "qweb0" ip daddr @blocked_v4 reject';
+		const allowIdx = nft.indexOf(allowRule);
+		const blockIdx = nft.indexOf(blockRule);
+		expect(allowIdx).toBeGreaterThan(-1);
+		expect(blockIdx).toBeGreaterThan(allowIdx);
+
+		execFileSync("bash", ["-n", join(REPO_ROOT, "deploy/web-hosting/install-web-hosting.sh")], { stdio: "pipe" });
 	});
 });

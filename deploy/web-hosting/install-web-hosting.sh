@@ -41,6 +41,39 @@ fi
 install -m 0755 "$KIT_DIR/builder-railpack.sh" /usr/local/libexec/qorpera-web-hosting/builder-railpack.sh
 install -m 0644 "$KIT_DIR/Caddyfile" /etc/qorpera-web/Caddyfile
 install -m 0644 "$KIT_DIR/nftables-edge.nft" /etc/qorpera-web/nftables-edge.nft
+if [ -f /etc/qorpera-web/company-data-egress.conf ]; then
+	DATA_ENDPOINTS=""
+	while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+		line="${raw_line%%#*}"
+		line="$(printf '%s' "$line" | tr -d '[:space:]')"
+		[ -z "$line" ] && continue
+		if [[ "$line" =~ ^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}):([0-9]{1,5})$ ]]; then
+			ip_part="${BASH_REMATCH[1]}"
+			port_part="${BASH_REMATCH[2]}"
+			if [ "$port_part" -ge 1 ] && [ "$port_part" -le 65535 ]; then
+				DATA_ENDPOINTS="${DATA_ENDPOINTS:+${DATA_ENDPOINTS}, }${ip_part} . ${port_part}"
+			else
+				echo "Invalid port in /etc/qorpera-web/company-data-egress.conf: $line" >&2
+				exit 1
+			fi
+		else
+			echo "Invalid IPv4:port entry in /etc/qorpera-web/company-data-egress.conf: $line" >&2
+			exit 1
+		fi
+	done </etc/qorpera-web/company-data-egress.conf
+	if [ -n "$DATA_ENDPOINTS" ]; then
+		awk -v elems="$DATA_ENDPOINTS" '
+			/type ipv4_addr \. inet_service/ {
+				print
+				print "\t\telements = { " elems " }"
+				next
+			}
+			{ print }
+		' /etc/qorpera-web/nftables-edge.nft >/etc/qorpera-web/nftables-edge.nft.tmp
+		mv /etc/qorpera-web/nftables-edge.nft.tmp /etc/qorpera-web/nftables-edge.nft
+		chmod 0644 /etc/qorpera-web/nftables-edge.nft
+	fi
+fi
 install -m 0644 "$KIT_DIR/qorpera-web-router.service" /etc/systemd/system/qorpera-web-router.service
 install -m 0644 "$KIT_DIR/qorpera-app-host.service" /etc/systemd/system/qorpera-app-host.service
 install -m 0644 "$KIT_DIR/qorpera-web-caddy.service" /etc/systemd/system/qorpera-web-caddy.service

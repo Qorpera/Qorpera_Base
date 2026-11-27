@@ -850,6 +850,127 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 		assert.equal(revoked.revoked, true);
 		const afterRevoke = new pg.Client({ connectionString: roCreds.connectionString });
 		await assert.rejects(() => afterRevoke.connect());
+
+		const liveCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-write",
+			connectionLimit: 2,
+			principal: "dep-live-1",
+		});
+		const previewCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-only",
+			connectionLimit: 2,
+			principal: "dep-preview-2",
+		});
+		assert.notEqual(liveCreds.user, previewCreds.user);
+		assert.match(liveCreds.user, /^c_[0-9a-f]{32}_s[0-9]+_d[0-9a-f]{16}$/);
+
+		const liveClient = new pg.Client({ connectionString: liveCreds.connectionString });
+		await liveClient.connect();
+		try {
+			const inserted = await liveClient.query("insert into items (title) values ('Sencha') returning title");
+			assert.equal(inserted.rows[0].title, "Sencha");
+		} finally {
+			await liveClient.end();
+		}
+
+		const previewClient = new pg.Client({ connectionString: previewCreds.connectionString });
+		await previewClient.connect();
+		try {
+			const count = await previewClient.query("select count(*)::int as n from items");
+			assert.ok(count.rows[0].n >= 4);
+			await assert.rejects(() => previewClient.query("insert into items (title) values ('BlockedPreview')"), /permission denied/);
+		} finally {
+			await previewClient.end();
+		}
+
+		const revokedPreview = await gateway.revokeDirectLogin(envId, "shop", { principal: "dep-preview-2" });
+		assert.equal(revokedPreview.revoked, true);
+		const deadPreview = new pg.Client({ connectionString: previewCreds.connectionString });
+		await assert.rejects(() => deadPreview.connect());
+
+		const rollbackGenCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-write",
+			connectionLimit: 2,
+			principal: "dep-live-1",
+			generation: "failed-dep-9",
+		});
+		assert.notEqual(rollbackGenCreds.user, liveCreds.user);
+		assert.match(rollbackGenCreds.user, /^c_[0-9a-f]{32}_s[0-9]+_d[0-9a-f]{16}$/);
+		assert.equal(liveCreds.user.slice(0, -4), rollbackGenCreds.user.slice(0, -4));
+		assert.ok(liveCreds.user.endsWith("0000"));
+		assert.notEqual(rollbackGenCreds.user.slice(-4), "0000");
+
+		const liveStillWorksBeforeGenRevoke = new pg.Client({ connectionString: liveCreds.connectionString });
+		await liveStillWorksBeforeGenRevoke.connect();
+		try {
+			const check = await liveStillWorksBeforeGenRevoke.query("select count(*)::int as n from items");
+			assert.ok(check.rows[0].n >= 4);
+		} finally {
+			await liveStillWorksBeforeGenRevoke.end();
+		}
+
+		const revokedRollbackGen = await gateway.revokeDirectLogin(envId, null, {
+			principal: "dep-live-1",
+			generation: "failed-dep-9",
+		});
+		assert.equal(revokedRollbackGen.revoked, true);
+		const deadRollbackGen = new pg.Client({ connectionString: rollbackGenCreds.connectionString });
+		await assert.rejects(() => deadRollbackGen.connect());
+
+		const liveStillWorks = new pg.Client({ connectionString: liveCreds.connectionString });
+		await liveStillWorks.connect();
+		try {
+			const check = await liveStillWorks.query("select count(*)::int as n from items");
+			assert.ok(check.rows[0].n >= 4);
+		} finally {
+			await liveStillWorks.end();
+		}
+
+		const watchGw = new Gateway({
+			store: { host: "127.0.0.1", port, logins },
+			platform,
+			limits: { changeMs: 250 },
+		});
+		try {
+			const runaway = new pg.Client({ connectionString: liveCreds.connectionString });
+			await runaway.connect();
+			try {
+				await runaway.query("set statement_timeout = 0");
+				const sleepError = runaway.query("select pg_sleep(10)").then(
+					() => null,
+					(error) => error,
+				);
+				await new Promise((r) => setTimeout(r, 2_500));
+				const watched = await watchGw.watchOnce({ housekeeping: false });
+				assert.ok(
+					watched.ended.some((entry) => entry.login === liveCreds.user && entry.how === "cancelled"),
+					`expected watchOnce to cancel principal role ${liveCreds.user}, got ${JSON.stringify(watched.ended)}`,
+				);
+				const cancelledError = await sleepError;
+				assert.ok(
+					cancelledError && /canceling statement due to user request/.test(cancelledError.message),
+					`expected cancellation error, got ${cancelledError}`,
+				);
+			} finally {
+				await runaway.end().catch(() => undefined);
+			}
+		} finally {
+			await watchGw.close();
+		}
+
+		const secondGenCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-write",
+			connectionLimit: 2,
+			principal: "dep-live-1",
+			generation: "failed-dep-10",
+		});
+		const revokedPrincipalAll = await gateway.revokeDirectLogin(envId, null, { principal: "dep-live-1" });
+		assert.equal(revokedPrincipalAll.revoked, true);
+		assert.equal(revokedPrincipalAll.revokedUsers.length, 2);
+		const deadLive = new pg.Client({ connectionString: liveCreds.connectionString });
+		await assert.rejects(() => deadLive.connect());
+		const deadSecondGen = new pg.Client({ connectionString: secondGenCreds.connectionString });
+		await assert.rejects(() => deadSecondGen.connect());
 	});
 
 	it("handles trigger re-registration, auto-reconnects LISTEN after PG backend disconnect, serializes concurrent direct login provisioning, resists X-Forwarded-For spoofing, and fails closed on malformed public TOML", async () => {
@@ -1130,6 +1251,22 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			});
 			assert.equal(revokedAgain.status, 200);
 			assert.equal(revokedAgain.value.revoked, false);
+
+			const mintedPrincipal = await request(
+				"POST",
+				`/v1/admin/company-data/${envId}/direct-login`,
+				{ database: "shop", access: "read-write", connectionLimit: 2, principal: "http-dep-1", generation: "rb-1" },
+				{ authorization: `Bearer ${directToken}` },
+			);
+			assert.equal(mintedPrincipal.status, 200, JSON.stringify(mintedPrincipal.value));
+			const revokedNoDb = await request(
+				"DELETE",
+				`/v1/admin/company-data/${envId}/direct-login?principal=http-dep-1&generation=rb-1`,
+				null,
+				{ authorization: `Bearer ${directToken}` },
+			);
+			assert.equal(revokedNoDb.status, 200, JSON.stringify(revokedNoDb.value));
+			assert.equal(revokedNoDb.value.revoked, true);
 
 			assert.equal((await request("GET", `/v1/admin/company-data/${envId}/triggers`)).status, 401);
 			assert.equal(

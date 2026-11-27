@@ -2788,4 +2788,328 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		expect(seenEntries).toEqual([".qorpera", "Dockerfile", "server.js"]);
 		expect(seenServerContent).toContain("subpath-api");
 	});
+
+	it("injects granted broker secrets and linked DATABASE_URL into app-host while keeping persisted envSpec secret-free and masking deploy errors", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 3000, healthPath: "/health" },
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('secrets-app');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "secrets server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const previewDepId = randomUUID();
+		const previewId = randomUUID();
+		const verId = randomUUID();
+		const previewVerId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/secrets@sha256:${"5".repeat(64)}`;
+		const stripeSecret = "sk-live-surface-secret-554433";
+		const dbUrl = "postgresql://shop_rw:pg-secret-221100@10.99.0.10:5432/co_shop?sslmode=require";
+		const dbUrlRo = "postgresql://shop_ro:pg-ro-secret-665544@10.99.0.10:5432/co_shop?sslmode=require";
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const appHostPayloads: Array<Record<string, unknown>> = [];
+		const directLoginCalls: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
+		let failMode: "none" | "secret_throw" | "http_refusal" | "timeout_abort" = "none";
+		let registerAlreadyLive = false;
+		let claimMode: "publish" | "preview" = "publish";
+
+		const makeWorker = () =>
+			new SurfaceCodeHostWorker({
+				exportSource: async (_job, input) => ({ sourceDir: input.tree }),
+				staleSweepIntervalMs: 0,
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8088",
+					controlToken: "router-secret",
+					appHostInternalUrl: "http://127.0.0.1:8089",
+					appHostControlToken: "apphost-secret",
+					companyDataUrl: "http://127.0.0.1:8091",
+					companyDataPublicUrl: "https://data.qorpera.com",
+					companyDataDirectLoginToken: "direct-login-tok",
+					companyDataFetchImpl: async (url, init) => {
+						const parsedBody = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+						directLoginCalls.push({ method: init.method, url, ...(parsedBody ? { body: parsedBody } : {}) });
+						if (init.method === "DELETE") {
+							return { status: 200, body: JSON.stringify({ revoked: true }) };
+						}
+						const isRo = parsedBody?.access === "read-only";
+						return {
+							status: 200,
+							body: JSON.stringify({
+								connectionString: isRo ? dbUrlRo : dbUrl,
+								host: "10.99.0.10",
+								port: 5432,
+								database: "co_shop",
+								schema: "public",
+								user: isRo ? "shop_ro" : "shop_rw",
+							}),
+						};
+					},
+					broker: {
+						origin: "https://broker.internal",
+						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: "e".repeat(64),
+						fetchImpl: async () =>
+							new Response(
+								JSON.stringify({
+									schema: "qorpera.app-secrets/v1",
+									siteId,
+									slug: "thetaband",
+									scope: "runtime",
+									targetEnv: "prod",
+									secrets: { STRIPE_KEY: stripeSecret },
+								}),
+								{ status: 200, headers: { "content-type": "application/json" } },
+							),
+					},
+					buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 8 }),
+					appHostFetchImpl: async (_url, init) => {
+						if (init.body) appHostPayloads.push(JSON.parse(init.body) as Record<string, unknown>);
+						if (failMode === "secret_throw") {
+							throw new Error(`container failed with ${stripeSecret} and ${dbUrl}`);
+						}
+						if (failMode === "http_refusal") {
+							return { status: 422, body: "health check failed" };
+						}
+						if (failMode === "timeout_abort") {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+						}
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:48001", stopped: true }) };
+					},
+				},
+				control: {
+					async call(method, args) {
+						rpcCalls.push({ method, args });
+						if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+							return {
+								sessions: [],
+								previews:
+									claimMode === "preview"
+										? [
+												{
+													previewId,
+													surfaceId,
+													profileId,
+													environmentId,
+													repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													shortHostId: "ab12cd34",
+													baseSha: serverMainSha,
+													selectedChangeIds: [],
+													changes: [],
+													leaseToken,
+												},
+											]
+										: [],
+								merges: [],
+								publishes:
+									claimMode === "publish"
+										? [
+												{
+													jobId,
+													surfaceId,
+													profileId,
+													environmentId,
+													sourceKind: "code_repo",
+													liveHeadSha: serverMainSha,
+													repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													siteId,
+													siteSlug: "thetaband",
+													leaseToken,
+													payload: {
+														liveHeadSha: serverMainSha,
+														repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													},
+												},
+											]
+										: [],
+								cleanups: [],
+								automations: [],
+							};
+						}
+						if (method === "qorpera_surface_site_runtime_config") {
+							return {
+								schema: "qorpera.surface-site-runtime-config/v1",
+								found: true,
+								siteId,
+								slug: "thetaband",
+								runtimeEnvConfig: { PUBLIC_API_BASE: "https://api.example.com" },
+								linkedDatabaseName: "shop",
+								hasRuntimeDevSecrets: false,
+								hasRuntimeProdSecrets: true,
+							};
+						}
+						if (method === "qorpera_surface_site_deployment_register") {
+							return {
+								siteId,
+								slug: "thetaband",
+								versionId: claimMode === "preview" ? previewVerId : verId,
+								deploymentId: claimMode === "preview" ? previewDepId : depId,
+								versionNumber: 1,
+								kind: "server",
+								state: registerAlreadyLive || args.p_promote_live === true ? "live" : "ready",
+							};
+						}
+						if (method === "qorpera_surface_stale_app_deployments_due" && claimMode === "preview") {
+							return [
+								{
+									deploymentId: previewDepId,
+									siteId,
+									profileId,
+									environmentId,
+									linkedDatabaseName: null,
+									upstreamAddr: "127.0.0.1:48001",
+								},
+							];
+						}
+						if (method === "qorpera_surface_app_deployment_mark_stopped") {
+							return { claimed: true, stopped: args.p_claim_only !== true, deploymentId: args.p_deployment_id };
+						}
+						return { ok: true };
+					},
+				},
+				hosts: {
+					async run(_companyId, _envId, _signal, fn) {
+						return fn(f.job, undefined as never);
+					},
+				},
+			});
+
+		const worker = makeWorker();
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+
+		const registerCalls = rpcCalls.filter((c) => c.method === "qorpera_surface_site_deployment_register");
+		expect(registerCalls).toHaveLength(2);
+		for (const reg of registerCalls) {
+			const persistedEnv = reg.args.p_env_spec as Record<string, string>;
+			expect(persistedEnv.PUBLIC_API_BASE).toBe("https://api.example.com");
+			expect(persistedEnv.QORPERA_COMPANY_DATA_PUBLIC_URL).toBe("https://data.qorpera.com");
+			expect(persistedEnv.STRIPE_KEY).toBeUndefined();
+			expect(persistedEnv.DATABASE_URL).toBeUndefined();
+		}
+		expect(appHostPayloads[0]?.env).toEqual({
+			PUBLIC_API_BASE: "https://api.example.com",
+			PORT: "3000",
+			NODE_ENV: "production",
+			QORPERA_REPOSITORY: `${f.repository.owner}/${f.repository.name}`,
+			QORPERA_COMPANY_DATA_URL: "http://127.0.0.1:8091",
+			QORPERA_COMPANY_DATA_PUBLIC_URL: "https://data.qorpera.com",
+			STRIPE_KEY: stripeSecret,
+			DATABASE_URL: dbUrl,
+		});
+		expect(directLoginCalls[0]?.body).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: depId,
+		});
+
+		claimMode = "preview";
+		appHostPayloads.length = 0;
+		const previewWorker = makeWorker();
+		const previewResult = await previewWorker.pass(new AbortController().signal);
+		expect(previewResult).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+		expect(directLoginCalls[1]?.body).toEqual({
+			database: "shop",
+			access: "read-only",
+			connectionLimit: 2,
+			principal: previewDepId,
+		});
+		expect(appHostPayloads[0]?.env).toMatchObject({
+			PUBLIC_API_BASE: "https://api.example.com",
+			DATABASE_URL: dbUrlRo,
+		});
+		expect((appHostPayloads[0]?.env as Record<string, unknown>).STRIPE_KEY).toBeUndefined();
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${previewDepId}`),
+			),
+		).toBe(true);
+
+		claimMode = "publish";
+		failMode = "secret_throw";
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerFail = makeWorker();
+		await workerFail.pass(new AbortController().signal);
+		const failedPublish = rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish");
+		expect(failedPublish?.args.p_status).toBe("failed");
+		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(stripeSecret);
+		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(dbUrl);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(true);
+
+		failMode = "http_refusal";
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerRefused = makeWorker();
+		await workerRefused.pass(new AbortController().signal);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(true);
+
+		registerAlreadyLive = true;
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerLiveRestartFail = makeWorker();
+		await workerLiveRestartFail.pass(new AbortController().signal);
+		const livePost = directLoginCalls.find((c) => c.method === "POST");
+		const liveGen = typeof livePost?.body?.generation === "string" ? livePost.body.generation : null;
+		expect(liveGen).not.toBeNull();
+		expect(livePost?.body?.principal).toBe(depId);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(
+						`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}&generation=${liveGen}`,
+					),
+			),
+		).toBe(true);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(false);
+
+		failMode = "timeout_abort";
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerLiveTimeout = makeWorker();
+		await workerLiveTimeout.pass(new AbortController().signal);
+		expect(directLoginCalls.some((c) => c.method === "POST")).toBe(true);
+		expect(directLoginCalls.some((c) => c.method === "DELETE")).toBe(false);
+		registerAlreadyLive = false;
+		failMode = "none";
+	});
 });

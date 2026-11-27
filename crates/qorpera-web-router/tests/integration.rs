@@ -202,6 +202,7 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                     memory_mb: 512,
                     vcpu_limit: 1.0,
                     env_spec: HashMap::new(),
+            has_credential_inputs: false,
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("minbutik.dk".to_string()),
@@ -230,6 +231,7 @@ async fn static_sites_custom_domains_tls_ask_privacy_and_takedown() {
                     memory_mb: 512,
                     vcpu_limit: 1.0,
                     env_spec: HashMap::new(),
+            has_credential_inputs: false,
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: None,
@@ -623,6 +625,7 @@ async fn hybrid_static_fast_path_singleflight_wake_and_websocket_upgrade() {
                 memory_mb: 512,
                 vcpu_limit: 1.0,
                 env_spec: HashMap::new(),
+            has_credential_inputs: false,
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
@@ -808,6 +811,7 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
             memory_mb: 512,
             vcpu_limit: 1.0,
             env_spec: HashMap::new(),
+            has_credential_inputs: false,
         },
     );
 
@@ -842,6 +846,7 @@ async fn preview_ticket_member_pass_and_live_dns_domain_verification() {
                 memory_mb: 512,
                 vcpu_limit: 1.0,
                 env_spec: HashMap::new(),
+            has_credential_inputs: false,
             }),
             preview_deployments: previews,
             primary_custom_domain: None,
@@ -1195,6 +1200,7 @@ async fn hardening_security_utf8_limits_cookie_strip_stale_pool_and_readiness() 
                 memory_mb: 512,
                 vcpu_limit: 1.0,
                 env_spec: HashMap::new(),
+            has_credential_inputs: false,
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
@@ -1471,6 +1477,7 @@ async fn websocket_concurrency_cap_activity_heartbeat_streaming_blobs_timeouts_a
                 memory_mb: 512,
                 vcpu_limit: 1.0,
                 env_spec: HashMap::new(),
+            has_credential_inputs: false,
             }),
             preview_deployments: HashMap::new(),
             primary_custom_domain: None,
@@ -1752,6 +1759,7 @@ async fn websocket_per_deployment_isolation_idle_cutoff_and_streamed_sidecar_int
             memory_mb: 512,
             vcpu_limit: 1.0,
             env_spec: HashMap::new(),
+            has_credential_inputs: false,
         }),
         preview_deployments: HashMap::new(),
         primary_custom_domain: None,
@@ -1946,6 +1954,7 @@ fn static_deployment(id: &str, files: HashMap<String, ManifestFile>) -> Deployme
         memory_mb: 512,
         vcpu_limit: 1.0,
         env_spec: HashMap::new(),
+        has_credential_inputs: false,
     }
 }
 
@@ -3073,4 +3082,122 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
         .unwrap();
     assert_eq!(compressed_a.encoding, qorpera_web_router::blob_store::ContentEncoding::Brotli);
     assert!(compressed_a.bytes.len() < batch_a.len());
+}
+
+#[tokio::test]
+async fn static_credential_site_blocked_on_platform_host_without_verified_primary_domain() {
+    let dir = tempdir().unwrap();
+    let blobs = Arc::new(BlobStore::new(dir.path().to_path_buf(), 8 * 1024 * 1024, 8 * 1024 * 1024));
+    let cfg = test_config(None);
+    let state = Arc::new(RouterState::new(blobs, EdgeSnapshot::default(), &cfg));
+    let bound = BoundServers::bind(&cfg, state).await.unwrap();
+    let pub_addr = bound.public_addr;
+    let int_addr = bound.internal_addr;
+    let (_pub_h, _int_h) = bound.spawn();
+
+    let login_html = Bytes::from("<html><body><form><input type=\"password\" name=\"pw\"></form></body></html>");
+    let login_sha = sha256_hex(&login_html);
+    let (st, _, _) = http_call(
+        int_addr,
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/_internal/blobs/{login_sha}"))
+            .header("authorization", "Bearer secret-control-token")
+            .body(Full::new(login_html.clone()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+
+    let mut files = HashMap::new();
+    files.insert(
+        "index.html".to_string(),
+        ManifestFile {
+            sha256: login_sha,
+            bytes: login_html.len(),
+            content_type: "text/html; charset=utf-8".to_string(),
+            immutable: false,
+        },
+    );
+
+    let push_snapshot = |primary_domain: Option<&str>, domain_status: DomainStatus, is_primary: bool, kind: DeploymentKind| {
+        let mut dep = static_deployment("dep-cred-1", files.clone());
+        dep.kind = kind;
+        dep.has_credential_inputs = true;
+        let snapshot = EdgeSnapshot {
+            hosts_domain: "qorpera.site".to_string(),
+            legacy_hosts_domains: vec!["qorpera.com".to_string()],
+            hosts_enabled: true,
+            public_enabled: true,
+            domains_enabled: true,
+            edge_ipv4: Some("93.164.62.162".to_string()),
+            edge_ipv6: None,
+            edge_cname_target: Some("sites.qorpera.site".to_string()),
+            sites: vec![SiteRecord {
+                id: "site-cred-1".to_string(),
+                slug: "cred-app".to_string(),
+                is_public: true,
+                taken_down: false,
+                password_sha256: None,
+                password_version: 1,
+                primary_custom_domain: primary_domain.map(str::to_string),
+                live_deployment: Some(dep),
+                preview_deployments: HashMap::new(),
+                db_live: None,
+                db_previews: HashMap::new(),
+            }],
+            custom_domains: vec![CustomDomainRecord {
+                id: "dom-cred-1".to_string(),
+                site_id: "site-cred-1".to_string(),
+                hostname: "login.example.dk".to_string(),
+                is_apex: false,
+                is_primary,
+                status: domain_status,
+                verification_token: "tok123456789".to_string(),
+                last_checked_at: None,
+                consecutive_misses: 0,
+            }],
+        };
+        let body = serde_json::to_vec(&snapshot).unwrap();
+        async move {
+            let (st, _, _) = http_call(
+                int_addr,
+                Request::builder()
+                    .method("POST")
+                    .uri("/_internal/routes/snapshot")
+                    .header("authorization", "Bearer secret-control-token")
+                    .header("content-type", "application/json")
+                    .body(Full::new(Bytes::from(body)))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+        }
+    };
+
+    let get_host = |host: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/")
+            .header("host", host)
+            .body(Full::new(Bytes::new()))
+            .unwrap()
+    };
+
+    push_snapshot(None, DomainStatus::TlsActive, false, DeploymentKind::Static).await;
+    assert_eq!(http_call(pub_addr, get_host("cred-app.qorpera.site")).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(http_call(pub_addr, get_host("login.example.dk")).await.0, StatusCode::OK);
+
+    push_snapshot(Some("login.example.dk"), DomainStatus::TlsActive, true, DeploymentKind::Static).await;
+    let (st, hdrs, _) = http_call(pub_addr, get_host("cred-app.qorpera.site")).await;
+    assert_eq!(st, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(hdrs.get("location").unwrap(), "https://login.example.dk/");
+    assert_eq!(http_call(pub_addr, get_host("login.example.dk")).await.0, StatusCode::OK);
+
+    push_snapshot(Some("login.example.dk"), DomainStatus::Failed, true, DeploymentKind::Static).await;
+    assert_eq!(http_call(pub_addr, get_host("cred-app.qorpera.site")).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(http_call(pub_addr, get_host("login.example.dk")).await.0, StatusCode::SERVICE_UNAVAILABLE);
+
+    push_snapshot(None, DomainStatus::Failed, false, DeploymentKind::Hybrid).await;
+    assert_eq!(http_call(pub_addr, get_host("cred-app.qorpera.site")).await.0, StatusCode::OK);
 }

@@ -427,8 +427,8 @@ export const SURFACES: Record<string, string> = {
 	"The domain does not point here yet.": "Domænet peger ikke hertil endnu.",
 	"The domain is still there. Try again.": "Domænet er der stadig. Prøv igen.",
 	"The site did not go live. Try again.": "Hjemmesiden gik ikke live. Prøv igen.",
-	"The site has a place to sign in or type a password, so it cannot go live yet.":
-		"Hjemmesiden har et sted at logge ind eller skrive en adgangskode, så den kan ikke gå live endnu.",
+	"Static sites on Qorpera's default address cannot include sign-in or password fields. Connect a verified custom domain or deploy as a server app first.":
+		"Statiske sider på Qorperas standardadresse må ikke have login- eller adgangskodefelter. Tilknyt et bekræftet eget domæne eller udgiv som en server-app først.",
 	"The site is still live. Try again.": "Hjemmesiden er stadig live. Prøv igen.",
 	"Where the site lives": "Hvor hjemmesiden bor",
 	"Where the site lives could not be read just now.": "Det kunne ikke læses lige nu, hvor hjemmesiden bor.",
@@ -682,4 +682,40 @@ export const SURFACES: Record<string, string> = {
 		"Forbind denne surface med et eksisterende arkiv, en undermappe og en upstream-gren.",
 	"Start fresh": "Start forfra",
 	"Connect existing repository": "Forbind eksisterende arkiv",
+	"Environment & secrets": "Miljø & hemmeligheder",
+	"Linked company database (optional)": "Tilknyttet virksomhedsdatabase (valgfrit)",
+	"e.g. shop": "fx shop",
+	"Injects a scoped DATABASE_URL automatically on the next preview or publish.":
+		"Indsætter automatisk en afgrænset DATABASE_URL ved næste forhåndsvisning eller udgivelse.",
+	"Environment variables": "Miljøvariabler",
+	"Add variable": "Tilføj variabel",
+	"Variable name": "Variabelnavn",
+	"Variable value": "Variabelværdi",
+	"Remove variable": "Fjern variabel",
+	"No environment variables configured yet.": "Ingen miljøvariabler konfigureret endnu.",
+	"App secrets": "App-hemmeligheder",
+	"No secrets granted to this app yet.": "Ingen hemmeligheder tildelt denne app endnu.",
+	"Add environment secrets in Settings first, then grant them here.":
+		"Tilføj miljøhemmeligheder i Indstillinger først, og tildel dem derefter her.",
+	"Grant secret": "Tildel hemmelighed",
+	"Granting…": "Tildeler…",
+	"Revoke secret": "Tilbagekald hemmelighed",
+	"Changes apply on the next preview or publish.":
+		"Ændringer træder i kraft ved næste forhåndsvisning eller udgivelse.",
+	"Publish or preview this app once before configuring runtime settings.":
+		"Udgiv eller forhåndsvis denne app én gang, før du konfigurerer kørselsindstillinger.",
+	"Loading runtime settings…": "Indlæser kørselsindstillinger…",
+	"Runtime settings could not be loaded.": "Kørselsindstillinger kunne ikke indlæses.",
+	"Enter an uppercase variable name like API_BASE_URL (not PORT, NODE_ENV, or DATABASE_URL).":
+		"Skriv et variabelnavn med store bogstaver som API_BASE_URL (ikke PORT, NODE_ENV eller DATABASE_URL).",
+	"Use a lowercase database name like shop (not qorpera or pg_*).":
+		"Brug et databasenavn med små bogstaver som shop (ikke qorpera eller pg_*).",
+	"Duplicate environment variable name: {name}.": "Duplikeret miljøvariabelnavn: {name}.",
+	"e.g. API_BASE_URL": "f.eks. API_BASE_URL",
+	"Secret to grant": "Hemmelighed at tildele",
+	"Secret scope": "Hemmelighedsområde",
+	"Target environment": "Målmiljø",
+	Runtime: "Kørsel",
+	Build: "Byg",
+	Production: "Produktion",
 };

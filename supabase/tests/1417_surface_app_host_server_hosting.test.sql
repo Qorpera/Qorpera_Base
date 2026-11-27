@@ -348,8 +348,8 @@ begin
 	begin
 		update public.qorpera_company_sites set is_public = true where id = v_site.id;
 		perform pg_temp.sahs_service(format(
-			$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 1, 64, true, false, %L, null, 'hybrid', %L, 3000, '/health', 900, 512, 1.0, null, '{"PORT":"3000"}'::jsonb, true)$q$,
-			v_surface, repeat('e', 40), repeat('f', 64), v_manifest::text, repeat('4', 40), v_img_2
+			$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 1, 64, true, false, %L, null, 'static', null, null, '/', 900, 512, 1.0, null, '{}'::jsonb, true)$q$,
+			v_surface, repeat('e', 40), repeat('f', 64), v_manifest::text, repeat('4', 40)
 		));
 		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS on p_check_public_promote pre-check';
 	exception when others then

@@ -136,6 +136,8 @@ pub struct DeploymentRecord {
     pub vcpu_limit: f32,
     #[serde(default, deserialize_with = "null_as_default")]
     pub env_spec: HashMap<String, String>,
+    #[serde(default)]
+    pub has_credential_inputs: bool,
 }
 
 fn default_health_path() -> String {
@@ -1119,6 +1121,7 @@ mod tests {
                     memory_mb: 512,
                     vcpu_limit: 1.0,
                     env_spec: HashMap::new(),
+                    has_credential_inputs: false,
                 }),
                 preview_deployments: HashMap::new(),
                 primary_custom_domain: Some("nordicbakery.dk".to_string()),

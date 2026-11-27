@@ -480,6 +480,16 @@ export class SurfaceView {
 					lastError: () => host.store.state.error,
 				};
 			},
+			runtimeConfig: () => {
+				const surface = this.surface;
+				if (!surface || surface.sourceKind !== "code_repo" || !host.siteHosting?.(surface)) return undefined;
+				return {
+					load: (signal) => host.store.getSurfaceAppRuntimeConfig(surface.id, signal),
+					saveConfig: (input) => host.store.setSurfaceAppRuntimeConfig(surface.id, input),
+					grantSecret: (input) => host.store.grantSurfaceAppSecret(input),
+					revokeGrant: (grantId) => host.store.revokeSurfaceAppSecretGrant(grantId),
+				};
+			},
 			signal: lifetimeSignal,
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);

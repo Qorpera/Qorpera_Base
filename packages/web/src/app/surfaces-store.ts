@@ -9,8 +9,10 @@ import {
 	type ApplySurfaceMigrationInput,
 	type BindSurfaceRepositoryInput,
 	type CloudSurfacesClient,
+	type GrantSurfaceAppSecretInput,
 	isMissingSurfaceRpcError,
 	isSurfacesDisabledError,
+	type SetSurfaceAppRuntimeConfigInput,
 	type StartSurfaceSessionOptions,
 } from "@qorpera/cloud-client/surfaces";
 import {
@@ -26,6 +28,7 @@ import {
 	type StudioBinaryRef,
 	type StudioPatchChange,
 	type StudioPatchOp,
+	type SurfaceAppRuntimeConfig,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
 	type SurfaceExplorationSet,
@@ -177,6 +180,10 @@ export type SurfacesClient = Pick<
 			| "createSurface"
 			| "listCompanyCodeRepositories"
 			| "bindSurfaceRepository"
+			| "getSurfaceAppRuntimeConfig"
+			| "setSurfaceAppRuntimeConfig"
+			| "grantAppSecret"
+			| "revokeAppSecretGrant"
 			| "bootstrapCompanySurfaces"
 			| "discardExploration"
 			| "createAutomation"
@@ -3720,6 +3727,44 @@ export class SurfacesStore {
 	async listCodeRepositories(signal?: AbortSignal): Promise<readonly CompanyCodeRepositorySummary[]> {
 		if (this.state.source !== "cloud" || !this.#options.client?.listCompanyCodeRepositories) return [];
 		return this.#options.client.listCompanyCodeRepositories(this.#options.companyId, signal);
+	}
+
+	async getSurfaceAppRuntimeConfig(
+		surfaceId: string,
+		signal?: AbortSignal,
+	): Promise<SurfaceAppRuntimeConfig | undefined> {
+		if (
+			this.state.source !== "cloud" ||
+			isLocalSurfaceId(surfaceId) ||
+			!this.#options.client?.getSurfaceAppRuntimeConfig
+		) {
+			return undefined;
+		}
+		return this.#options.client.getSurfaceAppRuntimeConfig(surfaceId, signal);
+	}
+
+	async setSurfaceAppRuntimeConfig(
+		surfaceId: string,
+		input: SetSurfaceAppRuntimeConfigInput,
+	): Promise<SurfaceAppRuntimeConfig | undefined> {
+		if (
+			this.state.source !== "cloud" ||
+			isLocalSurfaceId(surfaceId) ||
+			!this.#options.client?.setSurfaceAppRuntimeConfig
+		) {
+			return undefined;
+		}
+		return this.#options.client.setSurfaceAppRuntimeConfig(surfaceId, input);
+	}
+
+	async grantSurfaceAppSecret(input: GrantSurfaceAppSecretInput): Promise<void> {
+		if (this.state.source !== "cloud" || !this.#options.client?.grantAppSecret) return;
+		await this.#options.client.grantAppSecret(this.#options.companyId, input);
+	}
+
+	async revokeSurfaceAppSecretGrant(grantId: string): Promise<void> {
+		if (this.state.source !== "cloud" || !this.#options.client?.revokeAppSecretGrant) return;
+		await this.#options.client.revokeAppSecretGrant(this.#options.companyId, grantId);
 	}
 
 	async bindSurfaceRepository(

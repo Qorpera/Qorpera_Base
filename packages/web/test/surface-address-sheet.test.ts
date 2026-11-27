@@ -27,7 +27,10 @@ afterEach(() => {
 function mount(
 	world: Partial<HostingWorld> = {},
 	manage = true,
-	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged" | "codeSource"> = {},
+	hooks: Pick<
+		SurfaceAddressSetup,
+		"beforePublic" | "publicChanged" | "slugChanged" | "codeSource" | "runtimeConfig"
+	> = {},
 	liveUrl = LIVE_URL,
 ) {
 	const container = h("div", { class: "surface-canvas" });
@@ -525,7 +528,7 @@ describe("the address card's refusals", () => {
 		[
 			"SITE_CONTAINS_CREDENTIAL_INPUTS",
 			"22023",
-			"The site has a place to sign in or type a password, so it cannot go live yet.",
+			"Static sites on Qorpera's default address cannot include sign-in or password fields. Connect a verified custom domain or deploy as a server app first.",
 		],
 		["SITE_TAKEN_DOWN", "42501", "Qorpera took this site down, so this cannot change now."],
 		["Only founders and admins manage site visibility", "42501", "Only founders and admins can change this."],
@@ -1249,5 +1252,173 @@ describe("editing the platform subdomain", () => {
 		expect(sheet().querySelector('[data-key="code-source"]')?.textContent).toContain(
 			"qorpera/qorpera_base/packages/web",
 		);
+	});
+
+	it("lets owners and admins manage runtime environment variables, linked database, and app secret grants", async () => {
+		const surfaceId = "11111111-1111-4111-8111-111111111111";
+		const profileId = "22222222-2222-4222-8222-222222222222";
+		const secretId = "33333333-3333-4333-8333-333333333333";
+		const grantId = "44444444-4444-4444-8444-444444444444";
+		const userId = "55555555-5555-4555-8555-555555555555";
+		let runtimeState = {
+			surfaceId,
+			profileId,
+			siteId: HOSTED_SITE,
+			slug: "thetaband",
+			deploymentKind: "server" as const,
+			runtimeEnvConfig: { PUBLIC_MODE: "beta" } as Record<string, string>,
+			linkedDatabaseName: null as string | null,
+			canManage: true,
+			grants: [] as Array<{
+				grantId: string;
+				secretId: string;
+				siteId: string;
+				name: string;
+				scope: "runtime" | "build" | "test";
+				targetEnv: "dev" | "prod";
+				version: number;
+				issuedByUserId: string;
+				createdAt: string;
+			}>,
+			availableSecrets: [
+				{
+					secretId,
+					name: "STRIPE_SECRET_KEY",
+					purpose: "Stripe API key",
+					version: 1,
+				},
+			],
+		};
+
+		const load = vi.fn(async () => ({ ...runtimeState, grants: [...runtimeState.grants] }));
+		const saveConfig = vi.fn(
+			async (input: { runtimeEnvConfig: Readonly<Record<string, string>>; linkedDatabaseName: string | null }) => {
+				runtimeState = {
+					...runtimeState,
+					runtimeEnvConfig: { ...input.runtimeEnvConfig },
+					linkedDatabaseName: input.linkedDatabaseName,
+				};
+				return { ...runtimeState, grants: [...runtimeState.grants] };
+			},
+		);
+		const grantSecret = vi.fn(
+			async (input: {
+				secretId: string;
+				siteId: string;
+				scope: "runtime" | "build" | "test";
+				targetEnv: "dev" | "prod";
+			}) => {
+				runtimeState = {
+					...runtimeState,
+					grants: [
+						...runtimeState.grants,
+						{
+							grantId,
+							secretId: input.secretId,
+							siteId: input.siteId,
+							name: "STRIPE_SECRET_KEY",
+							scope: input.scope,
+							targetEnv: input.targetEnv,
+							version: 1,
+							issuedByUserId: userId,
+							createdAt: "2026-11-27T12:00:00Z",
+						},
+					],
+				};
+			},
+		);
+		const revokeGrant = vi.fn(async (id: string) => {
+			runtimeState = {
+				...runtimeState,
+				grants: runtimeState.grants.filter((g) => g.grantId !== id),
+			};
+		});
+
+		const { address } = mount({ entry: { isPublic: true, domains: [] } }, true, {
+			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant }),
+		});
+		await settle();
+		address.open();
+		await settle();
+
+		const runtimeRow = sheet().querySelector<HTMLButtonElement>('[data-key="runtime-config"]')!;
+		expect(runtimeRow.textContent).toContain("Environment & secrets");
+		runtimeRow.click();
+		await settle();
+		expect(title()).toBe("Environment & secrets");
+		expect(load).toHaveBeenCalledTimes(1);
+
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-add-env"]')!.click();
+		const keyInputs = [...sheet().querySelectorAll<HTMLInputElement>('[data-key^="runtime-env-key-"]')];
+		const valInputs = [...sheet().querySelectorAll<HTMLInputElement>('[data-key^="runtime-env-val-"]')];
+		expect(keyInputs).toHaveLength(2);
+
+		keyInputs[1]!.value = "DATABASE_URL";
+		keyInputs[1]!.dispatchEvent(new Event("input", { bubbles: true }));
+		valInputs[1]!.value = "postgres://nope";
+		valInputs[1]!.dispatchEvent(new Event("input", { bubbles: true }));
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		expect(problem()).toBe(
+			"Enter an uppercase variable name like API_BASE_URL (not PORT, NODE_ENV, or DATABASE_URL).",
+		);
+		expect(saveConfig).not.toHaveBeenCalled();
+
+		keyInputs[1]!.value = "API_BASE_URL";
+		keyInputs[1]!.dispatchEvent(new Event("input", { bubbles: true }));
+		valInputs[1]!.value = "https://api.example.com";
+		valInputs[1]!.dispatchEvent(new Event("input", { bubbles: true }));
+		const dbInput = sheet().querySelector<HTMLInputElement>('[data-key="runtime-db"]')!;
+		dbInput.value = "qorpera";
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		expect(problem()).toBe("Use a lowercase database name like shop (not qorpera or pg_*).");
+		expect(saveConfig).not.toHaveBeenCalled();
+
+		dbInput.value = "shop";
+		sheet()
+			.querySelector("form")!
+			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		expect(saveConfig).toHaveBeenCalledWith({
+			runtimeEnvConfig: { PUBLIC_MODE: "beta", API_BASE_URL: "https://api.example.com" },
+			linkedDatabaseName: "shop",
+		});
+
+		const scopeSelect = sheet().querySelector<HTMLSelectElement>('[data-key="runtime-scope-select"]')!;
+		const targetSelect = sheet().querySelector<HTMLSelectElement>('[data-key="runtime-target-select"]')!;
+		scopeSelect.value = "runtime";
+		targetSelect.value = "dev";
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-grant-secret"]')!.click();
+		await settle();
+		expect(grantSecret).toHaveBeenCalledWith({
+			secretId,
+			siteId: HOSTED_SITE,
+			scope: "runtime",
+			targetEnv: "dev",
+		});
+		expect(sheet().textContent).toContain("STRIPE_SECRET_KEY");
+		expect(sheet().textContent).toContain("runtime · dev");
+
+		sheet().querySelector<HTMLButtonElement>(`[data-key="runtime-revoke-${grantId}"]`)!.click();
+		await settle();
+		expect(revokeGrant).toHaveBeenCalledWith(grantId);
+		expect(sheet().textContent).toContain("No secrets granted to this app yet.");
+
+		document.body.replaceChildren();
+		runtimeState = { ...runtimeState, canManage: false };
+		const readonlyMount = mount({ entry: { isPublic: true, domains: [] } }, false, {
+			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant }),
+		});
+		await settle();
+		readonlyMount.address.open();
+		await settle();
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-config"]')!.click();
+		await settle();
+		expect(sheet().querySelector('[data-key="runtime-save"]')).toBeNull();
+		expect(sheet().querySelector('[data-key="runtime-grant-secret"]')).toBeNull();
+		expect(quiet()).toContain("Only founders and admins can change this.");
 	});
 });

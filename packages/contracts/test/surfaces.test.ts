@@ -3,15 +3,18 @@ import { describe, expect, it } from "vitest";
 import {
 	countOpenSurfaceChanges,
 	isSurfaceDefaultBranch,
+	isSurfaceLinkedDatabaseName,
 	isSurfaceOptionGroupKey,
 	isSurfaceRepositoryKey,
 	isSurfaceRepositorySubpath,
+	isSurfaceRuntimeEnvKey,
 	isSurfaceSupersedeKey,
 	nextSurfaceSessionLifecycleState,
 	normalizeSurfaceRepositorySubpath,
 	parseCompanyCodeRepositorySummary,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
+	parseSurfaceAppRuntimeConfig,
 	parseSurfacePreviewFrameState,
 	parseSurfaceSession,
 	parseSurfaceSummary,
@@ -780,5 +783,99 @@ describe("surfaces contracts", () => {
 		});
 		expect(summary.repositorySubpath).toBe("packages/web");
 		expect(summary.defaultBranch).toBe("master");
+	});
+
+	it("validates runtime env keys, linked database names, and parses SurfaceAppRuntimeConfig", () => {
+		expect(isSurfaceRuntimeEnvKey("API_BASE_URL")).toBe(true);
+		expect(isSurfaceRuntimeEnvKey("PUBLIC_SITE_NAME")).toBe(true);
+		expect(isSurfaceRuntimeEnvKey("PORT")).toBe(false);
+		expect(isSurfaceRuntimeEnvKey("NODE_ENV")).toBe(false);
+		expect(isSurfaceRuntimeEnvKey("DATABASE_URL")).toBe(false);
+		expect(isSurfaceRuntimeEnvKey("QORPERA_INTERNAL")).toBe(false);
+		expect(isSurfaceRuntimeEnvKey("LD_PRELOAD")).toBe(false);
+		expect(isSurfaceRuntimeEnvKey("lowercase_key")).toBe(false);
+
+		expect(isSurfaceLinkedDatabaseName("shop")).toBe(true);
+		expect(isSurfaceLinkedDatabaseName("orders_v2")).toBe(true);
+		expect(isSurfaceLinkedDatabaseName("qorpera")).toBe(false);
+		expect(isSurfaceLinkedDatabaseName("pg_catalog")).toBe(false);
+		expect(isSurfaceLinkedDatabaseName("qorpera_internal")).toBe(false);
+		expect(isSurfaceLinkedDatabaseName("BadName")).toBe(false);
+
+		const surfaceId = randomUUID();
+		const profileId = randomUUID();
+		const siteId = randomUUID();
+		const grantId = randomUUID();
+		const secretId = randomUUID();
+		const userId = randomUUID();
+		const now = "2026-11-27T12:00:00Z";
+
+		const parsed = parseSurfaceAppRuntimeConfig({
+			schema: "qorpera.surface-app-runtime-config/v1",
+			surfaceId,
+			profileId,
+			siteId,
+			slug: "web-app",
+			deploymentKind: "server",
+			runtimeEnvConfig: { API_BASE_URL: "https://api.example.com" },
+			linkedDatabaseName: "shop",
+			canManage: true,
+			grants: [
+				{
+					grantId,
+					secretId,
+					siteId,
+					name: "STRIPE_SECRET_KEY",
+					scope: "runtime",
+					targetEnv: "prod",
+					version: 2,
+					issuedByUserId: userId,
+					createdAt: now,
+				},
+			],
+			availableSecrets: [
+				{
+					secretId,
+					name: "STRIPE_SECRET_KEY",
+					purpose: "Stripe API key",
+					version: 2,
+				},
+			],
+		});
+		expect(parsed.deploymentKind).toBe("server");
+		expect(parsed.runtimeEnvConfig).toEqual({ API_BASE_URL: "https://api.example.com" });
+		expect(parsed.linkedDatabaseName).toBe("shop");
+		expect(parsed.grants).toHaveLength(1);
+		expect(parsed.availableSecrets).toHaveLength(1);
+
+		expect(() =>
+			parseSurfaceAppRuntimeConfig({
+				surfaceId,
+				profileId,
+				siteId,
+				slug: "web-app",
+				deploymentKind: "server",
+				runtimeEnvConfig: { DATABASE_URL: "postgres://forbidden" },
+				linkedDatabaseName: null,
+				canManage: true,
+				grants: [],
+				availableSecrets: [],
+			}),
+		).toThrow("runtimeConfig.runtimeEnvConfig.DATABASE_URL");
+
+		expect(() =>
+			parseSurfaceAppRuntimeConfig({
+				surfaceId,
+				profileId,
+				siteId,
+				slug: "web-app",
+				deploymentKind: "server",
+				runtimeEnvConfig: {},
+				linkedDatabaseName: "qorpera",
+				canManage: true,
+				grants: [],
+				availableSecrets: [],
+			}),
+		).toThrow("runtimeConfig.linkedDatabaseName");
 	});
 });
