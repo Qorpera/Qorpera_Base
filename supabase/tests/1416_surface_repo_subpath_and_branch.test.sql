@@ -48,6 +48,7 @@ declare
 	v_rule jsonb;
 	v_todo_id uuid := extensions.gen_random_uuid();
 	v_worker_id uuid := extensions.gen_random_uuid();
+	v_index_commit_id uuid := extensions.gen_random_uuid();
 	v_whole_surface_id uuid;
 	v_sponsor_binding_id uuid;
 	v_sponsor_version bigint;
@@ -690,4 +691,98 @@ begin
 		v_rule ->> 'ok' = 'false' and position('start_surface_session' in coalesce(v_rule -> 'problems' -> 0 ->> 'message', '')) > 0,
 		'whole-repo Interface binding must still block manage_worker: ' || coalesce(v_rule::text, 'null')
 	);
+
+	insert into public.qorpera_folder_commits(
+		id, environment_id, operation_key, actor_kind, actor_id, requester_kind, requester_id, run_id, session_kind, units
+	)
+	values (
+		v_index_commit_id, v_env_id, '1416-index-race-check', 'staff_agent', v_cofounder.staff_agent_id,
+		'member', v_owner, v_run_id, 'in_house', '[]'::jsonb
+	);
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'dispatch',
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Race direct dispatch',
+			'goal', 'Write directly to dedicated repo',
+			'doneWhen', 'Done',
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+		)::text,
+		true
+	);
+	begin
+		perform public.qorpera_company_state_index_worker(
+			v_env_id,
+			v_profile,
+			v_index_commit_id,
+			v_agent_folder || '/todos/monorepo-todo/race-dispatch-worker/brief.md',
+			v_cofounder.folder_path_version,
+			jsonb_build_object(
+				'kind', 'worker-brief',
+				'id', '14160000-0000-4000-8000-000000000003',
+				'species', 'coding',
+				'harness', 'codex',
+				'access', 'read',
+				'revival', 'each',
+				'title', 'Race direct dispatch',
+				'goal', 'Write directly to dedicated repo',
+				'doneWhen', 'Done',
+				'context', '',
+				'sources', '[]'::jsonb,
+				'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+			) || public.qorpera_company_state_worker_standing('coding', 'read', 'each')
+		);
+		perform pg_temp.srsb_assert(false, 'index_worker coding dispatch must raise 55000 when repo is bound whole to an Interface');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(
+			v_errcode = '55000' and position('start_surface_session' in sqlerrm) > 0,
+			'Expected 55000 start_surface_session from index_worker dispatch race guard, got ' || v_errcode || ': ' || sqlerrm
+		);
+	end;
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'followup',
+			'text', 'Race direct followup'
+		)::text,
+		true
+	);
+	begin
+		perform public.qorpera_company_state_index_worker(
+			v_env_id,
+			v_profile,
+			v_index_commit_id,
+			v_agent_folder || '/todos/monorepo-todo/whole-repo-worker/brief.md',
+			v_cofounder.folder_path_version,
+			jsonb_build_object(
+				'kind', 'worker-brief',
+				'id', v_worker_id::text,
+				'species', 'coding',
+				'harness', 'codex',
+				'access', 'read',
+				'revival', 'each',
+				'title', 'Active worker',
+				'goal', 'Write directly to dedicated repo',
+				'doneWhen', 'Done',
+				'context', '',
+				'sources', '[]'::jsonb,
+				'followUp', 'Race direct followup',
+				'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+			) || public.qorpera_company_state_worker_standing('coding', 'read', 'each')
+		);
+		perform pg_temp.srsb_assert(false, 'index_worker coding followup must raise 55000 when repo is bound whole to an Interface');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(
+			v_errcode = '55000' and position('start_surface_session' in sqlerrm) > 0,
+			'Expected 55000 start_surface_session from index_worker followup race guard, got ' || v_errcode || ': ' || sqlerrm
+		);
+	end;
 end $$;
