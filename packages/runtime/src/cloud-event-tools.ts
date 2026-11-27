@@ -178,7 +178,7 @@ export const CLOUD_FIND_MAIL_TOOL_DESCRIPTION = [
 export const CLOUD_MANAGE_MAIL_TOOL_DESCRIPTION = [
 	"Manage email in your company's Mailbox (including brought-in Google mail, syncing changes back to Gmail automatically): move conversations to Trash or restore them, archive or move back to Inbox, star (favorite) or unstar, unsubscribe from newsletters, and block or unblock senders.",
 	"- trash, restore, archive, unarchive, star, unstar: pass threadIds (from find_mail) and/or deliveryIds (up to 50 at once). Moving mail to Trash is reversible; permanent deletion is not offered.",
-	"- unsubscribe: pass threadId or deliveryId of a newsletter/mailing-list email. Uses RFC 8058 one-click POST or mailto automatically when the email's List-Unsubscribe header supports it. If it returns status 'browser_required' with urls, open the unsubscribe page in a browser on your company/coding machine to complete unsubscribing (report any CAPTCHA or login gate to the member).",
+	"- unsubscribe: pass threadId or deliveryId of a newsletter/mailing-list email. Uses RFC 8058 one-click POST or same-domain mailto with fixed unsubscribe text automatically when the email's List-Unsubscribe header supports it. If it returns status 'browser_required' with urls, open the unsubscribe page in a browser on your company/coding machine to complete unsubscribing (report any CAPTCHA or login gate to the member).",
 	"- block_sender / unblock_sender: pass sender (an exact email address like news@example.com or a domain like @example.com). Blocking auto-trashes future mail from that sender, suppresses routine wakes, creates a Gmail Trash filter on brought-in Google mailboxes, and optionally trashes existing matching threads (trashExisting defaults to true).",
 	"- list_blocked: list currently blocked sender addresses and domains.",
 ].join("\n");
@@ -796,13 +796,53 @@ export function cloudEventTools(
 				throw new CloudToolArgumentRefusal("list_blocked takes no additional parameters");
 			return { action };
 		},
-		async execute(value, context) {
+		async prepare(value, context) {
 			assertContext(context);
+			const req = value as Record<string, JsonValue>;
+			if (req.action !== "unsubscribe") return value;
 			const result = await cloudToolRequest(
 				(requestSignal) =>
 					control.call(
 						"qorpera_manage_agent_mail",
-						{ p_binding: admitted, p_call_id: context.callId, p_request: value },
+						{ p_binding: admitted, p_call_id: context.callId, p_request: { ...req, preview: true } },
+						requestSignal,
+					),
+				context.signal,
+			);
+			const r = result as Record<string, unknown> | null;
+			if (
+				!r ||
+				typeof r !== "object" ||
+				r.schema !== "qorpera.agent-mail-action/v1" ||
+				r.runId !== admitted.runId ||
+				r.preview !== true
+			)
+				throw new Error("Mail unsubscribe preview differs");
+			const prepared: Record<string, JsonValue> = { ...req };
+			if (typeof r.deliveryId === "string" && UUID.test(r.deliveryId)) prepared.resolvedDeliveryId = r.deliveryId;
+			if (typeof r.method === "string") prepared.resolvedMethod = r.method;
+			if (typeof r.fromAddress === "string") prepared.resolvedFrom = r.fromAddress;
+			if (typeof r.to === "string") prepared.resolvedTo = r.to;
+			if (typeof r.url === "string") prepared.resolvedUrl = r.url;
+			if (typeof r.subject === "string") prepared.resolvedSubject = r.subject;
+			if (typeof r.body === "string") prepared.resolvedBody = r.body;
+			return prepared;
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const raw = value as Record<string, JsonValue>;
+			const request: Record<string, JsonValue> = {};
+			for (const [key, entry] of Object.entries(raw)) {
+				if (!key.startsWith("resolved")) request[key] = entry;
+			}
+			if (request.action === "unsubscribe" && typeof raw.resolvedDeliveryId === "string" && !request.deliveryId) {
+				request.deliveryId = raw.resolvedDeliveryId;
+			}
+			const result = await cloudToolRequest(
+				(requestSignal) =>
+					control.call(
+						"qorpera_manage_agent_mail",
+						{ p_binding: admitted, p_call_id: context.callId, p_request: request },
 						requestSignal,
 					),
 				context.signal,

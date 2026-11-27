@@ -513,7 +513,11 @@ export function cloudActionEffect(
 		case "manage_code":
 			return args.action === "status" ? "read" : "internal";
 		case "manage_mail":
-			return args.action === "list_blocked" ? "read" : args.action === "unsubscribe" ? "external" : "internal";
+			return args.action === "list_blocked"
+				? "read"
+				: args.action === "unsubscribe" || args.action === "block_sender"
+					? "external"
+					: "internal";
 		case "narrate_app":
 		case "narrate_explainer":
 			return "internal";
@@ -1085,14 +1089,40 @@ export function describeCloudAction(
 			(Array.isArray(args.threadIds) ? args.threadIds.length : 0) +
 			(Array.isArray(args.deliveryIds) ? args.deliveryIds.length : 0);
 		target =
+			text(args.resolvedTo) ||
+			text(args.resolvedUrl) ||
 			text(args.sender) ||
+			text(args.resolvedFrom) ||
 			text(args.threadId) ||
 			text(args.deliveryId) ||
 			(count > 0 ? `${count} ${count === 1 ? "conversation" : "conversations"}` : null);
-		if (verb === "unsubscribe")
-			add("effect", "Uses the sender's List-Unsubscribe header to opt out of future emails");
+		if (verb === "unsubscribe") {
+			const method = text(args.resolvedMethod);
+			add("sender", args.resolvedFrom);
+			if (method === "mailto") {
+				add("to", args.resolvedTo);
+				add("subject", args.resolvedSubject);
+				add("body", args.resolvedBody ?? "Unsubscribe");
+				add(
+					"effect",
+					"Sends an unsubscribe email with fixed text to the sender's same-domain List-Unsubscribe address",
+				);
+			} else if (method === "one_click") {
+				add("url", args.resolvedUrl);
+				add("effect", "Sends an RFC 8058 one-click HTTPS POST unsubscribe request");
+			} else if (method === "browser") {
+				add("url", args.resolvedUrl);
+				add("effect", "Returns the sender's web unsubscribe link without sending mail or posting");
+			} else {
+				add("effect", "Uses the sender's List-Unsubscribe header to opt out of future emails");
+			}
+		}
 		if (verb === "trash") add("effect", "Moves mail to Trash; it can be restored");
-		if (verb === "block_sender") add("effect", "Auto-trashes future emails from this sender; can be unblocked later");
+		if (verb === "block_sender")
+			add(
+				"effect",
+				"Auto-trashes future emails from this sender, suppresses routine wakes, and creates a reversible Gmail Trash filter; can be unblocked later",
+			);
 	} else if (tool.name === "gmail_update_messages") {
 		const input = jsonObject(args.input ?? parsed);
 		const verb = text(input.action);

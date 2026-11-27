@@ -76,8 +76,13 @@ on conflict (connector_id,operation_id,version) do nothing;
 -- END GENERATED CONNECTOR CATALOG
 
 select public.qorpera_backfill_connector_operation_grants('gmail', 'search_messages', 'list_messages', 1);
-select public.qorpera_backfill_connector_operation_grants('gmail', 'search_messages', 'update_messages', 1);
-select public.qorpera_backfill_connector_operation_grants('gmail', 'search_messages', 'block_sender', 1);
+select public.qorpera_backfill_connector_operation_grants('gmail', 'send_message', 'update_messages', 1);
+select public.qorpera_backfill_connector_operation_grants('gmail', 'create_draft', 'update_messages', 1);
+select public.qorpera_backfill_connector_operation_grants('gmail', 'send_message', 'block_sender', 1);
+
+create index qorpera_google_mail_messages_mailbox_thread
+	on public.qorpera_google_mail_messages (mailbox_id, gmail_thread_id)
+	where gmail_thread_id is not null;
 
 alter table public.qorpera_mail_threads
 	add column starred boolean not null default false,
@@ -343,6 +348,80 @@ create trigger qorpera_mail_unsubscribes_kick
 	for each row when (new.method = 'one_click' and new.status = 'pending')
 	execute function public.qorpera_mail_outbox_kick();
 
+create function public.qorpera_mail_domains_match(p_sender_address text, p_target_address text)
+returns boolean
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+	v_a text;
+	v_b text;
+	v_a_parts text[];
+	v_b_parts text[];
+	v_a_len integer;
+	v_b_len integer;
+	v_sld text;
+	v_tld text;
+begin
+	if p_sender_address is null or p_target_address is null
+		or position('@' in p_sender_address) = 0 or position('@' in p_target_address) = 0 then
+		return false;
+	end if;
+	v_a := lower(btrim(split_part(p_sender_address, '@', 2)));
+	v_b := lower(btrim(split_part(p_target_address, '@', 2)));
+	if v_a = '' or v_b = '' or v_a !~ '^[a-z0-9.-]+$' or v_b !~ '^[a-z0-9.-]+$' then
+		return false;
+	end if;
+	if v_a = v_b or v_a like '%.' || v_b or v_b like '%.' || v_a then
+		return true;
+	end if;
+	v_a_parts := string_to_array(v_a, '.');
+	v_b_parts := string_to_array(v_b, '.');
+	v_a_len := coalesce(array_length(v_a_parts, 1), 0);
+	v_b_len := coalesce(array_length(v_b_parts, 1), 0);
+	if v_a_len < 2 or v_b_len < 2 then
+		return false;
+	end if;
+	v_tld := v_a_parts[v_a_len];
+	v_sld := v_a_parts[v_a_len - 1];
+	if v_tld <> v_b_parts[v_b_len] or v_sld <> v_b_parts[v_b_len - 1] then
+		return false;
+	end if;
+	if v_tld ~ '^[a-z]{2}$' and v_sld in (
+		'co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'mil',
+		'or', 'ne', 'go', 'gr', 'ad', 'ed', 'lg', 'nic', 'nom', 'sch', 'ltd', 'plc'
+	) then
+		return v_a_len >= 3 and v_b_len >= 3 and v_a_parts[v_a_len - 2] = v_b_parts[v_b_len - 2];
+	end if;
+	return true;
+end
+$$;
+revoke all on function public.qorpera_mail_domains_match(text, text) from public, anon, authenticated, service_role;
+
+create function public.qorpera_mail_unsubscribe_subject(p_raw text)
+returns text
+language plpgsql
+immutable
+set search_path = ''
+as $$
+declare
+	v_clean text;
+begin
+	v_clean := btrim(regexp_replace(coalesce(p_raw, ''), '[[:cntrl:]]+', ' ', 'g'));
+	v_clean := regexp_replace(v_clean, '\s+', ' ', 'g');
+	if v_clean <> ''
+		and char_length(v_clean) <= 80
+		and v_clean !~ '://'
+		and position('@' in v_clean) = 0
+		and v_clean ~* '^unsubscribe([[:space:]:_-]+[a-z0-9._:/=-]{1,64})?$' then
+		return v_clean;
+	end if;
+	return 'Unsubscribe';
+end
+$$;
+revoke all on function public.qorpera_mail_unsubscribe_subject(text) from public, anon, authenticated, service_role;
+
 create function public.qorpera_claim_mail_unsubscribes(p_limit integer, p_lease_id uuid)
 returns jsonb
 language plpgsql
@@ -357,6 +436,19 @@ begin
 	if p_limit is null or p_limit not between 1 and 50 or p_lease_id is null then
 		raise exception 'Unsubscribe claim is invalid' using errcode = '22023';
 	end if;
+	update public.qorpera_mail_unsubscribes
+	set status = 'failed',
+		settled_at = v_now,
+		lease_id = null,
+		lease_expires_at = null,
+		last_error = coalesce(last_error, case
+			when created_at <= v_now - interval '1 day' then 'Unsubscribe request expired'
+			else 'Unsubscribe request exceeded retry limit'
+		end)
+	where method = 'one_click'
+		and status in ('pending', 'retrying', 'delivering')
+		and (lease_expires_at is null or lease_expires_at <= v_now)
+		and (attempt_count >= 5 or created_at <= v_now - interval '1 day');
 	with candidates as (
 		select u.id
 		from public.qorpera_mail_unsubscribes as u
@@ -393,6 +485,26 @@ end
 $$;
 revoke all on function public.qorpera_claim_mail_unsubscribes(integer, uuid) from public, anon, authenticated, service_role;
 grant execute on function public.qorpera_claim_mail_unsubscribes(integer, uuid) to service_role;
+
+create function public.qorpera_release_mail_unsubscribe(p_unsubscribe_id uuid, p_lease_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+set lock_timeout = '2s'
+as $$
+begin
+	update public.qorpera_mail_unsubscribes
+	set status = case when attempt_count <= 1 then 'pending' else 'retrying' end,
+		attempt_count = greatest(attempt_count - 1, 0),
+		lease_id = null,
+		lease_expires_at = null
+	where id = p_unsubscribe_id and lease_id = p_lease_id and status = 'delivering';
+	return found;
+end
+$$;
+revoke all on function public.qorpera_release_mail_unsubscribe(uuid, uuid) from public, anon, authenticated, service_role;
+grant execute on function public.qorpera_release_mail_unsubscribe(uuid, uuid) to service_role;
 
 create function public.qorpera_complete_mail_unsubscribe(p_unsubscribe_id uuid, p_lease_id uuid)
 returns boolean
@@ -456,8 +568,10 @@ declare
 	v_rec record;
 	v_attempt record;
 	v_status text;
+	v_mailto_to text;
+	v_now timestamptz := clock_timestamp();
 begin
-	select rec.delivery_id, rec.unsubscribe
+	select rec.delivery_id, rec.from_address, rec.unsubscribe
 	into v_rec
 	from public.qorpera_mail_received as rec
 	where rec.thread_id = p_thread_id and rec.profile_id = p_profile_id and rec.unsubscribe is not null
@@ -466,7 +580,16 @@ begin
 	if not found then
 		return null;
 	end if;
-	select u.id, u.method, u.status, u.last_error, u.created_at, mail.status as mail_status
+	v_mailto_to := v_rec.unsubscribe #>> '{mailto,to}';
+	if v_mailto_to is not null and not public.qorpera_mail_domains_match(v_rec.from_address, v_mailto_to) then
+		v_mailto_to := null;
+	end if;
+	if not (v_rec.unsubscribe ? 'oneClickUrl') and v_mailto_to is null
+		and coalesce(jsonb_array_length(v_rec.unsubscribe -> 'webUrls'), 0) = 0 then
+		return null;
+	end if;
+	select u.id, u.method, u.status, u.last_error, u.created_at, u.attempt_count, u.lease_expires_at,
+		mail.status as mail_status
 	into v_attempt
 	from public.qorpera_mail_unsubscribes as u
 	left join public.qorpera_company_mail_outbox as mail on mail.id = u.outbox_mail_id
@@ -480,6 +603,11 @@ begin
 				when v_attempt.mail_status in ('failed', 'cancelled') then 'failed'
 				else 'queued'
 			end;
+		elsif v_attempt.method = 'one_click'
+			and v_attempt.status in ('pending', 'retrying', 'delivering')
+			and (v_attempt.lease_expires_at is null or v_attempt.lease_expires_at <= v_now)
+			and (v_attempt.attempt_count >= 5 or v_attempt.created_at <= v_now - interval '1 day') then
+			v_status := 'failed';
 		elsif v_attempt.status in ('pending', 'retrying', 'delivering') then
 			v_status := 'queued';
 		else
@@ -489,13 +617,13 @@ begin
 	return jsonb_strip_nulls(jsonb_build_object(
 		'deliveryId', v_rec.delivery_id,
 		'oneClick', v_rec.unsubscribe ? 'oneClickUrl',
-		'mailto', v_rec.unsubscribe #>> '{mailto,to}',
+		'mailto', v_mailto_to,
 		'webUrl', v_rec.unsubscribe #>> '{webUrls,0}',
 		'urls', v_rec.unsubscribe -> 'webUrls',
 		'status', v_status,
 		'method', case when v_status is not null then v_attempt.method end,
 		'requestedAt', case when v_status is not null then v_attempt.created_at end,
-		'lastError', case when v_status = 'failed' then v_attempt.last_error end
+		'lastError', case when v_status = 'failed' then coalesce(v_attempt.last_error, 'Unsubscribe request failed') end
 	));
 end
 $$;
@@ -535,6 +663,7 @@ declare
 	v_thread public.qorpera_mail_threads%rowtype;
 	v_google public.qorpera_google_mailboxes%rowtype;
 	v_gmail_threads text[];
+	v_axis text[];
 begin
 	select * into v_thread from public.qorpera_mail_threads where id = p_thread_id;
 	if not found then return; end if;
@@ -557,6 +686,18 @@ begin
 			and known.gmail_thread_id is not null
 	) as gm;
 	if cardinality(v_gmail_threads) = 0 then return; end if;
+	v_axis := case when p_action in ('star', 'unstar')
+		then array['star', 'unstar']
+		else array['trash', 'untrash', 'archive', 'unarchive']
+	end;
+	update public.qorpera_google_mail_actions
+	set status = 'done',
+		settled_at = clock_timestamp(),
+		last_error = 'Superseded by newer action'
+	where mailbox_id = v_google.mailbox_id
+		and thread_id = v_thread.id
+		and status in ('pending', 'retrying')
+		and action = any(v_axis);
 	insert into public.qorpera_google_mail_actions (
 		profile_id, environment_id, mailbox_id, action, thread_id, gmail_thread_ids
 	) values (
@@ -578,6 +719,18 @@ security definer
 set search_path = ''
 as $$
 begin
+	update public.qorpera_google_mail_actions as existing
+	set status = 'done',
+		settled_at = clock_timestamp(),
+		last_error = 'Superseded by newer action'
+	from public.qorpera_google_mailboxes as google
+	where existing.mailbox_id = google.mailbox_id
+		and google.profile_id = p_profile_id
+		and google.environment_id = p_environment_id
+		and google.removed_at is null
+		and existing.sender = p_sender
+		and existing.status in ('pending', 'retrying')
+		and existing.action in ('block_sender', 'unblock_sender');
 	insert into public.qorpera_google_mail_actions (
 		profile_id, environment_id, mailbox_id, action, sender
 	)
@@ -617,7 +770,12 @@ begin
 	v_has_sent := p_labels ? 'SENT';
 	update public.qorpera_mail_threads
 	set starred = starred or v_has_starred,
-		trashed_at = case when v_has_trash then coalesce(trashed_at, p_at) else trashed_at end,
+		trashed_at = case
+			when v_has_trash then coalesce(trashed_at, p_at)
+			when v_has_inbox
+				and not public.qorpera_mail_sender_is_blocked(profile_id, environment_id, outside_address) then null
+			else trashed_at
+		end,
 		archived_at = case
 			when v_has_inbox then null
 			when p_imported and not v_has_trash and not v_has_sent and message_count = 1 then coalesce(archived_at, p_at)
@@ -650,6 +808,16 @@ begin
 	if p_limit is null or p_limit not between 1 and 20 then
 		raise exception 'Google mail action claim is invalid' using errcode = '22023';
 	end if;
+	update public.qorpera_google_mail_actions
+	set status = 'failed',
+		settled_at = v_now,
+		lease_id = null,
+		lease_until = null,
+		last_error = coalesce(last_error, 'Google mail action exceeded retry limit')
+	where profile_id = v_authority.profile_id
+		and status in ('pending', 'retrying', 'delivering')
+		and (lease_until is null or lease_until <= v_now)
+		and attempt_count >= 8;
 	with candidates as (
 		select action.id
 		from public.qorpera_google_mail_actions as action
@@ -664,6 +832,16 @@ begin
 			and action.next_attempt_at <= v_now
 			and (action.lease_until is null or action.lease_until <= v_now)
 			and action.attempt_count < 8
+			and not exists (
+				select 1 from public.qorpera_google_mail_actions as earlier
+				where earlier.mailbox_id = action.mailbox_id
+					and earlier.status in ('pending', 'retrying', 'delivering')
+					and (earlier.created_at, earlier.id) < (action.created_at, action.id)
+					and (
+						(action.thread_id is not null and earlier.thread_id = action.thread_id)
+						or (action.sender is not null and earlier.sender = action.sender)
+					)
+			)
 		order by action.next_attempt_at, action.created_at, action.id
 		for update of action skip locked
 		limit p_limit
@@ -833,12 +1011,14 @@ begin
 				exists (
 					select 1 from public.qorpera_mail_received as rec
 					join public.qorpera_google_mail_messages as known on known.delivery_id = rec.delivery_id
-					where rec.thread_id = thread.id and known.gmail_thread_id = v_gmail_thread
+					where rec.thread_id = thread.id and known.mailbox_id = v_google.mailbox_id
+						and known.gmail_thread_id = v_gmail_thread
 				)
 				or exists (
 					select 1 from public.qorpera_company_mail_outbox as mail
 					join public.qorpera_google_mail_messages as known on known.mail_id = mail.id
-					where mail.thread = thread.id and known.gmail_thread_id = v_gmail_thread
+					where mail.thread = thread.id and known.mailbox_id = v_google.mailbox_id
+						and known.gmail_thread_id = v_gmail_thread
 				)
 			);
 		get diagnostics v_rows = row_count;
@@ -931,8 +1111,10 @@ as $$
 declare
 	v_norm record;
 	v_row public.qorpera_mail_blocked_senders%rowtype;
-	v_tid text;
+	v_trashed_row record;
 	v_trashed integer := 0;
+	v_trashed_ids text[] := '{}';
+	v_trashed_archived_ids text[] := '{}';
 begin
 	select * into strict v_norm from public.qorpera_normalize_mail_block_sender(p_sender);
 	insert into public.qorpera_mail_blocked_senders (
@@ -944,7 +1126,7 @@ begin
 	returning * into v_row;
 	perform public.qorpera_enqueue_google_mail_sender_action(p_profile_id, p_environment_id, v_row.sender, 'block_sender');
 	if coalesce(p_trash_existing, true) then
-		for v_tid in
+		for v_trashed_row in
 			update public.qorpera_mail_threads as thread
 			set trashed_at = clock_timestamp()
 			where thread.profile_id = p_profile_id
@@ -957,10 +1139,16 @@ begin
 						and position('@' in thread.outside_address) > 0
 						and '@' || split_part(lower(btrim(thread.outside_address)), '@', 2) = v_row.sender)
 				)
-			returning thread.id
+			returning thread.id, (thread.archived_at is not null) as was_archived
 		loop
 			v_trashed := v_trashed + 1;
-			perform public.qorpera_enqueue_google_mail_thread_action(v_tid, 'trash');
+			if cardinality(v_trashed_ids) < 200 then
+				v_trashed_ids := array_append(v_trashed_ids, v_trashed_row.id);
+				if v_trashed_row.was_archived then
+					v_trashed_archived_ids := array_append(v_trashed_archived_ids, v_trashed_row.id);
+				end if;
+			end if;
+			perform public.qorpera_enqueue_google_mail_thread_action(v_trashed_row.id, 'trash');
 		end loop;
 	end if;
 	return jsonb_build_object(
@@ -969,6 +1157,8 @@ begin
 		'matchKind', v_row.match_kind,
 		'blocked', true,
 		'trashedCount', v_trashed,
+		'trashedThreads', to_jsonb(v_trashed_ids),
+		'trashedArchivedThreads', to_jsonb(v_trashed_archived_ids),
 		'createdAt', v_row.created_at
 	);
 end
@@ -1007,6 +1197,102 @@ $$;
 revoke all on function public.qorpera_mail_apply_unblock_sender(uuid, uuid, text)
 	from public, anon, authenticated, service_role;
 
+create function public.qorpera_preview_mail_unsubscribe(
+	p_profile_id uuid,
+	p_environment_id uuid,
+	p_thread_id text,
+	p_delivery_id uuid
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+	v_thread public.qorpera_mail_threads%rowtype;
+	v_rec public.qorpera_mail_received%rowtype;
+	v_one_click text;
+	v_mailto jsonb;
+	v_mailto_to text;
+	v_web_urls jsonb;
+begin
+	if p_thread_id is null or p_thread_id !~ '^[A-Za-z0-9_-]{43}$' then
+		raise exception 'Mail thread id is invalid' using errcode = '22023';
+	end if;
+	select * into v_thread from public.qorpera_mail_threads
+	where id = p_thread_id and profile_id = p_profile_id and environment_id = p_environment_id;
+	if not found then
+		raise exception 'No mail thread of this company has that id' using errcode = '22023';
+	end if;
+	if public.qorpera_mail_thread_account(v_thread) is not null then
+		raise exception 'Account verification mail cannot be unsubscribed' using errcode = '42501';
+	end if;
+	if p_delivery_id is not null then
+		select * into v_rec from public.qorpera_mail_received
+		where delivery_id = p_delivery_id and thread_id = v_thread.id and profile_id = p_profile_id;
+		if not found or v_rec.unsubscribe is null then
+			raise exception 'This message has no unsubscribe information' using errcode = '22023';
+		end if;
+	else
+		select * into v_rec from public.qorpera_mail_received
+		where thread_id = v_thread.id and profile_id = p_profile_id and unsubscribe is not null
+		order by received_at desc, delivery_id desc
+		limit 1;
+		if not found then
+			raise exception 'This conversation has no unsubscribe information' using errcode = '22023';
+		end if;
+	end if;
+
+	v_one_click := v_rec.unsubscribe ->> 'oneClickUrl';
+	v_mailto := v_rec.unsubscribe -> 'mailto';
+	v_web_urls := v_rec.unsubscribe -> 'webUrls';
+
+	if v_one_click is not null then
+		return jsonb_strip_nulls(jsonb_build_object(
+			'thread', v_thread.id,
+			'deliveryId', v_rec.delivery_id,
+			'fromAddress', v_rec.from_address,
+			'method', 'one_click',
+			'url', v_one_click
+		));
+	end if;
+
+	if v_mailto is not null and jsonb_typeof(v_mailto) = 'object' and v_mailto ->> 'to' is not null then
+		v_mailto_to := lower(btrim(v_mailto ->> 'to'));
+		if public.qorpera_mail_domains_match(v_rec.from_address, v_mailto_to) then
+			return jsonb_strip_nulls(jsonb_build_object(
+				'thread', v_thread.id,
+				'deliveryId', v_rec.delivery_id,
+				'fromAddress', v_rec.from_address,
+				'method', 'mailto',
+				'to', v_mailto_to,
+				'subject', public.qorpera_mail_unsubscribe_subject(v_mailto ->> 'subject'),
+				'body', 'Unsubscribe'
+			));
+		end if;
+	end if;
+
+	if v_web_urls is not null and jsonb_typeof(v_web_urls) = 'array' and jsonb_array_length(v_web_urls) > 0 then
+		return jsonb_strip_nulls(jsonb_build_object(
+			'thread', v_thread.id,
+			'deliveryId', v_rec.delivery_id,
+			'fromAddress', v_rec.from_address,
+			'method', 'browser',
+			'url', v_web_urls ->> 0,
+			'urls', v_web_urls
+		));
+	end if;
+
+	if v_mailto is not null and jsonb_typeof(v_mailto) = 'object' and v_mailto ->> 'to' is not null then
+		raise exception 'Mailto unsubscribe target does not match the sender domain' using errcode = '42501';
+	end if;
+	raise exception 'This conversation has no unsubscribe information' using errcode = '22023';
+end
+$$;
+revoke all on function public.qorpera_preview_mail_unsubscribe(uuid, uuid, text, uuid)
+	from public, anon, authenticated, service_role;
+
 create function public.qorpera_execute_mail_unsubscribe(
 	p_profile_id uuid,
 	p_environment_id uuid,
@@ -1026,7 +1312,7 @@ as $$
 declare
 	v_thread public.qorpera_mail_threads%rowtype;
 	v_rec public.qorpera_mail_received%rowtype;
-	v_existing public.qorpera_mail_unsubscribes%rowtype;
+	v_existing record;
 	v_mailbox public.qorpera_company_mailboxes%rowtype;
 	v_hook public.qorpera_event_hooks%rowtype;
 	v_settings public.qorpera_mail_settings%rowtype;
@@ -1035,6 +1321,7 @@ declare
 	v_one_click text;
 	v_mailto jsonb;
 	v_mailto_to text;
+	v_mailto_allowed boolean := false;
 	v_web_urls jsonb;
 	v_mail_id uuid;
 	v_outbox_thread text;
@@ -1073,17 +1360,41 @@ begin
 		end if;
 	end if;
 
-	select * into v_existing from public.qorpera_mail_unsubscribes
-	where profile_id = p_profile_id and thread_id = v_thread.id
-		and status in ('pending', 'retrying', 'delivering', 'succeeded')
-	order by created_at desc, id desc
+	update public.qorpera_mail_unsubscribes
+	set status = 'failed',
+		settled_at = v_now,
+		lease_id = null,
+		lease_expires_at = null,
+		last_error = coalesce(last_error, case
+			when created_at <= v_now - interval '1 day' then 'Unsubscribe request expired'
+			else 'Unsubscribe request exceeded retry limit'
+		end)
+	where profile_id = p_profile_id
+		and thread_id = v_thread.id
+		and method = 'one_click'
+		and status in ('pending', 'retrying', 'delivering')
+		and (lease_expires_at is null or lease_expires_at <= v_now)
+		and (attempt_count >= 5 or created_at <= v_now - interval '1 day');
+
+	select u.*, mail.status as mail_status
+	into v_existing
+	from public.qorpera_mail_unsubscribes as u
+	left join public.qorpera_company_mail_outbox as mail on mail.id = u.outbox_mail_id
+	where u.profile_id = p_profile_id and u.thread_id = v_thread.id
+		and u.status in ('pending', 'retrying', 'delivering', 'succeeded')
+		and not (u.method = 'mailto' and mail.status in ('failed', 'cancelled'))
+	order by u.created_at desc, u.id desc
 	limit 1;
 	if found then
 		return jsonb_strip_nulls(jsonb_build_object(
 			'unsubscribeId', v_existing.id,
 			'thread', v_thread.id,
 			'method', v_existing.method,
-			'status', case when v_existing.status = 'succeeded' then 'succeeded' else 'queued' end,
+			'status', case
+				when v_existing.method = 'mailto' and v_existing.mail_status = 'sent' then 'succeeded'
+				when v_existing.status = 'succeeded' then 'succeeded'
+				else 'queued'
+			end,
 			'alreadyRequested', true,
 			'url', v_existing.target_url,
 			'to', v_existing.mailto_address,
@@ -1114,6 +1425,10 @@ begin
 
 	if v_mailto is not null and jsonb_typeof(v_mailto) = 'object' and v_mailto ->> 'to' is not null then
 		v_mailto_to := lower(btrim(v_mailto ->> 'to'));
+		v_mailto_allowed := public.qorpera_mail_domains_match(v_rec.from_address, v_mailto_to);
+	end if;
+
+	if v_mailto_allowed then
 		perform pg_advisory_xact_lock(hashtextextended('qorpera-company-mail:' || p_profile_id::text, 0));
 		select * into v_settings from public.qorpera_mail_settings;
 		if not coalesce(v_settings.enabled and v_settings.sending, false) or v_settings.domain is null then
@@ -1176,8 +1491,8 @@ begin
 			or public.qorpera_mail_name_reads_as_qorpera(v_company) then
 			v_from_name := 'Mailbox';
 		end if;
-		v_subject := coalesce(nullif(left(btrim(regexp_replace(coalesce(v_mailto ->> 'subject', ''), '[[:cntrl:]]+', ' ', 'g')), 200), ''), 'Unsubscribe');
-		v_body := coalesce(nullif(left(btrim(coalesce(v_mailto ->> 'body', '')), 2000), ''), 'Please unsubscribe this address from your mailing list.');
+		v_subject := public.qorpera_mail_unsubscribe_subject(v_mailto ->> 'subject');
+		v_body := 'Unsubscribe';
 		v_mail_id := extensions.gen_random_uuid();
 		v_outbox_thread := public.qorpera_mail_thread_id(v_mailbox.id, 'mail:' || v_mail_id);
 		if p_user_id is not null then
@@ -1233,6 +1548,9 @@ begin
 		);
 	end if;
 
+	if v_mailto_to is not null then
+		raise exception 'Mailto unsubscribe target does not match the sender domain' using errcode = '42501';
+	end if;
 	raise exception 'This conversation has no unsubscribe information' using errcode = '22023';
 end
 $$;
@@ -1587,7 +1905,8 @@ begin
 	end if;
 
 	if v_action = 'unsubscribe' then
-		if p_request - array['action', 'threadId', 'deliveryId'] <> '{}'::jsonb then
+		if p_request - array['action', 'threadId', 'deliveryId', 'preview'] <> '{}'::jsonb
+			or (p_request ? 'preview' and jsonb_typeof(p_request -> 'preview') <> 'boolean') then
 			raise exception 'Unsubscribe request is invalid' using errcode = '22023';
 		end if;
 		if p_request ? 'deliveryId' then
@@ -1612,6 +1931,16 @@ begin
 		end if;
 		if v_thread is null then
 			raise exception 'Provide threadId or deliveryId to unsubscribe' using errcode = '22023';
+		end if;
+		if coalesce((p_request ->> 'preview')::boolean, false) then
+			return jsonb_build_object(
+				'schema', 'qorpera.agent-mail-action/v1',
+				'runId', v_run.id,
+				'action', 'unsubscribe',
+				'preview', true
+			) || public.qorpera_preview_mail_unsubscribe(
+				v_run.profile_id, v_run.environment_id, v_thread, v_delivery
+			);
 		end if;
 		return jsonb_build_object('schema', 'qorpera.agent-mail-action/v1', 'runId', v_run.id, 'action', 'unsubscribe')
 			|| public.qorpera_execute_mail_unsubscribe(
@@ -1680,7 +2009,11 @@ select pg_temp.mail_actions_patch(
 		account = coalesce(excluded.account, thread.account)$old$,
 	$new$		message_count = thread.message_count + 1,
 		account = coalesce(excluded.account, thread.account),
-		archived_at = case when excluded.last_at >= thread.last_at then null else thread.archived_at end$new$
+		archived_at = case when excluded.last_at >= thread.last_at then null else thread.archived_at end,
+		trashed_at = case
+			when excluded.last_direction = 'received' and excluded.last_at >= thread.last_at then null
+			else thread.trashed_at
+		end$new$
 );
 
 select pg_temp.mail_actions_patch(
@@ -1781,6 +2114,12 @@ select pg_temp.mail_actions_patch(
 			'canUnsubscribe', case when shown.account_mark is null and exists (
 				select 1 from public.qorpera_mail_received as rec
 				where rec.thread_id = shown.id and rec.profile_id = shown.profile_id and rec.unsubscribe is not null
+					and (
+						rec.unsubscribe ? 'oneClickUrl'
+						or coalesce(jsonb_array_length(rec.unsubscribe -> 'webUrls'), 0) > 0
+						or (rec.unsubscribe #>> '{mailto,to}' is not null
+							and public.qorpera_mail_domains_match(rec.from_address, rec.unsubscribe #>> '{mailto,to}'))
+					)
 			) then true end,$new$
 );
 

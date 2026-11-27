@@ -935,4 +935,60 @@ describe("mail outbox attachments", () => {
 		assert.equal(failed[0]?.retryable, true);
 		assert.match(failed[0]?.error ?? "", /503/);
 	});
+
+	it("releases unprocessed unsubscribe claims when the outbox time budget runs out", async () => {
+		const completed: string[] = [];
+		const released: string[] = [];
+		const u1 = "73300000-0000-4000-8000-0000000000b1";
+		const u2 = "73300000-0000-4000-8000-0000000000b2";
+		const u3 = "73300000-0000-4000-8000-0000000000b3";
+		let clock = 1000;
+		const store: MailOutboxStore = {
+			claim: async () => [],
+			complete: async () => undefined,
+			fail: async () => undefined,
+			messageIdsDue: async () => [],
+			recordMessageId: async () => undefined,
+			claimUnsubscribes: async (_limit, leaseId) => [
+				{ unsubscribeId: u1, leaseId, url: "https://news.example.org/u1", attemptCount: 1 },
+				{ unsubscribeId: u2, leaseId, url: "https://news.example.org/u2", attemptCount: 1 },
+				{ unsubscribeId: u3, leaseId, url: "https://news.example.org/u3", attemptCount: 1 },
+			],
+			completeUnsubscribe: async (id) => {
+				completed.push(id);
+				clock += 1000;
+			},
+			failUnsubscribe: async () => undefined,
+			releaseUnsubscribe: async (id) => {
+				released.push(id);
+			},
+		};
+		const sender: MailSender = {
+			send: async () => "unused",
+			messageId: async () => null,
+		};
+		const response = await handleMailOutbox(post(), {
+			keys: [KEY],
+			store: () => store,
+			sender,
+			pace: 0,
+			budgetMs: 500,
+			now: () => clock,
+			resolveHost: async () => ["93.184.216.34"],
+			unsubscribeFetch: (async () => new Response("ok", { status: 200 })) as typeof fetch,
+		});
+		assert.deepEqual(await response.json(), {
+			claimed: 0,
+			sent: 0,
+			retrying: 0,
+			failed: 0,
+			rejected: 0,
+			deferred: 0,
+			messageIds: 0,
+			unsubscribed: 1,
+			unsubscribeFailed: 0,
+		});
+		assert.deepEqual(completed, [u1]);
+		assert.deepEqual(released, [u2, u3]);
+	});
 });

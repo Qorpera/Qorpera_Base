@@ -183,7 +183,8 @@ describe("which calls are reviewed", () => {
 		["manage_mail", { action: "list_blocked" }, "read"],
 		["manage_mail", { action: "trash", threadIds: ["a".repeat(43)] }, "internal"],
 		["manage_mail", { action: "star", threadIds: ["a".repeat(43)] }, "internal"],
-		["manage_mail", { action: "block_sender", sender: "spam@example.org" }, "internal"],
+		["manage_mail", { action: "unblock_sender", sender: "spam@example.org" }, "internal"],
+		["manage_mail", { action: "block_sender", sender: "spam@example.org" }, "external"],
 		["manage_mail", { action: "unsubscribe", threadId: "a".repeat(43) }, "external"],
 		// How a part of an interface app is made: the runtime's own text (20260930762000).
 		["app_guide", { about: "model" }, "read"],
@@ -554,11 +555,39 @@ describe("what the card shows", () => {
 			describeCloudAction(tool("manage_mail"), {
 				action: "unsubscribe",
 				threadId: "a".repeat(43),
+				resolvedMethod: "mailto",
+				resolvedFrom: "news@acme.example",
+				resolvedTo: "leave@mail.acme.example",
+				resolvedSubject: "Unsubscribe",
+				resolvedBody: "Unsubscribe",
 			}),
 		).toEqual({
 			title: "Unsubscribe from a mailing list",
-			target: "a".repeat(43),
-			details: { effect: "Uses the sender's List-Unsubscribe header to opt out of future emails" },
+			target: "leave@mail.acme.example",
+			details: {
+				sender: "news@acme.example",
+				to: "leave@mail.acme.example",
+				subject: "Unsubscribe",
+				body: "Unsubscribe",
+				effect: "Sends an unsubscribe email with fixed text to the sender's same-domain List-Unsubscribe address",
+			},
+		});
+		expect(
+			describeCloudAction(tool("manage_mail"), {
+				action: "unsubscribe",
+				threadId: "a".repeat(43),
+				resolvedMethod: "one_click",
+				resolvedFrom: "news@acme.example",
+				resolvedUrl: "https://acme.example/unsub",
+			}),
+		).toEqual({
+			title: "Unsubscribe from a mailing list",
+			target: "https://acme.example/unsub",
+			details: {
+				sender: "news@acme.example",
+				url: "https://acme.example/unsub",
+				effect: "Sends an RFC 8058 one-click HTTPS POST unsubscribe request",
+			},
 		});
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("moving mail to Trash");
 		expect(CLOUD_ACTION_REVIEW_INSTRUCTIONS).toContain("unsubscribing from newsletters");

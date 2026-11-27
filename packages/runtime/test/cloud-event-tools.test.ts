@@ -1163,15 +1163,31 @@ describe("agent event tools", () => {
 		const threadId = "A".repeat(43);
 		const deliveryId = "73100000-0000-4000-8000-0000000000aa";
 
-		it("forwards trash, star, unsubscribe, block_sender, and list_blocked to qorpera_manage_agent_mail", async () => {
+		it("forwards trash, star, unsubscribe (with preview prepare), block_sender, and list_blocked to qorpera_manage_agent_mail", async () => {
 			const calls: unknown[] = [];
 			const f = await fixture((method, args, runId) => {
 				expect(method).toBe("qorpera_manage_agent_mail");
-				calls.push(args.p_request);
+				const req = args.p_request as Record<string, unknown>;
+				calls.push(req);
+				if (req.preview === true) {
+					return {
+						schema: "qorpera.agent-mail-action/v1",
+						runId,
+						action: "unsubscribe",
+						preview: true,
+						thread: threadId,
+						deliveryId,
+						fromAddress: "news@example.org",
+						method: "mailto",
+						to: "leave@example.org",
+						subject: "Unsubscribe",
+						body: "Unsubscribe",
+					};
+				}
 				return {
 					schema: "qorpera.agent-mail-action/v1",
 					runId,
-					action: (args.p_request as Record<string, unknown>).action,
+					action: req.action,
 					updatedCount: 1,
 				};
 			});
@@ -1183,7 +1199,7 @@ describe("agent event tools", () => {
 				expect(trashed.success).toBe(true);
 				const unsub = await f.boundary.invoke("m2", "qorpera", "manage_mail", {
 					action: "unsubscribe",
-					deliveryId,
+					threadId,
 				});
 				expect(unsub.success).toBe(true);
 				const blocked = await f.boundary.invoke("m3", "qorpera", "manage_mail", {
@@ -1198,7 +1214,8 @@ describe("agent event tools", () => {
 				expect(listed.success).toBe(true);
 				expect(calls).toEqual([
 					{ action: "trash", threadIds: [threadId] },
-					{ action: "unsubscribe", deliveryId },
+					{ action: "unsubscribe", threadId, preview: true },
+					{ action: "unsubscribe", threadId, deliveryId },
 					{ action: "block_sender", sender: "promo@example.org", trashExisting: true },
 					{ action: "list_blocked" },
 				]);

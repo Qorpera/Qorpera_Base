@@ -1088,18 +1088,20 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   `sign_in_again` a send answers 0A000 "Google asked you to sign in again."; a Google address carries no attachments.
   All three member RPCs answer 42501 to a member who is not an owner or admin (`not_allowed`).
 - Mailbox email actions (20260930931000_mailbox_email_actions): `qorpera_member_mail_threads(p_environment_id, p_request)`
-  adds `view` (`inbox` default, `starred`, `archived`, `trash`, `all`) and returns `starred`, `trashedAt`, `archivedAt`,
-  `canUnsubscribe` on each thread; `qorpera_member_mail_thread` returns `starred`, `trashedAt`, `archivedAt`,
-  `unsubscribe` on the thread and `unsubscribe` on each received message (absent for account mail). Members who can write
-  (owners, admins, contributors; viewers get 42501) call:
+  adds `view` (`inbox` default when `direction` is omitted, `starred`, `archived`, `sent`, `trash`, `all`) and returns
+  `starred`, `trashedAt`, `archivedAt`, `canUnsubscribe` on each thread; `all` excludes trashed threads (whereas agent
+  `find_mail`'s `all` includes them). `qorpera_member_mail_thread` returns `starred`, `trashedAt`, `archivedAt`,
+  `senderBlocked`, `unsubscribe` on the thread and `unsubscribe` on each received message (absent for account mail).
+  Members who can write (owners, admins, contributors; viewers get 42501) call:
   - `qorpera_member_mail_update_threads(p_environment_id, p_threads, p_action)` (`trash`, `restore`, `archive`,
     `unarchive`, `star`, `unstar`, 1..50 thread ids; syncs to linked Gmail mailboxes via `qorpera_google_mail_actions`).
   - `qorpera_member_mail_unsubscribe(p_environment_id, p_thread, p_delivery_id?)` → `{unsubscribeId, thread, method,
-    status, ...}` (`one_click` queued for `mail-outbox` HTTPS POST, `mailto` queued in outbox, or `browser_required` with
-    `urls[]`).
-  - `qorpera_member_mail_block_sender(p_environment_id, p_sender, p_trash_existing?)` and
-    `qorpera_member_mail_unblock_sender(p_environment_id, p_sender)` (exact email or `@domain`; auto-trashes future mail,
-    suppresses routine wakes, and syncs reversible Gmail `TRASH` filter).
+    status, ...}` (`one_click` queued for `mail-outbox` HTTPS POST, same-domain `mailto` queued in outbox with fixed
+    unsubscribe body and sanitized subject, or `browser_required` with `urls[]`).
+  - `qorpera_member_mail_block_sender(p_environment_id, p_sender, p_trash_existing?)` → `{id, sender, matchKind,
+    blocked, trashedCount, trashedThreads, trashedArchivedThreads, createdAt}` and
+    `qorpera_member_mail_unblock_sender(p_environment_id, p_sender)` (exact email or `@domain`; auto-trashes future
+    mail, suppresses routine wakes, and syncs reversible Gmail `TRASH` filter).
   Any member (including viewers) may read blocked senders via `qorpera_member_mail_blocked_senders(p_environment_id)`.
 
 

@@ -112,6 +112,7 @@ export interface MailOutboxStore {
 	claimUnsubscribes?(limit: number, leaseId: string): Promise<unknown>;
 	completeUnsubscribe?(unsubscribeId: string, leaseId: string): Promise<void>;
 	failUnsubscribe?(unsubscribeId: string, leaseId: string, message: string, retryable: boolean): Promise<void>;
+	releaseUnsubscribe?(unsubscribeId: string, leaseId: string): Promise<void>;
 }
 
 /** Sends one email; resolves to the provider's message id or throws MailSendError. */
@@ -787,8 +788,18 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 		} catch {}
 		const resolveHost = outbox.resolveHost ?? defaultResolveHost;
 		const fetchImpl = outbox.unsubscribeFetch ?? fetch;
-		for (const job of jobs) {
-			if (now() >= deadline) break;
+		for (let index = 0; index < jobs.length; index += 1) {
+			const job = jobs[index]!;
+			if (now() >= deadline) {
+				if (store.releaseUnsubscribe) {
+					for (const remaining of jobs.slice(index)) {
+						try {
+							await store.releaseUnsubscribe(remaining.unsubscribeId, remaining.leaseId);
+						} catch {}
+					}
+				}
+				break;
+			}
 			try {
 				await sendOneClickUnsubscribe(job.url, { fetchImpl, resolveHost });
 				await store.completeUnsubscribe(job.unsubscribeId, job.leaseId);

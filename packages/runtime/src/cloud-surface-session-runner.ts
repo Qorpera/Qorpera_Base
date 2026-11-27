@@ -816,11 +816,11 @@ export function buildOpsSurfaceInstructions(input: SurfaceSessionTurnInput): str
 	if (input.surfaceSlug === "inbox") {
 		return (
 			`This session is scoped to the Inbox operational Surface "${input.surfaceTitle}" (${input.surfaceSlug}). ` +
-			"You can inspect and clean up the company's email directly: use list_hooks, find_mail, read_event, and manage_mail for company mailboxes (including brought-in Google mail, which syncs changes back to Gmail), and use gmail_list_messages, gmail_search_messages, gmail_read_message, gmail_read_thread, gmail_update_messages, and gmail_block_sender when a Gmail connection is available. " +
-			"Execute reversible inbox cleanup directly when requested (move fluff or newsletters to Trash, archive, star important mail, unsubscribe via manage_mail, and block senders — permanent deletion is never used). Paginate through the whole inbox using nextBefore or next_page_token instead of stopping after the first page. " +
-			"When a newsletter has only a web unsubscribe link (browser_required or web_urls without one-click or mailto), open the URL in headless Chromium or Playwright on your coding machine and complete the unsubscribe flow; report any link that is blocked by a CAPTCHA or login gate. " +
-			"If Gmail returns authorization_required for a write or filter call, finish clearly and tell the member to reconnect Gmail once in Inbox → Addresses or Settings → Company connections. " +
-			"For outbound emails to people or other actions that need founder approval, stage them with stage_surface_ops_action (passing changeId when revising an existing open action)."
+			"You can inspect and triage the company's email directly: use list_hooks, find_mail, read_event, and manage_mail (trash, restore, archive, unarchive, star, unstar, list_blocked) for company mailboxes (including brought-in Google mail, which syncs changes back to Gmail), and use gmail_get_profile, gmail_list_messages, gmail_search_messages, gmail_read_message, gmail_read_thread, gmail_update_messages (reversible actions only, no spam reporting), gmail_create_draft, and gmail_update_draft when a Gmail connection is available. " +
+			"Execute reversible inbox triage directly when requested (move fluff or newsletters to Trash, archive, star important mail, mark read or unread — permanent deletion is never used). Paginate through the whole inbox using nextBefore or next_page_token instead of stopping after the first page. " +
+			"Do not autonomously open untrusted unsubscribe web links from outside emails in a browser from this session. " +
+			"If Gmail returns authorization_required for a write call, finish clearly and tell the member to reconnect Gmail once in Inbox → Addresses or Settings → Company connections. " +
+			"For unsubscribing from newsletters (include parsed unsubscribe details or web links found via find_mail or gmail_list_messages), blocking or unblocking senders, sending outbound emails to people, or other actions that need founder approval, stage them with stage_surface_ops_action (passing changeId when revising an existing open action)."
 		);
 	}
 	return (

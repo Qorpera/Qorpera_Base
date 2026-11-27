@@ -34,20 +34,37 @@ declare
 	v_email_3 uuid := '14130000-0000-4000-8000-0000000000e3';
 	v_email_4 uuid := '14130000-0000-4000-8000-0000000000e4';
 	v_email_5 uuid := '14130000-0000-4000-8000-0000000000e5';
+	v_email_6 uuid := '14130000-0000-4000-8000-0000000000e6';
+	v_email_7 uuid := '14130000-0000-4000-8000-0000000000e7';
+	v_email_8 uuid := '14130000-0000-4000-8000-0000000000e8';
+	v_email_9 uuid := '14130000-0000-4000-8000-0000000000e9';
+	v_email_10 uuid := '14130000-0000-4000-8000-0000000000ea';
 	v_rx jsonb;
 	v_delivery_1 uuid;
 	v_delivery_2 uuid;
 	v_delivery_3 uuid;
 	v_delivery_4 uuid;
+	v_delivery_5 uuid;
+	v_delivery_6 uuid;
+	v_delivery_7 uuid;
+	v_delivery_8 uuid;
+	v_delivery_9 uuid;
+	v_delivery_10 uuid;
 	v_thread_1 text;
 	v_thread_2 text;
 	v_thread_3 text;
 	v_thread_4 text;
+	v_thread_5 text;
+	v_thread_6 text;
+	v_thread_7 text;
+	v_thread_8 text;
+	v_thread_9 text;
 	v_list jsonb;
 	v_detail jsonb;
 	v_res jsonb;
 	v_claim jsonb;
 	v_lease uuid := '14130000-0000-4000-8000-000000000099';
+	v_lease_2 uuid := '14130000-0000-4000-8000-00000000009a';
 	v_ticket jsonb;
 	v_gclaim jsonb;
 	v_gactions jsonb;
@@ -55,6 +72,14 @@ declare
 	v_binding jsonb;
 	v_found jsonb;
 	v_secret_id uuid;
+	v_hook_id uuid;
+	v_outbox_row public.qorpera_company_mail_outbox%rowtype;
+	v_waiting uuid[];
+	v_other_profile constant uuid := '14130000-0000-4000-8000-0000000000f1';
+	v_other_env constant uuid := '14130000-0000-4000-8000-0000000000f2';
+	v_other_user constant uuid := '14130000-0000-4000-8000-0000000000f3';
+	v_first_action_id uuid;
+	v_first_lease_id uuid;
 begin
 	if (select count(*) from public.qorpera_cloud_connector_operations
 		where connector_id = 'gmail' and operation_id in ('list_messages', 'update_messages', 'block_sender')
@@ -277,6 +302,8 @@ begin
 		raise exception 'Inbound Gmail label changes should update thread';
 	end if;
 
+	perform pg_temp.base_claims('service_role');
+	delete from public.qorpera_google_mail_actions where profile_id = v_profile and status <> 'done';
 	perform pg_temp.base_claims('authenticated', v_owner);
 	perform public.qorpera_member_mail_update_threads(v_env, array[v_gthread], 'trash');
 	perform pg_temp.base_claims('service_role');
@@ -331,4 +358,300 @@ begin
 	if v_secret_id is null then
 		raise exception 'Expected google mailbox secret';
 	end if;
+
+	select * into strict v_outbox_row from public.qorpera_company_mail_outbox
+	where recipients_to = array['leave@mailto-list.example.org']
+	order by created_at desc
+	limit 1;
+	if v_outbox_row.subject <> 'Unsubscribe' or v_outbox_row.body <> 'Unsubscribe' then
+		raise exception 'Mailto unsubscribe must use fixed body and sanitized subject: % / %',
+			v_outbox_row.subject, v_outbox_row.body;
+	end if;
+
+	v_rx := public.qorpera_receive_mail(
+		v_email_5::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_5,
+			'subject', 'Invoice #42',
+			'from', 'Bob <bob@customer.example.org>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m5@customer.example.org>',
+			'text', 'Original invoice.'
+		)::text
+	);
+	v_delivery_5 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	select thread_id into strict v_thread_5 from public.qorpera_mail_received where delivery_id = v_delivery_5;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	perform public.qorpera_member_mail_update_threads(v_env, array[v_thread_5], 'trash');
+	if not exists (select 1 from public.qorpera_mail_threads where id = v_thread_5 and trashed_at is not null) then
+		raise exception 'Thread 5 must be trashed';
+	end if;
+	perform pg_temp.base_claims('service_role');
+	v_rx := public.qorpera_receive_mail(
+		v_email_6::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_6,
+			'subject', 'Re: Invoice #42',
+			'from', 'Bob <bob@customer.example.org>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m6@customer.example.org>',
+			'inReplyTo', '<m5@customer.example.org>',
+			'text', 'Corrected invoice attached.'
+		)::text
+	);
+	v_delivery_6 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	if not exists (select 1 from public.qorpera_mail_threads where id = v_thread_5 and trashed_at is null) then
+		raise exception 'Non-blocked reply to trashed thread must clear trashed_at';
+	end if;
+	select hook_id into strict v_hook_id from public.qorpera_company_mailboxes where local_part = 'inbox.northwind';
+	select array_agg(waiting.id) into v_waiting
+	from public.qorpera_event_listener_waiting(
+		row('14130000-0000-4000-8000-0000000000c1', 1, 'mail', v_hook_id, v_profile, v_env,
+			clock_timestamp() - interval '2 days', true, '-infinity'::timestamptz, '-infinity'::timestamptz
+		)::public.qorpera_event_listener_cursors,
+		null, 50
+	) as waiting;
+	if not (v_delivery_6 = any(coalesce(v_waiting, '{}'))) then
+		raise exception 'Non-blocked reply after untrash must wake event listeners: %', v_waiting;
+	end if;
+	if v_delivery_4 = any(coalesce(v_waiting, '{}')) then
+		raise exception 'Blocked auto-trashed delivery must not wake event listeners: %', v_waiting;
+	end if;
+
+	v_rx := public.qorpera_receive_mail(
+		v_email_7::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_7,
+			'subject', 'Phish Attempt',
+			'from', 'Attacker <attacker@evil.co.uk>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m7@evil.co.uk>',
+			'listUnsubscribe', '<mailto:victim@bank.co.uk?subject=Urgent%20wire&body=Send%20funds>',
+			'text', 'Click here.'
+		)::text
+	);
+	v_delivery_7 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	select thread_id into strict v_thread_7 from public.qorpera_mail_received where delivery_id = v_delivery_7;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	v_detail := public.qorpera_member_mail_thread(v_env, v_thread_7, null);
+	if v_detail -> 'unsubscribe' is not null then
+		raise exception 'Cross-domain mailto-only header must not expose unsubscribe: %', v_detail;
+	end if;
+	begin
+		perform public.qorpera_member_mail_unsubscribe(v_env, v_thread_7, null);
+		raise exception 'Cross-domain mailto unsubscribe must be refused';
+	exception when insufficient_privilege then null;
+	end;
+
+	perform pg_temp.base_claims('service_role');
+	v_rx := public.qorpera_receive_mail(
+		v_email_8::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_8,
+			'subject', 'Self Loop Test',
+			'from', 'Loop <loop@mail.example.test>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m8@mail.example.test>',
+			'listUnsubscribe', '<mailto:inbox.northwind@mail.example.test?subject=unsubscribe>',
+			'text', 'Loop.'
+		)::text
+	);
+	v_delivery_8 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	select thread_id into strict v_thread_8 from public.qorpera_mail_received where delivery_id = v_delivery_8;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	begin
+		perform public.qorpera_member_mail_unsubscribe(v_env, v_thread_8, null);
+		raise exception 'Self-mailbox mailto unsubscribe must be refused';
+	exception when insufficient_privilege then null;
+	end;
+
+	perform pg_temp.base_claims('service_role');
+	v_rx := public.qorpera_receive_mail(
+		v_email_9::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_9,
+			'subject', 'Subdomain Mailto & Expiry',
+			'from', 'Updates <news@updates.brand.example.org>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m9@updates.brand.example.org>',
+			'listUnsubscribe', '<mailto:unsub@bounce.brand.example.org?subject=unsubscribe%20token-42&body=Ignored+text>',
+			'text', 'Brand news.'
+		)::text
+	);
+	v_delivery_9 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	select thread_id into strict v_thread_9 from public.qorpera_mail_received where delivery_id = v_delivery_9;
+	v_res := public.qorpera_manage_agent_mail(
+		v_binding, 'call-preview-1',
+		jsonb_build_object('action', 'unsubscribe', 'threadId', v_thread_9, 'preview', true)
+	);
+	if not coalesce((v_res ->> 'preview')::boolean, false)
+		or v_res ->> 'method' <> 'mailto'
+		or v_res ->> 'to' <> 'unsub@bounce.brand.example.org'
+		or v_res ->> 'subject' <> 'unsubscribe token-42'
+		or v_res ->> 'body' <> 'Unsubscribe' then
+		raise exception 'Unsubscribe preview must resolve same-org mailto with sanitized subject and fixed body: %', v_res;
+	end if;
+	if exists (select 1 from public.qorpera_mail_unsubscribes where thread_id = v_thread_9) then
+		raise exception 'Unsubscribe preview must not insert unsubscribe rows';
+	end if;
+
+	v_rx := public.qorpera_receive_mail(
+		v_email_10::text,
+		array['inbox.northwind@mail.example.test'],
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', v_email_10,
+			'subject', 'One Click Release And Expire',
+			'from', 'Promo2 <promo2@brand2.example.org>',
+			'to', jsonb_build_array('inbox.northwind@mail.example.test'),
+			'messageId', '<m10@brand2.example.org>',
+			'listUnsubscribe', '<https://brand2.example.org/unsub>',
+			'listUnsubscribePost', 'List-Unsubscribe=One-Click',
+			'text', 'Deals.'
+		)::text
+	);
+	v_delivery_10 := (v_rx #>> '{results,0,deliveryId}')::uuid;
+	select thread_id into strict v_thread_6 from public.qorpera_mail_received where delivery_id = v_delivery_10;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	v_res := public.qorpera_member_mail_unsubscribe(v_env, v_thread_6, null);
+	perform pg_temp.base_claims('service_role');
+	v_claim := public.qorpera_claim_mail_unsubscribes(10, v_lease);
+	if jsonb_array_length(v_claim) <> 1 or (v_claim #>> '{0,attemptCount}')::integer <> 1 then
+		raise exception 'Expected claimed one_click attempt 1: %', v_claim;
+	end if;
+	if not public.qorpera_release_mail_unsubscribe((v_claim #>> '{0,unsubscribeId}')::uuid, v_lease) then
+		raise exception 'Expected release_mail_unsubscribe to succeed';
+	end if;
+	if not exists (
+		select 1 from public.qorpera_mail_unsubscribes
+		where id = (v_claim #>> '{0,unsubscribeId}')::uuid and status = 'pending' and attempt_count = 0
+	) then
+		raise exception 'Released unsubscribe must reset attempt_count and status';
+	end if;
+	update public.qorpera_mail_unsubscribes
+	set created_at = clock_timestamp() - interval '2 days'
+	where id = (v_claim #>> '{0,unsubscribeId}')::uuid;
+	v_claim := public.qorpera_claim_mail_unsubscribes(10, v_lease_2);
+	if jsonb_array_length(v_claim) <> 0 then
+		raise exception 'Expired unsubscribe must not be claimed: %', v_claim;
+	end if;
+	if not exists (
+		select 1 from public.qorpera_mail_unsubscribes
+		where thread_id = v_thread_6 and status = 'failed' and settled_at is not null
+	) then
+		raise exception 'Expired unsubscribe must be settled as failed';
+	end if;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	v_res := public.qorpera_member_mail_unsubscribe(v_env, v_thread_6, null);
+	if coalesce((v_res ->> 'alreadyRequested')::boolean, false) or v_res ->> 'status' <> 'queued' then
+		raise exception 'Re-unsubscribing after failed attempt must queue a fresh attempt: %', v_res;
+	end if;
+
+	perform public.qorpera_member_mail_update_threads(v_env, array[v_thread_9], 'archive');
+	v_res := public.qorpera_member_mail_block_sender(v_env, '@updates.brand.example.org', true);
+	if (v_res ->> 'trashedCount')::integer <> 1
+		or v_res #>> '{trashedThreads,0}' <> v_thread_9
+		or v_res #>> '{trashedArchivedThreads,0}' <> v_thread_9 then
+		raise exception 'Block sender must return trashedThreads and trashedArchivedThreads: %', v_res;
+	end if;
+
+	perform pg_temp.base_claims('service_role');
+	perform pg_temp.ma_broker(format(
+		'select public.qorpera_bring_in_google_mail(%L, %L, %L, %L, %L, %L, %L, %L, %L)',
+		v_auth_id, v_auth_sha, v_gclaim ->> 'mailboxId', v_gclaim ->> 'lease', 'gm2', 'gth1', false,
+		'2026-11-27T10:00:00Z',
+		jsonb_build_object(
+			'schema', 'qorpera.mail/v1',
+			'emailId', public.qorpera_google_mail_email_id(v_profile, 'owner1413@gmail.com', 'gm2'),
+			'subject', 'Re: Starred Google Mail',
+			'from', 'VIP <vip@partner.example.org>',
+			'to', jsonb_build_array('owner1413@gmail.com'),
+			'messageId', '<gm2@partner.example.org>',
+			'inReplyTo', '<gm1@partner.example.org>',
+			'gmailLabels', jsonb_build_array('INBOX'),
+			'text', 'Reply back to inbox.'
+		)::text
+	));
+	if not exists (select 1 from public.qorpera_mail_threads where id = v_gthread and trashed_at is null) then
+		raise exception 'Incoming Gmail message with INBOX label must clear trashed_at';
+	end if;
+
+	perform pg_temp.base_claims('service_role');
+	delete from public.qorpera_google_mail_actions where profile_id = v_profile and status <> 'done';
+	perform pg_temp.base_claims('authenticated', v_owner);
+	perform public.qorpera_member_mail_update_threads(v_env, array[v_gthread], 'trash');
+	perform pg_temp.base_claims('service_role');
+	v_gactions := pg_temp.ma_broker(format('select public.qorpera_claim_google_mail_actions(%L, %L, 10)', v_auth_id, v_auth_sha));
+	v_first_action_id := (v_gactions #>> '{actions,0,actionId}')::uuid;
+	v_first_lease_id := (v_gactions #>> '{actions,0,leaseId}')::uuid;
+	perform pg_temp.ma_broker(format(
+		'select public.qorpera_fail_google_mail_action(%L, %L, %L, %L, %L, true, false)',
+		v_auth_id, v_auth_sha, v_first_action_id, v_first_lease_id, 'temporary 503'
+	));
+	perform pg_temp.base_claims('authenticated', v_owner);
+	perform public.qorpera_member_mail_update_threads(v_env, array[v_gthread], 'restore');
+	perform pg_temp.base_claims('service_role');
+	if not exists (
+		select 1 from public.qorpera_google_mail_actions
+		where id = v_first_action_id and status = 'done' and last_error = 'Superseded by newer action'
+	) then
+		raise exception 'Newer restore must supersede retrying trash action';
+	end if;
+	v_gactions := pg_temp.ma_broker(format('select public.qorpera_claim_google_mail_actions(%L, %L, 10)', v_auth_id, v_auth_sha));
+	if jsonb_array_length(v_gactions -> 'actions') <> 1 or v_gactions #>> '{actions,0,action}' <> 'untrash' then
+		raise exception 'Expected only superseding untrash action to be claimed: %', v_gactions;
+	end if;
+	v_first_action_id := (v_gactions #>> '{actions,0,actionId}')::uuid;
+	v_first_lease_id := (v_gactions #>> '{actions,0,leaseId}')::uuid;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	perform public.qorpera_member_mail_update_threads(v_env, array[v_gthread], 'star');
+	perform pg_temp.base_claims('service_role');
+	v_gactions := pg_temp.ma_broker(format('select public.qorpera_claim_google_mail_actions(%L, %L, 10)', v_auth_id, v_auth_sha));
+	if jsonb_array_length(v_gactions -> 'actions') <> 0 then
+		raise exception 'Newer action on same thread must wait while earlier action is delivering: %', v_gactions;
+	end if;
+	perform pg_temp.ma_broker(format(
+		'select public.qorpera_complete_google_mail_action(%L, %L, %L, %L)',
+		v_auth_id, v_auth_sha, v_first_action_id, v_first_lease_id
+	));
+	v_gactions := pg_temp.ma_broker(format('select public.qorpera_claim_google_mail_actions(%L, %L, 10)', v_auth_id, v_auth_sha));
+	if jsonb_array_length(v_gactions -> 'actions') <> 1 or v_gactions #>> '{actions,0,action}' <> 'star' then
+		raise exception 'Expected queued star action once earlier action settled: %', v_gactions;
+	end if;
+	perform pg_temp.ma_broker(format(
+		'select public.qorpera_fail_google_mail_action(%L, %L, %L, %L, %L, true, true)',
+		v_auth_id, v_auth_sha, v_gactions #>> '{actions,0,actionId}', v_gactions #>> '{actions,0,leaseId}', '403 scope'
+	));
+	if not exists (
+		select 1 from public.qorpera_google_mailboxes
+		where address = 'owner1413@gmail.com' and state = 'sign_in_again'
+	) then
+		raise exception 'Refused Google action must move Google mailbox to sign_in_again';
+	end if;
+
+	insert into auth.users (id, email) values (v_other_user, 'outsider1413@example.test');
+	insert into public.qorpera_profiles (id, name, created_by_user_id) values (v_other_profile, 'Other Co', v_other_user);
+	insert into public.qorpera_profile_members (profile_id, user_id, email, role, display_name)
+	values (v_other_profile, v_other_user, 'outsider1413@example.test', 'owner', 'Outsider');
+	perform pg_temp.base_claims('authenticated', v_other_user);
+	begin
+		perform public.qorpera_member_mail_blocked_senders(v_env);
+		raise exception 'Cross-company blocked_senders read must be refused';
+	exception when insufficient_privilege then null;
+	end;
+	begin
+		perform public.qorpera_member_mail_update_threads(v_env, array[v_thread_1], 'trash');
+		raise exception 'Cross-company thread update must be refused';
+	exception when insufficient_privilege then null;
+	end;
 end $$;

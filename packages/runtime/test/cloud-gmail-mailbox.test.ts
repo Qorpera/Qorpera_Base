@@ -1051,3 +1051,84 @@ it("syncs queued outbound Gmail thread and sender block actions and handles scop
 	expect(failed).toHaveLength(0);
 	keyring.close();
 });
+
+it("chunks Gmail history label changes at 200 entries per RPC call", async () => {
+	const keyring = new CloudSecretKeyring({ k1: randomBytes(32) });
+	const environmentId = randomUUID();
+	const secretId = randomUUID();
+	const mailboxId = randomUUID();
+	const lease = randomUUID();
+	const sealed = keyring.seal(
+		{ refresh_token: "1//refresh-token-value-1234567890" },
+		{ companyId: COMPANY, environmentId, secretId, version: 1, keyId: "k1" },
+	);
+	const envelopeSha256 = createHash("sha256").update(sealed).digest("hex");
+	const encryptedEnvelopeBase64 = Buffer.from(sealed).toString("base64");
+	const historyRecords = Array.from({ length: 250 }, (_, index) => ({
+		id: String(2000 + index),
+		labelsRemoved: [
+			{
+				message: { id: `gm-${index}`, threadId: `gth-${index}`, labelIds: [] },
+				labelIds: ["INBOX"],
+			},
+		],
+	}));
+	const fetchMock = vi.fn<typeof fetch>(async (target) => {
+		const url = new URL(String(target));
+		if (url.href === "https://oauth2.googleapis.com/token") {
+			return Response.json({ access_token: "ya29.access-token-value-1234567890" });
+		}
+		const path = url.pathname.replace("/gmail/v1/users/me", "");
+		if (path === "/profile") return Response.json({ emailAddress: ADDRESS, historyId: "2500" });
+		if (path === "/history") return Response.json({ historyId: "2500", history: historyRecords });
+		return Response.json({ error: { code: 404 } }, { status: 404 });
+	});
+	const chunkSizes: number[] = [];
+	let claimedOnce = false;
+	const authority: GmailMailboxAuthority = {
+		claimGoogleMailbox: async () => {
+			if (claimedOnce) return null;
+			claimedOnce = true;
+			return {
+				schema: "qorpera.google-mailbox-claim/v1",
+				mailboxId,
+				lease,
+				address: ADDRESS,
+				state: "live",
+				historyId: "1999",
+				pageToken: null,
+				broughtIn: 250,
+				total: 250,
+				importCount: 0,
+				gap: false,
+				companyId: COMPANY,
+				environmentId,
+				secretId,
+				secretVersion: 1,
+				keyId: "k1",
+				encryptedEnvelopeBase64,
+				envelopeSha256,
+			};
+		},
+		googleMailKnownAmong: async () => ({ schema: "qorpera.google-mail-known/v1", known: [], stops: [] }),
+		bringInGoogleMail: async () => ({ schema: "qorpera.google-mail-brought-in/v1", outcome: "accepted" }),
+		finishGoogleMailboxPass: async () => ({ schema: "qorpera.google-mailbox-pass/v1" }),
+		claimGoogleMailSends: async () => ({ schema: "qorpera.google-mail-sends/v1", sends: [] }),
+		recordGoogleMailDraft: async () => ({ schema: "qorpera.google-mail-draft/v1", recorded: true }),
+		completeGoogleMailSend: async () => ({ schema: "qorpera.google-mail-send/v1", completed: true }),
+		failGoogleMailSend: async () => ({ schema: "qorpera.google-mail-send/v1", completed: true }),
+		applyGoogleMailLabelChanges: async (input) => {
+			chunkSizes.push(input.changes.length);
+			return { schema: "qorpera.google-mail-labels/v1", updated: input.changes.length };
+		},
+	};
+	const mailboxes = new CloudGmailMailboxes({
+		authority,
+		keyring,
+		gmail: new GmailMailboxClient({ client: google, fetch: fetchMock }),
+	});
+	const outcome = await mailboxes.pass(signal);
+	expect(outcome.failed).toBe(0);
+	expect(chunkSizes).toEqual([200, 50]);
+	keyring.close();
+});

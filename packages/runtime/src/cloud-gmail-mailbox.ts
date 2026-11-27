@@ -1293,10 +1293,16 @@ export class CloudGmailMailboxes {
 					throw new GmailMailboxError("the mail door did not take the message");
 			}
 			if (page.labelChanges.length > 0 && this.#authority.applyGoogleMailLabelChanges) {
-				await this.#authority.applyGoogleMailLabelChanges(
-					{ mailboxId: claim.mailboxId, lease: claim.lease, changes: page.labelChanges },
-					database(),
-				);
+				for (let offset = 0; offset < page.labelChanges.length; offset += 200) {
+					await this.#authority.applyGoogleMailLabelChanges(
+						{
+							mailboxId: claim.mailboxId,
+							lease: claim.lease,
+							changes: page.labelChanges.slice(offset, offset + 200),
+						},
+						database(),
+					);
+				}
 			}
 			if (page.next === null) return { outcome: "current", historyId: page.historyId, pageToken: null, total: null };
 			pageToken = page.next;

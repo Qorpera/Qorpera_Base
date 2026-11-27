@@ -103,6 +103,13 @@ function store(secretKey: string): MailOutboxStore {
 			});
 			if (error || data !== true) throw new Error("The unsubscribe failure could not be recorded");
 		},
+		async releaseUnsubscribe(unsubscribeId, leaseId) {
+			const { error } = await client.rpc("qorpera_release_mail_unsubscribe", {
+				p_unsubscribe_id: unsubscribeId,
+				p_lease_id: leaseId,
+			});
+			if (error) throw new Error("The unsubscribe lease could not be released");
+		},
 	};
 }
 
