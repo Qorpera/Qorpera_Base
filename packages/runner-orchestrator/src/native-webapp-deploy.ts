@@ -80,7 +80,7 @@ export interface AppHostFetchResponse {
 export type AppHostFetch = (
 	url: string,
 	init: {
-		method: "GET" | "POST";
+		method: "GET" | "POST" | "DELETE";
 		headers: Record<string, string>;
 		body?: string;
 		signal?: AbortSignal;
@@ -303,6 +303,7 @@ export async function provisionCompanyDataDirectLogin(options: {
 	readonly environmentId: string;
 	readonly database: string;
 	readonly principal?: string;
+	readonly generation?: string;
 	readonly access?: "read-write" | "read-only";
 	readonly connectionLimit?: number;
 	readonly fetchImpl?: AppHostFetch;
@@ -329,6 +330,11 @@ export async function provisionCompanyDataDirectLogin(options: {
 	if (options.principal !== undefined && !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.principal)) {
 		throw new Error("COMPANY_DATA_DIRECT_LOGIN_PRINCIPAL_INVALID");
 	}
+	if (options.generation !== undefined) {
+		if (options.principal === undefined || !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.generation)) {
+			throw new Error("COMPANY_DATA_DIRECT_LOGIN_GENERATION_INVALID");
+		}
+	}
 	const base = options.companyDataUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
 	const res = await fetchImpl(
@@ -344,6 +350,7 @@ export async function provisionCompanyDataDirectLogin(options: {
 				access: options.access ?? "read-write",
 				connectionLimit: options.connectionLimit ?? 4,
 				...(options.principal !== undefined ? { principal: options.principal } : {}),
+				...(options.generation !== undefined ? { generation: options.generation } : {}),
 			}),
 			signal: options.signal,
 		},
@@ -378,28 +385,46 @@ export async function revokeCompanyDataDirectLogin(options: {
 	readonly companyDataUrl: string;
 	readonly directLoginToken: string;
 	readonly environmentId: string;
-	readonly database: string;
+	readonly database?: string | null;
 	readonly principal?: string;
+	readonly generation?: string;
 	readonly fetchImpl?: AppHostFetch;
 	readonly signal?: AbortSignal;
 }): Promise<boolean> {
-	if (
-		!isUuid(options.environmentId) ||
-		!LINKED_DATABASE_NAME_PATTERN.test(options.database) ||
-		options.database === "qorpera" ||
-		options.database.startsWith("pg_") ||
-		options.database.startsWith("qorpera_")
-	) {
+	if (!isUuid(options.environmentId)) {
+		return false;
+	}
+	const hasDb = options.database !== undefined && options.database !== null;
+	if (hasDb) {
+		if (
+			!LINKED_DATABASE_NAME_PATTERN.test(options.database!) ||
+			options.database === "qorpera" ||
+			options.database!.startsWith("pg_") ||
+			options.database!.startsWith("qorpera_")
+		) {
+			return false;
+		}
+	} else if (options.principal === undefined) {
 		return false;
 	}
 	if (options.principal !== undefined && !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.principal)) {
 		return false;
 	}
+	if (options.generation !== undefined) {
+		if (options.principal === undefined || !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.generation)) {
+			return false;
+		}
+	}
 	const base = options.companyDataUrl.replace(/\/+$/, "");
-	const query = options.principal !== undefined ? `?principal=${encodeURIComponent(options.principal)}` : "";
+	const params = new URLSearchParams();
+	if (options.principal !== undefined) params.set("principal", options.principal);
+	if (options.generation !== undefined) params.set("generation", options.generation);
+	const qs = params.toString();
+	const query = qs ? `?${qs}` : "";
+	const dbSegment = hasDb ? `/${encodeURIComponent(options.database!)}` : "";
 	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
 	const res = await fetchImpl(
-		`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login/${encodeURIComponent(options.database)}${query}`,
+		`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login${dbSegment}${query}`,
 		{
 			method: "DELETE",
 			headers: {
@@ -416,6 +441,7 @@ export async function resolveAppRuntimeEnv(options: {
 	readonly siteId: string;
 	readonly environmentId: string;
 	readonly deploymentId: string;
+	readonly directLoginGeneration?: string;
 	readonly targetEnv: HostedAppTargetEnv;
 	readonly hasRuntimeSecrets: boolean;
 	readonly linkedDatabaseName: string | null;
@@ -469,6 +495,7 @@ export async function resolveAppRuntimeEnv(options: {
 			environmentId: options.environmentId,
 			database: options.linkedDatabaseName,
 			principal: options.deploymentId,
+			...(options.directLoginGeneration !== undefined ? { generation: options.directLoginGeneration } : {}),
 			access: isProd ? "read-write" : "read-only",
 			connectionLimit: isProd ? 4 : 2,
 			...(options.nativeEdge.companyDataFetchImpl ? { fetchImpl: options.nativeEdge.companyDataFetchImpl } : {}),

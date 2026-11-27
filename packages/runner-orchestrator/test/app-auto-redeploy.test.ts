@@ -737,7 +737,9 @@ describe("app-auto-redeploy", () => {
 		try {
 			const registerEnvSpecs: Array<Record<string, string>> = [];
 			const appHostBodies: Array<Record<string, unknown>> = [];
+			const directLoginEvents: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
 			let appHostSeq = 0;
+			let failRollbackDeploy = false;
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 					if (method === "qorpera_code_site_for_auto_redeploy") {
@@ -804,17 +806,24 @@ describe("app-auto-redeploy", () => {
 					companyDataUrl: "http://127.0.0.1:8091",
 					companyDataPublicUrl: "https://data.qorpera.com",
 					companyDataDirectLoginToken: "direct-tok",
-					companyDataFetchImpl: async () => ({
-						status: 200,
-						body: JSON.stringify({
-							connectionString: dbUrl,
-							host: "10.99.0.10",
-							port: 5432,
-							database: "co_billing",
-							schema: "public",
-							user: "billing_rw",
-						}),
-					}),
+					companyDataFetchImpl: async (url, init) => {
+						const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+						directLoginEvents.push({ method: init.method, url, ...(body ? { body } : {}) });
+						if (init.method === "DELETE") {
+							return { status: 200, body: JSON.stringify({ revoked: true }) };
+						}
+						return {
+							status: 200,
+							body: JSON.stringify({
+								connectionString: dbUrl,
+								host: "10.99.0.10",
+								port: 5432,
+								database: "co_billing",
+								schema: "public",
+								user: "billing_rw",
+							}),
+						};
+					},
 					broker: {
 						origin: "https://broker.internal",
 						executorToken: "exec-tok",
@@ -836,7 +845,11 @@ describe("app-auto-redeploy", () => {
 					buildAppImage: async () => ({ ociImageRef: newImage, builtMs: 12 }),
 					appHostFetchImpl: async (_url, init) => {
 						appHostSeq += 1;
-						appHostBodies.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+						const parsed = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
+						appHostBodies.push(parsed);
+						if (failRollbackDeploy && parsed.deployment_id === oldDepId) {
+							return { status: 500, body: "rollback container failed" };
+						}
 						return {
 							status: 200,
 							body: JSON.stringify({ upstream_addr: `127.0.0.1:${46440 + appHostSeq}` }),
@@ -894,6 +907,61 @@ describe("app-auto-redeploy", () => {
 					DATABASE_URL: dbUrl,
 				});
 			}
+			expect(directLoginEvents[0]?.body).toEqual({
+				database: "billing",
+				access: "read-write",
+				connectionLimit: 4,
+				principal: newDepId,
+			});
+			expect(directLoginEvents[1]?.body).toEqual({
+				database: "billing",
+				access: "read-write",
+				connectionLimit: 4,
+				principal: oldDepId,
+				generation: newDepId,
+			});
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${newDepId}`),
+				),
+			).toBe(true);
+
+			directLoginEvents.length = 0;
+			failRollbackDeploy = true;
+			const ctxRbFail = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 11 },
+				new AbortController().signal,
+			);
+			const resRbFail = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "11",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxRbFail!.paths ?? [],
+				},
+				hooks: {
+					...ctxRbFail!.hooks,
+					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resRbFail.status).toBe("rollback_failed");
+			expect(
+				directLoginEvents.some(
+					(e) =>
+						e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${oldDepId}&generation=${newDepId}`),
+				),
+			).toBe(true);
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${oldDepId}`),
+				),
+			).toBe(false);
+			failRollbackDeploy = false;
 
 			expect(() =>
 				parseAppDeployConfig(

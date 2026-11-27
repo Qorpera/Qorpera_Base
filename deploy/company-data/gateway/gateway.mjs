@@ -4806,8 +4806,8 @@ export class Gateway {
 					case when s.statement = any($5::text[]) then pg_catalog.pg_terminate_backend(a.pid) else pg_catalog.pg_cancel_backend(a.pid) end as ended
 				from pg_catalog.pg_stat_activity a
 				cross join lateral (select a.pid::text || '@' || a.query_start::text as statement) s
-				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_([owrs][0-9]+|t[owr]_[0-9a-f]{16})$'
-				and clock_timestamp() - a.query_start > make_interval(secs => (case coalesce(substring(a.usename from '_([owrs])[0-9]+$'), substring(a.usename from '_t([owr])_[0-9a-f]{16}$'))
+				where a.datname ~ '^c_[0-9a-f]{32}$' and a.state = 'active' and a.usename ~ '^c_[0-9a-f]{32}_([owrs][0-9]+|s[0-9]+_d[0-9a-f]{16}|t[owr]_[0-9a-f]{16})$'
+				and clock_timestamp() - a.query_start > make_interval(secs => (case coalesce(substring(a.usename from '_([owrs])[0-9]+(?:_d[0-9a-f]{16})?$'), substring(a.usename from '_t([owr])_[0-9a-f]{16}$'))
 					when 'r' then case when a.pid = any($6::int[]) then $7::float8 else $1::float8 end
 					when 'w' then $2::float8 when 's' then $2::float8 when 'o' then $3::float8
 				end + $4::float8) / 1000)`,
@@ -5074,15 +5074,35 @@ export class Gateway {
 		return true;
 	}
 
-	#directLoginRoleName(database, n, principal = null) {
-		if (principal === null || principal === undefined) return `${database}_s${n}`;
+	#directLoginPrincipalPrefix(principal) {
 		if (typeof principal !== "string" || !/^[A-Za-z0-9:._-]{1,128}$/.test(principal)) {
 			refuse(400, "principal is invalid");
 		}
-		return `${database}_s${n}_d${sha256(principal).slice(0, 16)}`;
+		return sha256(principal).slice(0, 12);
 	}
 
-	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4, principal = null } = {}) {
+	#directLoginGenerationSuffix(generation) {
+		if (generation === null || generation === undefined) return "0000";
+		if (typeof generation !== "string" || !/^[A-Za-z0-9:._-]{1,128}$/.test(generation)) {
+			refuse(400, "generation is invalid");
+		}
+		const raw = sha256(generation).slice(0, 4);
+		return raw === "0000" ? "0001" : raw;
+	}
+
+	#directLoginRoleName(database, n, principal = null, generation = null) {
+		if (principal === null || principal === undefined) {
+			if (generation !== null && generation !== undefined) refuse(400, "generation requires principal");
+			return `${database}_s${n}`;
+		}
+		return `${database}_s${n}_d${this.#directLoginPrincipalPrefix(principal)}${this.#directLoginGenerationSuffix(generation)}`;
+	}
+
+	async provisionDirectLogin(
+		environmentId,
+		name,
+		{ access = "read-write", connectionLimit = 4, principal = null, generation = null } = {},
+	) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
 			refuse(400, "Name a database");
 		if (access !== "read-only" && access !== "read-write") refuse(400, "access is read-only or read-write");
@@ -5091,7 +5111,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		const roleName = this.#directLoginRoleName(database, n, principal);
+		const roleName = this.#directLoginRoleName(database, n, principal, generation);
 		const ownerRole = quoted(`${database}_o${n}`);
 		const role = quoted(roleName);
 		const schema = quoted(name);
@@ -5154,20 +5174,43 @@ export class Gateway {
 		}
 	}
 
-	async revokeDirectLogin(environmentId, name, { principal = null } = {}) {
-		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+	async revokeDirectLogin(environmentId, name = null, { principal = null, generation = null } = {}) {
+		const hasName = name !== null && name !== undefined;
+		if (hasName) {
+			if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
+		} else if (principal === null || principal === undefined) {
+			refuse(400, "Name a database");
+		}
+		let principalPrefix = null;
+		let generationSuffix = null;
+		if (principal !== null && principal !== undefined) {
+			principalPrefix = this.#directLoginPrincipalPrefix(principal);
+			if (generation !== null && generation !== undefined) {
+				generationSuffix = this.#directLoginGenerationSuffix(generation);
+			}
+		} else if (generation !== null && generation !== undefined) {
+			refuse(400, "generation requires principal");
+		}
 		const database = companyDatabase(environmentId);
 		if (!(await this.#companyExists(database))) return { revoked: false, user: null };
-		let n;
-		try {
-			n = await this.#folder(database, name);
-		} catch (error) {
-			if (error instanceof Refusal && error.status === 404) return { revoked: false, user: null };
-			throw error;
+		let n = null;
+		if (hasName) {
+			try {
+				n = await this.#folder(database, name);
+			} catch (error) {
+				if (error instanceof Refusal && error.status === 404) return { revoked: false, user: null };
+				throw error;
+			}
+			if (n === null) return { revoked: false, user: null };
 		}
-		if (n === null) return { revoked: false, user: null };
-		const targetRole = principal !== null && principal !== undefined ? this.#directLoginRoleName(database, n, principal) : null;
-		const lockKey = targetRole ?? `${database}_s${n}`;
+		const targetRole =
+			n !== null && principalPrefix !== null && generationSuffix !== null
+				? `${database}_s${n}_d${principalPrefix}${generationSuffix}`
+				: null;
+		const pattern =
+			principalPrefix !== null
+				? `^${database}_s${n !== null ? n : "[0-9]+"}_d${principalPrefix}${generationSuffix ?? "[0-9a-f]{4}"}$`
+				: `^${database}_s${n}(_d[0-9a-f]{16})?$`;
 		let client;
 		try {
 			client = await this.#pool(database, "qorpera_data_admin").connect();
@@ -5182,16 +5225,29 @@ export class Gateway {
 		client.on("error", onClientError);
 		try {
 			await client.query("begin; set local lock_timeout = 5000");
-			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [lockKey]);
-			const matched = targetRole
-				? (await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = $1", [targetRole])).rows.map(
-						(row) => row.name,
-					)
-				: (
-						await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [
-							`^${database}_s${n}(_d[0-9a-f]{16})?$`,
-						])
-					).rows.map((row) => row.name);
+			let matched;
+			if (targetRole !== null) {
+				await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [targetRole]);
+				matched = (await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = $1", [targetRole])).rows.map(
+					(row) => row.name,
+				);
+			} else {
+				const candidates = (
+					await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [pattern])
+				).rows.map((row) => row.name);
+				for (const r of candidates) {
+					await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [r]);
+				}
+				matched =
+					candidates.length === 0
+						? []
+						: (
+								await client.query(
+									"select rolname::text as name from pg_catalog.pg_roles where rolname = any($1::text[]) order by rolname",
+									[candidates],
+								)
+							).rows.map((row) => row.name);
+			}
 			if (matched.length === 0) {
 				await client.query("rollback");
 				return { revoked: false, user: null };
@@ -5208,7 +5264,7 @@ export class Gateway {
 			await client.query(`drop owned by ${roleList}`);
 			for (const r of matched) await client.query(`drop role if exists ${quoted(r)}`);
 			await client.query("commit");
-			return { revoked: true, user: targetRole ?? `${database}_s${n}`, revokedUsers: matched };
+			return { revoked: true, user: targetRole ?? (n !== null && principalPrefix === null ? `${database}_s${n}` : matched[0]), revokedUsers: matched };
 		} catch (error) {
 			await client.query("rollback").catch((rbError) => {
 				lost ??= rbError;
@@ -6586,23 +6642,24 @@ export class Gateway {
 				if (pathDb !== null) refuse(404, "Not a call the data gateway answers");
 				const body = await this.#readJsonBody(read);
 				for (const key of Object.keys(body)) {
-					if (!["database", "access", "connectionLimit", "principal"].includes(key)) refuse(400, `Unknown argument: ${key}`);
+					if (!["database", "access", "connectionLimit", "principal", "generation"].includes(key))
+						refuse(400, `Unknown argument: ${key}`);
 				}
 				return this.provisionDirectLogin(environmentId, body.database, {
 					...(body.access !== undefined ? { access: body.access } : {}),
 					...(body.connectionLimit !== undefined ? { connectionLimit: body.connectionLimit } : {}),
 					...(body.principal !== undefined ? { principal: body.principal } : {}),
+					...(body.generation !== undefined ? { generation: body.generation } : {}),
 				});
 			}
 			if (method === "DELETE") {
 				const body = await this.#readOptionalJsonBody(headers, read);
 				for (const key of Object.keys(body)) {
-					if (!["database", "principal"].includes(key)) refuse(400, `Unknown argument: ${key}`);
+					if (!["database", "principal", "generation"].includes(key)) refuse(400, `Unknown argument: ${key}`);
 				}
 				const queryDb = searchParams.has("database") ? searchParams.get("database") : null;
 				const bodyDb = body.database ?? null;
 				const given = [pathDb, queryDb, bodyDb].filter((value) => value !== null);
-				if (given.length === 0) refuse(400, "Name a database");
 				if (new Set(given).size > 1) refuse(400, "Conflicting database parameters");
 				const queryPrincipal = searchParams.has("principal") ? searchParams.get("principal") : null;
 				const bodyPrincipal = body.principal ?? null;
@@ -6610,7 +6667,17 @@ export class Gateway {
 					refuse(400, "Conflicting principal parameters");
 				}
 				const principal = queryPrincipal ?? bodyPrincipal;
-				return this.revokeDirectLogin(environmentId, given[0], principal !== null ? { principal } : {});
+				const queryGeneration = searchParams.has("generation") ? searchParams.get("generation") : null;
+				const bodyGeneration = body.generation ?? null;
+				if (queryGeneration !== null && bodyGeneration !== null && queryGeneration !== bodyGeneration) {
+					refuse(400, "Conflicting generation parameters");
+				}
+				const generation = queryGeneration ?? bodyGeneration;
+				if (given.length === 0 && principal === null) refuse(400, "Name a database");
+				return this.revokeDirectLogin(environmentId, given[0] ?? null, {
+					...(principal !== null ? { principal } : {}),
+					...(generation !== null ? { generation } : {}),
+				});
 			}
 			refuse(405, "Use POST or DELETE");
 		}

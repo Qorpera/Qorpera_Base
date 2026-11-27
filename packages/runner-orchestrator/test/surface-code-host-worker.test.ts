@@ -2966,7 +2966,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 									siteId,
 									profileId,
 									environmentId,
-									linkedDatabaseName: "shop",
+									linkedDatabaseName: null,
 									upstreamAddr: "127.0.0.1:48001",
 								},
 							];
@@ -3034,12 +3034,13 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 			directLoginCalls.some(
 				(c) =>
 					c.method === "DELETE" &&
-					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login/shop?principal=${previewDepId}`),
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${previewDepId}`),
 			),
 		).toBe(true);
 
 		claimMode = "publish";
 		failWithSecret = true;
+		directLoginCalls.length = 0;
 		rpcCalls.length = 0;
 		const workerFail = makeWorker();
 		await workerFail.pass(new AbortController().signal);
@@ -3047,5 +3048,12 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		expect(failedPublish?.args.p_status).toBe("failed");
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(stripeSecret);
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(dbUrl);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(true);
 	});
 });

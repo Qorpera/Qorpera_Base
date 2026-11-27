@@ -1056,6 +1056,73 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 			principal: previewDepId,
 		});
 
+		const rollbackGenCalls: Array<{ method: string; url: string; body?: string }> = [];
+		const resolvedRollback = await resolveAppRuntimeEnv({
+			baseEnvSpec,
+			siteId: SITE_ID,
+			environmentId: ENVIRONMENT,
+			deploymentId: DEPLOYMENT_ID,
+			directLoginGeneration: previewDepId,
+			targetEnv: "prod",
+			hasRuntimeSecrets: false,
+			linkedDatabaseName: "shop",
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-tok",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataDirectLoginToken: "direct-tok",
+				companyDataFetchImpl: async (url, init) => {
+					rollbackGenCalls.push({ method: init.method, url, ...(init.body ? { body: init.body } : {}) });
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlProd,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_prod_rb",
+						}),
+					};
+				},
+			},
+		});
+		expect(resolvedRollback.runtimeEnv.DATABASE_URL).toBe(dbUrlProd);
+		expect(JSON.parse(rollbackGenCalls[0]!.body!)).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: DEPLOYMENT_ID,
+			generation: previewDepId,
+		});
+
+		const revokeUrls: string[] = [];
+		const revokedNoDb = await revokeCompanyDataDirectLogin({
+			companyDataUrl: "http://127.0.0.1:8088",
+			directLoginToken: "direct-tok",
+			environmentId: ENVIRONMENT,
+			database: null,
+			principal: DEPLOYMENT_ID,
+			generation: previewDepId,
+			fetchImpl: async (url, init) => {
+				expect(init.method).toBe("DELETE");
+				revokeUrls.push(url);
+				return { status: 200, body: JSON.stringify({ revoked: true }) };
+			},
+		});
+		expect(revokedNoDb).toBe(true);
+		expect(revokeUrls[0]).toBe(
+			`http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login?principal=${DEPLOYMENT_ID}&generation=${previewDepId}`,
+		);
+		expect(
+			await revokeCompanyDataDirectLogin({
+				companyDataUrl: "http://127.0.0.1:8088",
+				directLoginToken: "direct-tok",
+				environmentId: ENVIRONMENT,
+				database: null,
+			}),
+		).toBe(false);
+
 		await expect(
 			resolveAppRuntimeEnv({
 				baseEnvSpec,

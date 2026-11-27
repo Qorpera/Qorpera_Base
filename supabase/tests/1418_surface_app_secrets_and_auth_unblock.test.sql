@@ -85,9 +85,9 @@ begin
 	perform pg_temp.as_service();
 	perform public.qorpera_configure_coding_executor(v_env_id, 'exec-1418', true, array['codex']);
 	insert into public.qorpera_cloud_secret_broker_authorities(
-		id, profile_id, environment_id, display_name, capability_sha256, status, created_by_user_id
+		id, profile_id, service_origin, key_id, capability_sha256
 	) values (
-		v_broker_id, v_company, v_env_id, 'Broker 1418', v_broker_cap, 'active', v_owner
+		v_broker_id, v_company, 'https://broker-1418.example.test', 'company-kek-1418', v_broker_cap
 	);
 	insert into public.qorpera_cloud_secrets(
 		id, profile_id, environment_id, broker_authority_id, owner_kind, owner_user_id,
@@ -96,9 +96,19 @@ begin
 		v_secret_id, v_company, v_env_id, v_broker_id, 'company', null,
 		'environment', 'stripe_secret_key', 'Payments API', 'active', 1, v_owner
 	);
+	insert into public.qorpera_cloud_secret_versions(
+		secret_id, version, broker_authority_id, key_id, encrypted_envelope, envelope_sha256, created_by_user_id
+	) values (
+		v_secret_id, 1, v_broker_id, 'company-kek-1418', convert_to('sk_test_1418_secret_value', 'UTF8'),
+		encode(extensions.digest(convert_to('sk_test_1418_secret_value', 'UTF8'), 'sha256'), 'hex'), v_owner
+	);
 	set local session_replication_role = replica;
-	insert into public.qorpera_coding_machines(id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding)
-	values ('14180000-0000-4000-8000-0000000000d1', 'member', v_company, v_env_id, v_owner, 'exec-1418', v_machine_sha, '{}');
+	insert into public.qorpera_coding_machines(
+		id, kind, profile_id, environment_id, member_user_id, owner, machine_id_sha256, binding, instance_sha256
+	) values (
+		'14180000-0000-4000-8000-0000000000d1', 'member', v_company, v_env_id, v_owner, 'exec-1418', v_machine_sha, '{}'::jsonb,
+		encode(extensions.digest(convert_to('{}', 'utf8'), 'sha256'), 'hex')
+	);
 	set local session_replication_role = origin;
 
 	perform pg_temp.sasa_as(v_owner);
@@ -355,12 +365,12 @@ begin
 		'service_role runtime config reports env, db, and active secret flags: ' || v_svc_cfg::text
 	);
 
-	perform set_config('request.jwt.claims', '{"role":"qorpera_secret_broker"}', true);
-	set local role qorpera_secret_broker;
+	perform set_config('request.jwt.claims', '{}', true);
+	execute 'set local session authorization qorpera_secret_broker';
 	v_auth := public.qorpera_authorize_app_secrets(
 		v_broker_id, v_broker_cap, v_site_server.id, 'runtime', 'prod', 'exec-1418', v_machine_sha, v_dep_server
 	);
-	reset role;
+	execute 'reset session authorization';
 	perform pg_temp.sasa_assert(
 		v_auth ->> 'schema' = 'qorpera.app-secrets-authorized/v1'
 		and jsonb_array_length(v_auth -> 'secrets') = 1

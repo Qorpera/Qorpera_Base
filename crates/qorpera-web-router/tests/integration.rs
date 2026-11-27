@@ -3143,6 +3143,8 @@ async fn static_credential_site_blocked_on_platform_host_without_verified_primar
                 primary_custom_domain: primary_domain.map(str::to_string),
                 live_deployment: Some(dep),
                 preview_deployments: HashMap::new(),
+                db_live: None,
+                db_previews: HashMap::new(),
             }],
             custom_domains: vec![CustomDomainRecord {
                 id: "dom-cred-1".to_string(),

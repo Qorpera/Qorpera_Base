@@ -1251,10 +1251,6 @@ export class SurfaceCodeHostWorker {
 					typeof (entry as { environmentId?: unknown }).environmentId === "string"
 						? (entry as { environmentId: string }).environmentId
 						: null;
-				const linkedDatabaseName =
-					typeof (entry as { linkedDatabaseName?: unknown }).linkedDatabaseName === "string"
-						? (entry as { linkedDatabaseName: string }).linkedDatabaseName
-						: null;
 				const upstreamAddr =
 					typeof (entry as { upstreamAddr?: unknown }).upstreamAddr === "string"
 						? (entry as { upstreamAddr: string }).upstreamAddr
@@ -1288,17 +1284,12 @@ export class SurfaceCodeHostWorker {
 						},
 						signal,
 					);
-					if (
-						environmentId &&
-						linkedDatabaseName &&
-						this.#nativeEdge?.companyDataUrl &&
-						this.#nativeEdge?.companyDataDirectLoginToken
-					) {
+					if (environmentId && this.#nativeEdge?.companyDataUrl && this.#nativeEdge?.companyDataDirectLoginToken) {
 						await revokeCompanyDataDirectLogin({
 							companyDataUrl: this.#nativeEdge.companyDataUrl,
 							directLoginToken: this.#nativeEdge.companyDataDirectLoginToken,
 							environmentId,
-							database: linkedDatabaseName,
+							database: null,
 							principal: deploymentId,
 							fetchImpl: this.#nativeEdge.companyDataFetchImpl,
 							signal: AbortSignal.timeout(5_000),
@@ -2022,6 +2013,25 @@ export class SurfaceCodeHostWorker {
 				nativeEdge,
 				signal,
 			});
+			const revokeProvisionedDbLogin = async (): Promise<void> => {
+				if (
+					!resolvedRuntime.secretNames.includes("DATABASE_URL") ||
+					!nativeEdge.companyDataUrl ||
+					!nativeEdge.companyDataDirectLoginToken
+				) {
+					return;
+				}
+				await revokeCompanyDataDirectLogin({
+					companyDataUrl: nativeEdge.companyDataUrl,
+					directLoginToken: nativeEdge.companyDataDirectLoginToken,
+					environmentId: input.environmentId,
+					database: null,
+					principal: deploymentId,
+					fetchImpl: nativeEdge.companyDataFetchImpl,
+					signal: AbortSignal.timeout(5_000),
+				}).catch(() => undefined);
+			};
+
 			let deployed: { upstreamAddr: string };
 			try {
 				deployed = await triggerBlueGreenAppDeploy({
@@ -2042,6 +2052,9 @@ export class SurfaceCodeHostWorker {
 					signal,
 				});
 			} catch (error) {
+				if (registered.deploymentState !== "live") {
+					await revokeProvisionedDbLogin();
+				}
 				if (error instanceof Error) {
 					const masked = maskAppLogText(resolvedRuntime.mask, error.message);
 					if (masked !== error.message) throw new Error(masked);
@@ -2120,6 +2133,7 @@ export class SurfaceCodeHostWorker {
 								AbortSignal.timeout(5_000),
 							)
 							.catch(() => undefined);
+						await revokeProvisionedDbLogin();
 					}
 				} catch {
 					await recordUpstreamFallback();

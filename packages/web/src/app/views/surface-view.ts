@@ -482,7 +482,7 @@ export class SurfaceView {
 			},
 			runtimeConfig: () => {
 				const surface = this.surface;
-				if (!surface || surface.sourceKind !== "code_repo") return undefined;
+				if (!surface || surface.sourceKind !== "code_repo" || !host.siteHosting?.(surface)) return undefined;
 				return {
 					load: (signal) => host.store.getSurfaceAppRuntimeConfig(surface.id, signal),
 					saveConfig: (input) => host.store.setSurfaceAppRuntimeConfig(surface.id, input),
