@@ -384,7 +384,7 @@ describe("services", () => {
 					if (listCalls === 2) return listAfterGrant.promise;
 					return structuredClone(state.connections);
 				});
-				const originalGrant = mock.grantAllAgents;
+				const originalGrant = vi.mocked(mock.grantAllAgents).getMockImplementation()!;
 				vi.mocked(mock.grantAllAgents).mockImplementation(async (secretId, signal) => {
 					if (secretId === id(91)) await grantGate.promise;
 					await originalGrant(secretId, signal);
