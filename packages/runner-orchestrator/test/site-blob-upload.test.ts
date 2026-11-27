@@ -153,4 +153,50 @@ describe("site-blob-upload", () => {
 		expect(res.uploadedBlobs).toBe(1);
 		expect(putAttempts).toBe(2);
 	});
+
+	it("uploads multiple missing blobs in one POST /_internal/blobs/batch request and falls back to PUT on 404", async () => {
+		const f1 = makeFile("index.html", "<h1>One</h1>");
+		const f2 = makeFile("app.js", "console.log('two')");
+		const f3 = makeFile("style.css", "body{color:#111}");
+		const calls: string[] = [];
+
+		const batched = await uploadSiteBlobsToEdge({
+			routerInternalUrl: "http://127.0.0.1:8094",
+			controlToken: "tok-batch",
+			files: [f1, f2, f3],
+			fetchImpl: async (url, init) => {
+				calls.push(`${init.method}:${url.split("/").at(-1)}`);
+				if (init.method === "POST" && url.endsWith("/_internal/blobs/exists")) {
+					return { status: 200, json: async () => ({ existing: [] }) };
+				}
+				if (init.method === "POST" && url.endsWith("/_internal/blobs/batch")) {
+					expect(init.headers["content-type"]).toBe("application/vnd.qorpera.blob-batch+v1");
+					return { status: 200, json: async () => ({ stored: 3, exists: 0 }) };
+				}
+				return { status: 404 };
+			},
+		});
+		expect(batched.uploadedBlobs).toBe(3);
+		expect(batched.deduplicatedBlobs).toBe(0);
+		expect(calls).toEqual(["POST:exists", "POST:batch"]);
+
+		const fallbackCalls: string[] = [];
+		const fallback = await uploadSiteBlobsToEdge({
+			routerInternalUrl: "http://127.0.0.1:8094",
+			controlToken: "tok-batch-fallback",
+			files: [f1, f2],
+			fetchImpl: async (url, init) => {
+				fallbackCalls.push(`${init.method}:${url.split("/").at(-1)}`);
+				if (init.method === "POST" && url.endsWith("/_internal/blobs/exists")) {
+					return { status: 200, json: async () => ({ existing: [] }) };
+				}
+				if (init.method === "POST" && url.endsWith("/_internal/blobs/batch")) {
+					return { status: 404 };
+				}
+				return { status: 201 };
+			},
+		});
+		expect(fallback.uploadedBlobs).toBe(2);
+		expect(fallbackCalls.filter((c) => c.startsWith("PUT:"))).toHaveLength(2);
+	});
 });

@@ -36,6 +36,7 @@ import {
 	createStageSurfaceOpsActionTool,
 	createStageSurfacePatchTool,
 	createStartSurfaceSessionTool,
+	createSteerSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
 import {
 	buildSurfaceTurnBrief,
@@ -4448,5 +4449,42 @@ describe("cloud surface runtime tools", () => {
 				toolContext(),
 			),
 		).rejects.toThrow(CloudToolRefusal);
+	});
+
+	it("steers an existing Surface session via steer_surface_session with optional changeId", async () => {
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const steerSurfaceSession = vi.fn().mockResolvedValue({
+			sessionId,
+			state: "queued",
+		});
+		const tool = createSteerSurfaceSessionTool({ steerSurfaceSession });
+
+		const parsed = tool.parseArguments({
+			sessionId,
+			message: "Feature the annual plan first and drop the footnote.",
+			changeId,
+		});
+		const result = await tool.execute(parsed, toolContext());
+		expect(steerSurfaceSession).toHaveBeenCalledWith(
+			{
+				sessionId,
+				message: "Feature the annual plan first and drop the footnote.",
+				changeId,
+			},
+			expect.any(Object),
+		);
+		expect(JSON.parse(result.value as string)).toMatchObject({
+			schema: "qorpera.surface-session-steered/v1",
+			sessionId,
+			state: "queued",
+		});
+
+		const withoutChange = tool.parseArguments({ sessionId, message: "Keep going." });
+		expect(withoutChange).toEqual({ sessionId, message: "Keep going.", changeId: null });
+
+		expect(() => tool.parseArguments({ sessionId: "not-a-uuid", message: "Hi" })).toThrow();
+		expect(() => tool.parseArguments({ sessionId, message: "   " })).toThrow();
+		expect(() => tool.parseArguments({ sessionId, message: "Hi", changeId: "bad" })).toThrow();
 	});
 });

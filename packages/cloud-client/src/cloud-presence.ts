@@ -114,6 +114,56 @@ type PresenceSupabaseClient = Pick<SupabaseClient, "channel" | "removeChannel"> 
 	readonly realtime?: Partial<Pick<SupabaseClient["realtime"], "setAuth">>;
 };
 
+const pendingPresenceRemovals = new WeakMap<object, Map<string, Promise<unknown>>>();
+const abandonedPresenceChannels = new WeakMap<object, Map<string, Set<RealtimeChannel>>>();
+
+function markAbandonedPresenceChannel(client: PresenceSupabaseClient, topic: string, channel: RealtimeChannel): void {
+	let byTopic = abandonedPresenceChannels.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		abandonedPresenceChannels.set(client, byTopic);
+	}
+	let channels = byTopic.get(topic);
+	if (!channels) {
+		channels = new Set();
+		byTopic.set(topic, channels);
+	}
+	channels.add(channel);
+}
+
+function clearAbandonedPresenceChannel(client: PresenceSupabaseClient, topic: string, channel: RealtimeChannel): void {
+	const byTopic = abandonedPresenceChannels.get(client);
+	const channels = byTopic?.get(topic);
+	if (!channels) return;
+	channels.delete(channel);
+	if (channels.size === 0) byTopic?.delete(topic);
+}
+
+function removePresenceChannel(
+	client: PresenceSupabaseClient,
+	topic: string,
+	channel: RealtimeChannel,
+): Promise<unknown> {
+	let byTopic = pendingPresenceRemovals.get(client);
+	if (!byTopic) {
+		byTopic = new Map();
+		pendingPresenceRemovals.set(client, byTopic);
+	}
+	const previous = byTopic.get(topic);
+	const current = withCloudDeadline(() => client.removeChannel(channel), REMOVE_CHANNEL_TIMEOUT_MS)
+		.catch(() => "error")
+		.then((status) => {
+			if (status === "ok") clearAbandonedPresenceChannel(client, topic, channel);
+			else markAbandonedPresenceChannel(client, topic, channel);
+			return status;
+		});
+	const tracked = (previous ? Promise.allSettled([previous, current]) : current).finally(() => {
+		if (byTopic.get(topic) === tracked) byTopic.delete(topic);
+	});
+	byTopic.set(topic, tracked);
+	return tracked;
+}
+
 export class SupabaseCloudPresenceTransport {
 	readonly #client: PresenceSupabaseClient;
 	readonly #primary: PresenceDevices;
@@ -132,6 +182,7 @@ export class SupabaseCloudPresenceTransport {
 		options?: CloudPresenceOptions,
 	): CloudPresenceHandle {
 		if (!UUID_PATTERN.test(profileId)) throw new Error("Invalid presence profile");
+		const topic = `qorpera-presence-${profileId}`;
 		// Private channel: Realtime authorizes the join against the presence
 		// policies on realtime.messages (migration 20260819011000) with the
 		// signed-in user's JWT, which supabase-js forwards automatically.
@@ -432,9 +483,7 @@ export class SupabaseCloudPresenceTransport {
 			// WHY: Reset outbound chain and bound removeChannel so a stalled old socket cannot deadlock publishing or reconnect.
 			outbound = Promise.resolve();
 			pendingOutbound = 0;
-			removing = withCloudDeadline(() => this.#client.removeChannel(failed), REMOVE_CHANNEL_TIMEOUT_MS).catch(
-				() => undefined,
-			);
+			removing = removePresenceChannel(this.#client, topic, failed);
 			const delay = jitteredDelay(Math.min(30_000, 1_000 * 2 ** Math.min(reconnectAttempts, 5)));
 			reconnectAttempts++;
 			reconnectTimer = setTimeout(() => {
@@ -448,9 +497,23 @@ export class SupabaseCloudPresenceTransport {
 			void (present ? register() : Promise.resolve(undefined))
 				.then(async () => {
 					await removing;
+					while (!stopped) {
+						const pending = pendingPresenceRemovals.get(this.#client)?.get(topic);
+						if (!pending) break;
+						await pending;
+					}
+					if (stopped) return;
+					const abandonedByTopic = abandonedPresenceChannels.get(this.#client);
+					const abandoned = abandonedByTopic?.get(topic);
+					if (abandoned && abandoned.size > 0) {
+						const stale = [...abandoned];
+						abandoned.clear();
+						abandonedByTopic?.delete(topic);
+						await Promise.all(stale.map((each) => removePresenceChannel(this.#client, topic, each)));
+					}
 					await this.#client.realtime?.setAuth?.().catch(() => undefined);
 					if (stopped) return;
-					const next = this.#client.channel(`qorpera-presence-${profileId}`, {
+					const next = this.#client.channel(topic, {
 						config: { private: true, presence: { key: clientId }, broadcast: { self: false } },
 					});
 					channel = next;
@@ -661,9 +724,7 @@ export class SupabaseCloudPresenceTransport {
 				lastPresenceSequence.clear();
 				// Leave first: others stop seeing this tab at once, and the topic is free again.
 				if (active) {
-					await withCloudDeadline(() => this.#client.removeChannel(active), REMOVE_CHANNEL_TIMEOUT_MS).catch(
-						() => undefined,
-					);
+					await removePresenceChannel(this.#client, topic, active);
 				}
 				await registration?.catch(() => undefined);
 				if (registrationAttempted)

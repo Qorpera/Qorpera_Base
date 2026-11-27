@@ -66,36 +66,15 @@ begin
 	if (pg_temp.parked(r)).id is not null or pg_temp.entry('lkr/b.lnk') ->> 'target' <> 'b-target' then
 		raise exception 'A view''s links: %', r; end if;
 	r := pg_temp.vcommit(b, 'lk-view-delete', jsonb_build_array(pg_temp.deletes('lkr/a.lnk')));
-	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
-	p := pg_temp.parked(r);
-	if p.effect <> 'destructive' or not pg_temp.present('lkr/a.lnk') then raise exception 'A parked link deletion: %', to_jsonb(p); end if;
-	perform pg_temp.same(pg_temp.paths(p.id), '[{"unit":1,"item":0,"path":"lkr/a.lnk","manifest":null}]', 'Its path rows');
-	perform set_config('qorpera_test.lk_delete', p.id::text, true);
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.parked(r)).id is not null or pg_temp.present('lkr/a.lnk') then
+		raise exception 'A plain link deletion saved without parking: %', r; end if;
 	r := pg_temp.vcommit(b, 'lk-view-move', jsonb_build_array(jsonb_build_object('op','move','from','lkr/b.lnk','to','lkr/c.lnk',
 		'expectedVersion',pg_temp.version('lkr/b.lnk'))));
-	perform pg_temp.expect(r, 1, 'waiting_for_review', 'parked');
-	p := pg_temp.parked(r);
-	if p.effect <> 'destructive' or pg_temp.present('lkr/c.lnk') then raise exception 'A parked link move: %', to_jsonb(p); end if;
-	perform pg_temp.same(pg_temp.paths(p.id), '[{"unit":1,"item":0,"path":"lkr/b.lnk","manifest":null},
-		{"unit":1,"item":1,"path":"lkr/c.lnk","manifest":null}]', 'Its path rows');
-	perform set_config('qorpera_test.lk_move', p.id::text, true);
-end $$;
-
-do $$
-declare x jsonb := pg_temp.agent_run(); p uuid := current_setting('qorpera_test.lk_delete')::uuid;
-begin
-	perform pg_temp.expect(pg_temp.approve(x, 'apply-lk-delete', p), 1, 'saved');
-	if (pg_temp.proposal(p)).status <> 'applied' or pg_temp.present('lkr/a.lnk') then
-		raise exception 'The approved link deletion: %', to_jsonb(pg_temp.proposal(p)); end if;
-end $$;
-
-do $$
-declare x jsonb := pg_temp.agent_run(); p uuid := current_setting('qorpera_test.lk_move')::uuid;
-begin
-	perform pg_temp.expect(pg_temp.approve(x, 'apply-lk-move', p), 1, 'saved');
-	if (pg_temp.proposal(p)).status <> 'applied' or pg_temp.present('lkr/b.lnk') or pg_temp.entry('lkr/c.lnk') ->> 'kind' <> 'symlink'
+	perform pg_temp.expect(r, 1, 'saved');
+	if (pg_temp.parked(r)).id is not null or pg_temp.present('lkr/b.lnk') or pg_temp.entry('lkr/c.lnk') ->> 'kind' <> 'symlink'
 		or pg_temp.entry('lkr/c.lnk') ->> 'target' <> 'b-target' then
-		raise exception 'The approved link move: % %', to_jsonb(pg_temp.proposal(p)), pg_temp.entry('lkr/c.lnk'); end if;
+		raise exception 'A plain link move saved without parking: % %', r, pg_temp.entry('lkr/c.lnk'); end if;
 end $$;
 
 -- 2. A parked hire whose new folder holds a link: its path row has no bytes, the list names the link with its target

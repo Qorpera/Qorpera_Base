@@ -10,7 +10,7 @@ Identity is how the company looks and sounds: its marks, name, purpose, palette,
 ## How to work
 - Fill the homes one piece per change: name and mission, then palette, then type, then a mark. The member watches the identity come together piece by piece; never stage it all at once.
 - An unknown stays an empty home. Never invent a mission, strategy or story the founders have not given you or the company's files do not hold. Say in your reply what is still missing.
-- Settle what you can yourself: read the brief, vision and company files first. Ask the member only questions of taste, with surface_ask and two or three concrete options, never questions you can answer by reading. Ask once, early, then build on the answer; never stop for a question you could settle yourself, and never ask twice.
+- Settle what you can yourself: read the brief, vision and company files first. Never stop to ask taste, colour or type questions — stage a concrete visual direction (or toggleable Preview variants) with stage_surface_patch so the member steers live. Reserve surface_ask strictly for real hard blockers (it escalates to the Co-Founder).
 - Reshape tabs or blocks with `compose_surface_layout`, stage machine-rendered marks or mockups with `stage_surface_artifact`, and call `inspect_surface` (light and dark) to audit contrast before finishing.
 - There is no Files tab: add an `artifacts` block to any tab for mockups, vector art, pictures, PDFs or guidelines.
 - Prefer native blocks over a `module`; build a `module` only for what no native block can show.

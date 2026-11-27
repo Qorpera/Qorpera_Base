@@ -64,8 +64,8 @@ type LayoutOperation =
 
 interface ComposeLayoutArgs {
 	readonly operations: readonly LayoutOperation[];
-	readonly title: string;
-	readonly summary: string;
+	readonly title?: string;
+	readonly summary?: string;
 	readonly changeId?: string;
 	readonly createNew: boolean;
 	readonly optionGroup?: string;
@@ -409,7 +409,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		const operations = value.operations.map((entry, idx) => parseOperation(entry, idx));
 		const title =
 			value.title === undefined
-				? "Update page layout"
+				? undefined
 				: typeof value.title === "string" &&
 						value.title.trim().length > 0 &&
 						value.title.trim().length <= SURFACE_MAX_CHANGE_TITLE_CHARS
@@ -420,7 +420,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		}
 		const summary =
 			value.summary === undefined
-				? `Updated page layout (${operations.length} change${operations.length === 1 ? "" : "s"}).`
+				? undefined
 				: typeof value.summary === "string" &&
 						value.summary.trim().length > 0 &&
 						value.summary.trim().length <= SURFACE_MAX_CHANGE_SUMMARY_CHARS
@@ -475,12 +475,26 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 		}
 		return {
 			operations,
-			title,
-			summary,
+			...(title !== undefined ? { title } : {}),
+			...(summary !== undefined ? { summary } : {}),
 			...(changeId ? { changeId } : {}),
 			createNew,
 			...(optionGroup ? { optionGroup } : {}),
 			...(optionGroupTitle ? { optionGroupTitle } : {}),
+		};
+	};
+
+	const resolveTitleAndSummary = (
+		args: ComposeLayoutArgs,
+		targetChangeId: string | null,
+	): { readonly title: string; readonly summary: string } => {
+		const existing = targetChangeId ? options.patchTracker?.getChangeMeta(targetChangeId) : undefined;
+		return {
+			title: args.title ?? existing?.title ?? "Update page layout",
+			summary:
+				args.summary ??
+				existing?.summary ??
+				`Updated page layout (${args.operations.length} change${args.operations.length === 1 ? "" : "s"}).`,
 		};
 	};
 
@@ -547,10 +561,11 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 						optionGroup: args.optionGroup ?? null,
 					})
 				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			return {
 				operations: args.operations as unknown as JsonValue,
-				title: args.title,
-				summary: args.summary,
+				title,
+				summary,
 				...(targetChangeId ? { changeId: targetChangeId } : {}),
 				...(args.createNew ? { createNew: true } : {}),
 				...(args.optionGroup ? { optionGroup: args.optionGroup } : {}),
@@ -566,6 +581,7 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 						optionGroup: args.optionGroup ?? null,
 					})
 				: (args.changeId ?? null);
+			const { title, summary } = resolveTitleAndSummary(args, targetChangeId);
 			let currentText: string | null;
 			try {
 				currentText = await options.readCurrentLayoutText(context.signal);
@@ -603,8 +619,8 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 				staged = await options.surfacePatch.stageSurfacePatch(
 					options.sessionId,
 					{
-						title: args.title,
-						summary: args.summary,
+						title,
+						summary,
 						ops,
 						notePaths: [],
 						finishSession: false,
@@ -622,6 +638,8 @@ export function createComposeSurfaceLayoutTool(options: ComposeSurfaceLayoutTool
 				resultChangeId: staged.changeId,
 				ops,
 				optionGroup: args.optionGroup ?? null,
+				title,
+				summary,
 			});
 			const answer: Record<string, JsonValue> = {
 				schema: STUDIO_COMPOSE_LAYOUT_SCHEMA,

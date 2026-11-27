@@ -37,23 +37,21 @@ export function sessionCrew(sessionId: string): { readonly figure: FigureId; rea
 }
 
 export function crewLook(session: SurfaceSession): CrewLook {
-	if (session.state === "needs_input")
-		return { tone: "waiting", activity: "Waiting", ask: "question", alive: true, label: t("Needs you") };
+	if (session.state === "needs_input") return { tone: "waiting", activity: "Idle", alive: true, label: t("Paused") };
 	if (isRunningSession(session)) return { tone: "working", activity: "Working", alive: true, label: t("Working") };
-	if (session.state === "failed")
-		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
+	if (session.state === "failed") return { tone: "attention", activity: "Idle", alive: true, label: t("Failed") };
 	if (sessionHeld(session) || session.state === "completed")
 		return { tone: "merged", activity: "Idle", alive: false, label: t("Merged") };
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 
 export function explorationCrewLook(variants: readonly SurfaceSession[]): CrewLook {
-	if (variants.some((variant) => variant.state === "needs_input"))
-		return { tone: "waiting", activity: "Waiting", ask: "question", alive: true, label: t("Needs you") };
-	if (variants.some(isRunningSession))
+	if (variants.some((variant) => isRunningSession(variant) && variant.state !== "needs_input"))
 		return { tone: "working", activity: "Working", alive: true, label: t("Working") };
+	if (variants.some((variant) => variant.state === "needs_input"))
+		return { tone: "waiting", activity: "Idle", alive: true, label: t("Paused") };
 	if (variants.some((variant) => variant.state === "failed"))
-		return { tone: "attention", activity: "Idle", ask: "bang", alive: true, label: t("Failed") };
+		return { tone: "attention", activity: "Idle", alive: true, label: t("Failed") };
 	return { tone: "ready", activity: "Idle", alive: true, label: t("Ready") };
 }
 

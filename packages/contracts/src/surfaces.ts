@@ -149,7 +149,7 @@ export type SurfaceAutomationStatus = (typeof SURFACE_AUTOMATION_STATUSES)[numbe
 export const SURFACE_AUTOMATION_OFFER_STATUSES = ["open", "no"] as const;
 export type SurfaceAutomationOfferStatus = (typeof SURFACE_AUTOMATION_OFFER_STATUSES)[number];
 
-export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system", "note"] as const;
+export const SURFACE_SESSION_MESSAGE_AUTHORS = ["member", "session", "system", "note", "agent"] as const;
 export type SurfaceSessionMessageAuthor = (typeof SURFACE_SESSION_MESSAGE_AUTHORS)[number];
 
 export const SURFACE_INSPECTOR_MODE_MESSAGE = "qorpera-inspector-mode";
@@ -160,6 +160,7 @@ export interface SurfaceSessionMessage {
 	readonly sessionId: string;
 	readonly authorKind: SurfaceSessionMessageAuthor;
 	readonly authorUserId?: string | null;
+	readonly authorLabel?: string | null;
 	readonly text: string;
 	readonly changeId: string | null;
 	readonly noteTo?: readonly string[];
@@ -845,6 +846,8 @@ export function parseSurfaceSessionMessage(value: unknown, label = "message"): S
 	const raw = parseRecord(value, label);
 	const authorUserId =
 		raw.authorUserId === undefined ? undefined : parseOptionalUuid(raw.authorUserId, `${label}.authorUserId`);
+	const authorLabel =
+		raw.authorLabel === undefined ? undefined : parseOptionalText(raw.authorLabel, `${label}.authorLabel`, 120);
 	const noteTo =
 		raw.noteTo === undefined || raw.noteTo === null ? undefined : parseUuidArray(raw.noteTo, `${label}.noteTo`, 16);
 	return {
@@ -852,6 +855,7 @@ export function parseSurfaceSessionMessage(value: unknown, label = "message"): S
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
 		authorKind: parseEnum(raw.authorKind, SURFACE_SESSION_MESSAGE_AUTHORS, `${label}.authorKind`),
 		...(authorUserId !== undefined ? { authorUserId } : {}),
+		...(authorLabel !== undefined ? { authorLabel } : {}),
 		text: parseBoundedText(raw.text, `${label}.text`, SURFACE_MAX_PROMPT_CHARS, 0),
 		changeId: parseOptionalUuid(raw.changeId, `${label}.changeId`),
 		...(noteTo !== undefined ? { noteTo } : {}),

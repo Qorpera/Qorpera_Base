@@ -32,10 +32,10 @@ export class Reconnect {
 	}
 
 	lost(): void {
-		if (this.#signal.aborted || this.#paused) return;
+		if (this.#signal.aborted) return;
 		this.#lost = true;
 		this.#listen();
-		if (!this.#trying) this.#later();
+		if (!this.#paused && !this.#trying) this.#later();
 	}
 
 	async now(): Promise<void> {

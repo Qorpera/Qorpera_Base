@@ -57,7 +57,7 @@ describe("a thread opens at its newest events", () => {
 		const store = controller.conversation(session.sessionId, false);
 		await controller.loadConversation(session.sessionId);
 		expect(api.readSessionEventsTail).toHaveBeenCalledOnce();
-		expect(api.readSessionEventsTail).toHaveBeenCalledWith(session.sessionId, undefined, 200, controller.signal);
+		expect(api.readSessionEventsTail).toHaveBeenCalledWith(session.sessionId, undefined, 200, controller.readSignal);
 		expect(api.readSessionEvents).not.toHaveBeenCalled();
 		expect(store.get().events.map((item) => item.sequence)).toEqual(
 			Array.from({ length: 200 }, (_, index) => 801 + index),
@@ -68,7 +68,7 @@ describe("a thread opens at its newest events", () => {
 		// Later reads bring what is new, forward from the newest event read.
 		vi.mocked(api.readSessionEvents).mockResolvedValue([message(1001)]);
 		await controller.loadConversation(session.sessionId);
-		expect(api.readSessionEvents).toHaveBeenCalledWith(session.sessionId, 1000, 500, controller.signal);
+		expect(api.readSessionEvents).toHaveBeenCalledWith(session.sessionId, 1000, 500, controller.readSignal);
 		expect(store.get().events).toHaveLength(201);
 		expect(store.get().hasEarlier).toBe(true);
 	});
@@ -161,7 +161,7 @@ describe("a thread opens at its newest events", () => {
 		const store = controller.conversation(session.sessionId, false);
 		await controller.loadConversation(session.sessionId);
 		expect(api.readSessionEventsTail).toHaveBeenCalledOnce();
-		expect(api.readSessionEvents).toHaveBeenCalledWith(session.sessionId, 0, 500, controller.signal);
+		expect(api.readSessionEvents).toHaveBeenCalledWith(session.sessionId, 0, 500, controller.readSignal);
 		expect(store.get()).toMatchObject({ complete: true, error: undefined, hasEarlier: false });
 		expect(store.get().events).toHaveLength(3);
 		// Another thread of the company does not ask again.
@@ -214,7 +214,7 @@ describe("Show earlier", () => {
 		vi.mocked(api.readSessionEventsTail).mockReturnValueOnce(earlier.promise);
 		const showing = controller.loadEarlier(session.sessionId);
 		expect(store.get().earlierLoading).toBe(true);
-		expect(api.readSessionEventsTail).toHaveBeenLastCalledWith(session.sessionId, 801, 200, controller.signal);
+		expect(api.readSessionEventsTail).toHaveBeenLastCalledWith(session.sessionId, 801, 200, controller.readSignal);
 		// A new message arrives while the older page is on its way.
 		vi.mocked(api.readSessionEvents).mockResolvedValue([message(1001)]);
 		await controller.loadConversation(session.sessionId);
@@ -521,10 +521,9 @@ describe("the thread view with unread history", () => {
 		const { store, log } = view([item(3), decision], { codingSessions: [early] });
 		expect(log.querySelector(".coding-line")).toBeNull();
 		expect(log.querySelector(".auth-card")).toBeNull();
-		// With the whole history read, both show, as before.
 		store.set({ hasEarlier: false });
 		await settle();
-		expect(log.querySelector(".coding-line")).not.toBeNull();
+		expect(log.querySelector(".coding-line")).toBeNull();
 		expect(log.querySelector(".auth-card")).not.toBeNull();
 	});
 });

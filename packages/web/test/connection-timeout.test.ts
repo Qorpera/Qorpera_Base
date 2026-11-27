@@ -116,8 +116,16 @@ describe("a cloud that never answers", () => {
 
 	it("aborts a database response streaming mid-body when the caller signal aborts", async () => {
 		let canceled = false;
+		let streamingStarted!: () => void;
+		const streaming = new Promise<void>((resolve) => {
+			streamingStarted = resolve;
+		});
 		vi.stubGlobal("fetch", () => {
 			const body = new ReadableStream<Uint8Array>({
+				pull() {
+					streamingStarted();
+					return new Promise(() => {});
+				},
 				cancel() {
 					canceled = true;
 				},
@@ -132,8 +140,7 @@ describe("a cloud that never answers", () => {
 		clouds.push(cloud);
 		const stop = new AbortController();
 		const pending = cloud.rpc("qorpera_list_hosted_profiles", {}, stop.signal);
-		await Promise.resolve();
-		await Promise.resolve();
+		await streaming;
 		stop.abort(new DOMException("Cancelled", "AbortError"));
 		await expect(pending).rejects.toBeInstanceOf(CloudRpcError);
 		expect(canceled).toBe(true);
@@ -212,5 +219,23 @@ describe("a cloud that never answers", () => {
 		expect(settled).toBe(false);
 		await vi.advanceTimersByTimeAsync(1);
 		expect(settled).toBe(true);
+	});
+
+	it("rejects cloud.rpc promptly when caller signal aborts while auth getSession is stalled", async () => {
+		const { cloud, asked } = silentCloud();
+		vi.spyOn(cloud.supabase.auth, "getSession").mockImplementation(() => new Promise(() => {}));
+		const stop = new AbortController();
+		const pending = cloud.rpc("qorpera_list_hosted_profiles", {}, stop.signal);
+		await Promise.resolve();
+		stop.abort(new DOMException("Company parked", "AbortError"));
+		const error = await pending.catch((err: unknown) => err);
+		expect(error).toBeInstanceOf(CloudRpcError);
+		expect(connectionLost(error)).toBe(false);
+		expect(asked).toEqual([]);
+	});
+
+	it("keeps lockAcquireTimeout disabled so navigatorLock never steals an in-flight auth lock across tabs", () => {
+		const { cloud } = silentCloud();
+		expect((cloud.supabase.auth as unknown as { lockAcquireTimeout?: number }).lockAcquireTimeout).toBe(-1);
 	});
 });

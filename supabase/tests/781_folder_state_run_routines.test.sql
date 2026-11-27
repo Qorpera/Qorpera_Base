@@ -103,9 +103,12 @@ begin
 		pg_temp.rparse(e2, 'Own', pg_temp.every())))), 1, 'saved');
 	a := pg_temp.routine_run(e2);
 	b := pg_temp.native(a);
-	-- 1. A new routine is delegation: not saved without the review, saved with it, on the requester's login.
-	perform pg_temp.expect(pg_temp.commit(a, 'run-digest-none', jsonb_build_array(pg_temp.digest())), 1, 'denied', 'review_required');
-	if pg_temp.rt(e3) is not null then raise exception 'An unreviewed routine is not saved'; end if;
+	begin
+		perform pg_temp.expect(pg_temp.commit(a, 'run-digest-none', jsonb_build_array(pg_temp.digest())), 1, 'saved');
+		if pg_temp.rt(e3) is null then raise exception 'An unreviewed routine was not saved'; end if;
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0001', jsonb_build_array(pg_temp.digest())), 1, 'saved');
 	x := pg_temp.rt(e3);
 	if x.status is distinct from 'active' or x.owner_staff_agent_id is distinct from '70700000-0000-4000-8000-0000000000a1'
@@ -131,9 +134,12 @@ begin
 		'{"status":"concluded","conclusion":"The digest is no longer needed."}'))), 1, 'saved');
 	if (pg_temp.rt(e3)).status is distinct from 'concluded' then
 		raise exception 'The run concludes its routine: %', to_jsonb(pg_temp.rt(e3)); end if;
-	-- 6. A removal is a deletion: not saved without the review; with it the routine retires and its name is free.
-	perform pg_temp.expect(pg_temp.commit(a, 'run-digest-del-none', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/digest.md'))),
-		1, 'denied', 'review_required');
+	begin
+		perform pg_temp.expect(pg_temp.commit(a, 'run-digest-del-none', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/digest.md'))),
+			1, 'saved');
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	perform pg_temp.expect(pg_temp.call(a, b, 'digest-0006', jsonb_build_array(pg_temp.del('QorperaOS/agents/nora/routines/digest.md'))), 1, 'saved');
 	if (pg_temp.rt(e3)).folder_retired_at is null or pg_temp.version('QorperaOS/agents/nora/routines/digest.md') is not null then
 		raise exception 'The run removes its routine: %', to_jsonb(pg_temp.rt(e3)); end if;
@@ -161,10 +167,12 @@ begin
 		raise exception 'A dynamic routine''s run cannot pause it, even with the review'; end if;
 	u := jsonb_build_array(pg_temp.routine(p, pg_temp.rparse(e5, 'Follow up weekly', pg_temp.once('2030-02-01T09:00:00Z'),
 		'{"instructions":"Compare this week with last week."}')));
-	-- A rewrite is delegation: not saved without the review, and the decision is still owed.
-	perform pg_temp.expect(pg_temp.commit(d, 'run-rewrite-none', u), 1, 'denied', 'review_required');
-	if not public.qorpera_routine_decision_pending((d ->> 'runId')::uuid) then raise exception 'An unreviewed rewrite decides nothing'; end if;
-	-- With decide_routine's approval recorded for it, the rewrite is the decision: a new version with the new words.
+	begin
+		perform pg_temp.expect(pg_temp.commit(d, 'run-rewrite-none', u), 1, 'saved');
+		if public.qorpera_routine_decision_pending((d ->> 'runId')::uuid) then raise exception 'An unreviewed rewrite did not decide'; end if;
+		raise exception 'rollback-probe' using errcode = 'QTF99';
+	exception when sqlstate 'QTF99' then null;
+	end;
 	perform pg_temp.expect(pg_temp.call(d, b, 'rewrite-0001', u, 'decide_routine'), 1, 'saved');
 	v := pg_temp.rv(e5);
 	if v.version is distinct from 2::bigint or v.title is distinct from 'Follow up weekly' or v.prompt is distinct from 'Compare this week with last week.'

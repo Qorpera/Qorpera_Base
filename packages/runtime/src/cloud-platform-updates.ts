@@ -524,6 +524,20 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "A numbers tab on any interface",
 		text: "Any Studio interface, not only Analytics, can now have a numbers tab: a product page can show that product's sales, a plan its targets against what really happened, each asked live when a member opens the page. The agent of that interface builds it the way the Analytics guide says, and can save a new named question in a company database when no question answers yet. When a founder wants to see how one thing is doing, offer a numbers tab on its own page.",
 	},
+	{
+		id: "product-studio-3d-and-visuals",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "Product Studio visuals, live 3D models and sharper checks",
+		text: "Product Studio interfaces now include a native visuals gallery on Overview beside the 3D stage, colourways and headline figures, and Studio HTML pages and modules now load staged PNG, WebP and SVG images directly instead of breaking. Product sessions can now build real multi-part 3D GLB models in session on the coding machine (with Blender pre-installed on updated coding images, or script-built glTF) alongside generated renders while keeping the native Product layout. Visual page inspection now renders 3D models, colourways, live modules and images, checks option-group variants by change, and flags broken images before finishing.",
+	},
+	{
+		id: "single-door-agent-ux",
+		kind: "behaviour",
+		date: "2026-11-26",
+		title: "Silent coding, quiet approvals and pull-only Surfaces",
+		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace file edits run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

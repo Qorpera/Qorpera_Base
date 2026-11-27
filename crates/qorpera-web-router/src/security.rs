@@ -411,12 +411,15 @@ pub fn inject_preview_banner(html: &[u8], slug: &str) -> Vec<u8> {
     out
 }
 
-pub fn inject_preview_inspector(html: &[u8]) -> Vec<u8> {
-    let tag = b"\n<script src=\"/__qorpera/inspector.js\" defer></script>\n";
+pub fn inject_preview_inspector_with_tag(html: &[u8], tag: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(html.len() + tag.len());
     out.extend_from_slice(html);
     out.extend_from_slice(tag);
     out
+}
+
+pub fn inject_preview_inspector(html: &[u8]) -> Vec<u8> {
+    inject_preview_inspector_with_tag(html, b"\n<script src=\"/__qorpera/inspector.js\" defer></script>\n")
 }
 
 pub fn frame_ancestors_csp(origins: &[String]) -> String {
@@ -559,6 +562,28 @@ pub fn render_preview_inspector_script(origins: &[String]) -> String {
 	}});
 	window.addEventListener("mousemove", onMove, true);
 	window.addEventListener("click", onClick, true);
+	let announced = false;
+	const announceReady = () => {{
+		if (announced || !window.parent || window.parent === window) return;
+		announced = true;
+		for (const origin of allowed) {{
+			try {{ window.parent.postMessage({{ type: "qorpera-preview-ready" }}, origin); }} catch {{}}
+		}}
+	}};
+	const scheduleReady = () => {{
+		const fallback = setTimeout(announceReady, 120);
+		if (typeof requestAnimationFrame === "function") {{
+			requestAnimationFrame(() => {{ clearTimeout(fallback); announceReady(); }});
+		}} else {{
+			clearTimeout(fallback);
+			announceReady();
+		}}
+	}};
+	if (document.readyState === "loading") {{
+		document.addEventListener("DOMContentLoaded", scheduleReady, {{ once: true }});
+	}} else {{
+		scheduleReady();
+	}}
 }})();
 "##
     )

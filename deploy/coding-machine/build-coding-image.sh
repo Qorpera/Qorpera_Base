@@ -44,7 +44,7 @@ CODEX=${QORPERA_CODING_CODEX:?set QORPERA_CODING_CODEX to the pinned Codex (depl
 [[ -f $CODEX ]] || { echo "QORPERA_CODING_CODEX is not a file: $CODEX" >&2; exit 1; }
 [[ $(stat -Lc %s "$CODEX") == "$EXPECTED_CODEX_BYTES" && $(sha256sum <"$CODEX" | cut -d' ' -f1) == "$EXPECTED_CODEX_SHA256" ]] ||
 	{ echo "QORPERA_CODING_CODEX is not the pinned build ($EXPECTED_CODEX_SHA256, $EXPECTED_CODEX_BYTES bytes)" >&2; exit 1; }
-for tool in node git chromium uv mise; do
+for tool in node git chromium uv mise blender; do
 	[[ $(pin ".$tool.version") =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "invalid $tool version" >&2; exit 1; }
 	[[ $(pin ".$tool.url") =~ ^https://[A-Za-z0-9./_~%+-]+$ ]] || { echo "invalid $tool url" >&2; exit 1; }
 	[[ $(pin ".$tool.sha256") =~ ^[0-9a-f]{64}$ ]] || { echo "invalid $tool sha-256" >&2; exit 1; }
@@ -57,6 +57,7 @@ GIT_VERSION=$(pin .git.version)
 CHROMIUM_VERSION=$(pin .chromium.version)
 UV_VERSION=$(pin .uv.version)
 MISE_VERSION=$(pin .mise.version)
+BLENDER_VERSION=$(pin .blender.version)
 TYPESCRIPT_VERSION=$(pin .npm.typescript)
 TSX_VERSION=$(pin .npm.tsx)
 case ${QORPERA_BUILDER_NIC:-filtered} in
@@ -122,6 +123,7 @@ lx exec "$BUILDER" -- env \
 	GIT_VERSION="$GIT_VERSION" GIT_URL="$(pin .git.url)" GIT_SHA256="$(pin .git.sha256)" \
 	CHROMIUM_URL="$(pin .chromium.url)" CHROMIUM_SHA256="$(pin .chromium.sha256)" \
 	UV_URL="$(pin .uv.url)" UV_SHA256="$(pin .uv.sha256)" MISE_URL="$(pin .mise.url)" MISE_SHA256="$(pin .mise.sha256)" \
+	BLENDER_VERSION="$BLENDER_VERSION" BLENDER_URL="$(pin .blender.url)" BLENDER_SHA256="$(pin .blender.sha256)" \
 	TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" PROXY="$PROXY" bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
 	# A test machine'"'"'s proxy, given only in apt'"'"'s options and this environment, so the image keeps neither. It takes one
@@ -144,7 +146,8 @@ lx exec "$BUILDER" -- env \
 		libcurl4-openssl-dev libexpat1-dev libpcre2-dev zlib1g-dev libssl-dev gettext \
 		libnss3 libnspr4 libasound2t64 libgbm1 libcups2t64 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
 		libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 libx11-6 libxcb1 libpango-1.0-0 \
-		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-liberation fonts-noto-color-emoji
+		libcairo2 libdbus-1-3 libexpat1 libglib2.0-0t64 libdrm2 libudev1 fonts-liberation fonts-noto-color-emoji \
+		webp python3-pil python3-numpy libxrender1 libxxf86vm1 libxi6 libsm6 libice6 libgl1
 	curl -fsSLo /tmp/node.tar.xz "$NODE_URL"
 	echo "$NODE_SHA256  /tmp/node.tar.xz" | sha256sum -c -
 	tar -xJf /tmp/node.tar.xz -C /opt
@@ -179,8 +182,62 @@ lx exec "$BUILDER" -- env \
 	mv /tmp/chromium/chrome-linux64 /usr/lib/qorpera-chromium
 	ln -sf /usr/lib/qorpera-chromium/chrome /usr/local/bin/chromium
 	ln -sf /usr/bin/fdfind /usr/local/bin/fd
+	curl -fsSLo /tmp/blender.tar.xz "$BLENDER_URL"
+	echo "$BLENDER_SHA256  /tmp/blender.tar.xz" | sha256sum -c -
+	tar -xJf /tmp/blender.tar.xz -C /opt --no-same-owner
+	# WHY: no machine has a graphics card, and these load only for one (the blender program links to none of them).
+	removed=0
+	for part in \
+		4.3/scripts/addons_core/cycles/lib/kernel_compute_75.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1010.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1011.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1012.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1030.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1031.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1032.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1034.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1035.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1036.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1100.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1101.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1102.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1103.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1150.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_gfx1151.fatbin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_osl_services.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_optix_shader_raytrace.ptx.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_rt_gfx.hipfb.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_30.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_35.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_37.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_50.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_52.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_60.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_61.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_70.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_75.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_86.cubin.zst \
+		4.3/scripts/addons_core/cycles/lib/kernel_sm_89.cubin.zst \
+		lib/hiprt02003_6.1_amd.hipfb \
+		lib/oro_compiled_kernels.hipfb \
+		lib/libhiprt64.so \
+		lib/libpi_level_zero.so \
+		lib/libOpenImageDenoise_device_cuda.so.2.3.0 \
+		lib/libOpenImageDenoise_device_hip.so.2.3.0 \
+		lib/libOpenImageDenoise_device_sycl.so.2.3.0; do
+		path="/opt/blender-${BLENDER_VERSION}-linux-x64/$part"
+		[[ -f $path && ! -L $path ]] || { echo "Blender ${BLENDER_VERSION} has no $part: the graphics card parts to remove are listed for another version" >&2; exit 1; }
+		removed=$((removed + $(stat -c %s "$path")))
+		rm -f -- "$path"
+	done
+	echo "removed $((removed / 1048576)) MiB of graphics card parts from Blender" >&2
+	chmod -R u=rwX,go=rX "/opt/blender-${BLENDER_VERSION}-linux-x64"
+	ln -sfn "/opt/blender-${BLENDER_VERSION}-linux-x64" /opt/blender
+	ln -sf /opt/blender/blender /usr/local/bin/blender
 	rm -rf /tmp/node.tar.xz /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu /tmp/mise /tmp/git.tar.xz "/tmp/git-$GIT_VERSION" \
-		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium
+		/tmp/git-build.log /tmp/chromium.zip /tmp/chromium /tmp/blender.tar.xz
 	install -d -o root -g root -m 0755 /company /opt/qorpera-coding /opt/qorpera-guest /usr/local/libexec/qorpera-coding \
 		/etc/systemd/system/user@.service.d /etc/systemd/system/user-.slice.d /etc/systemd/system/lxd-agent.service.d /etc/docker
 	printf "%s\n" "#!/bin/sh" "[ \"\$(id -u)\" = 0 ] || exec sudo -n /opt/qorpera-folder/qorpera-folder data \"\$@\"" \
@@ -193,7 +250,8 @@ for entry in "${FILES[@]}"; do
 	lx file push "$HERE/$source" "$BUILDER$destination" --uid 0 --gid 0 --mode "$mode"
 done
 lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION" CHROMIUM_VERSION="$CHROMIUM_VERSION" \
-	UV_VERSION="$UV_VERSION" MISE_VERSION="$MISE_VERSION" TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" \
+	UV_VERSION="$UV_VERSION" MISE_VERSION="$MISE_VERSION" BLENDER_VERSION="$BLENDER_VERSION" \
+	TYPESCRIPT_VERSION="$TYPESCRIPT_VERSION" TSX_VERSION="$TSX_VERSION" \
 	EXPECTED_CODEX_SHA256="$EXPECTED_CODEX_SHA256" \
 	bash -euo pipefail -c '
 	export DEBIAN_FRONTEND=noninteractive
@@ -245,6 +303,20 @@ lx exec "$BUILDER" -- env NODE_VERSION="$NODE_VERSION" GIT_VERSION="$GIT_VERSION
 	DOM=$(timeout 60 chromium --headless --no-sandbox --disable-gpu --dump-dom "data:text/html,<p>qorpera-coding-image</p>" 2>/dev/null) ||
 		refuse "chromium does not start"
 	[[ $DOM == *qorpera-coding-image* ]] || refuse "chromium does not render"
+	BLENDER_LIBRARIES=$(ldd /opt/blender/blender)
+	[[ $BLENDER_LIBRARIES != *"not found"* ]] || refuse "blender misses libraries: $BLENDER_LIBRARIES"
+	[[ -z $(find /opt/blender/ ! -user root -o ! -group root -o ! -type l -perm /022) ]] ||
+		refuse "someone but root could change Blender"
+	mkdir -p /tmp/blender-home
+	[[ $(HOME=/tmp/blender-home blender --version | head -1) == "Blender $BLENDER_VERSION" ]] ||
+		refuse "blender is not $BLENDER_VERSION"
+	HOME=/tmp/blender-home timeout 120 blender -b --factory-startup --python-exit-code 1 \
+		--python-expr '\''import bpy; bpy.ops.export_scene.gltf(filepath="/tmp/blender-check.glb", export_format="GLB")'\'' >/dev/null ||
+		refuse "blender did not export a GLB"
+	[[ $(head -c 4 /tmp/blender-check.glb) == glTF ]] || refuse "blender wrote invalid GLB"
+	rm -rf /tmp/blender-home /tmp/blender-check.glb
+	cwebp -version >/dev/null
+	python3 -c '\''import PIL, numpy'\''
 	python3 --version && go version && rustc --version && cargo --version && first java -version
 	first gcc --version && first cmake --version && tmux -V && first rg --version && fd --version && jq --version
 	# The toolbox every machine has, and a coding machine'"'"'s languages (the contract'"'"'s 2026-10-14 amendment, items 7
@@ -325,7 +397,7 @@ TEMPLATES=$(lx config metadata show "$BUILDER" | awk '/^templates:/ {print; skip
 [[ $TEMPLATES == "templates: {}" && -z $(lx config template list "$BUILDER" --format csv) ]] ||
 	{ echo "the builder keeps metadata templates: $TEMPLATES" >&2; exit 1; }
 lx publish "$BUILDER" --alias "$ALIAS" --compression zstd \
-	description="Qorpera coding machine $STAMP (Ubuntu 26.04, git $GIT_VERSION, Node $NODE_VERSION, Chromium $CHROMIUM_VERSION)"
+	description="Qorpera coding machine $STAMP (Ubuntu 26.04, git $GIT_VERSION, Node $NODE_VERSION, Chromium $CHROMIUM_VERSION, Blender $BLENDER_VERSION)"
 FINGERPRINT=$(lx image info "$ALIAS" | awk '/^Fingerprint:/ {print $2}')
 [[ $FINGERPRINT =~ ^[0-9a-f]{64}$ ]] || { echo "no image fingerprint" >&2; exit 1; }
 echo "published $FINGERPRINT (delete it by hand if this build fails from here)" >&2
@@ -367,8 +439,8 @@ for entry in "${FILES[@]}"; do read -r source _ _ <<<"$entry"; SOURCES+=("$HERE/
 BOOTSTRAP=$(cat "$0" "$PINS" "$CODEX_PIN" "${SOURCES[@]}" | sha256sum | cut -d' ' -f1)
 jq -n --arg imageFingerprint "$FINGERPRINT" --arg bootstrapSha256 "$BOOTSTRAP" --arg alias "$ALIAS" \
 	--arg git "$GIT_VERSION" --arg node "$NODE_VERSION" --arg chromium "$CHROMIUM_VERSION" --arg uv "$UV_VERSION" \
-	--arg mise "$MISE_VERSION" --arg typescript "$TYPESCRIPT_VERSION" --arg tsx "$TSX_VERSION" \
+	--arg mise "$MISE_VERSION" --arg blender "$BLENDER_VERSION" --arg typescript "$TYPESCRIPT_VERSION" --arg tsx "$TSX_VERSION" \
 	--arg codexSha256 "$EXPECTED_CODEX_SHA256" \
 	--args '{schema: "qorpera.coding-image-build/v1", alias: $alias, imageFingerprint: $imageFingerprint,
 	  bootstrapSha256: $bootstrapSha256, codexSha256: $codexSha256, projects: $ARGS.positional, git: $git, node: $node,
-	  chromium: $chromium, uv: $uv, mise: $mise, typescript: $typescript, tsx: $tsx, rootDiskBytes: 17179869184}' "${CODING[@]}" >&3
+	  chromium: $chromium, uv: $uv, mise: $mise, blender: $blender, typescript: $typescript, tsx: $tsx, rootDiskBytes: 17179869184}' "${CODING[@]}" >&3

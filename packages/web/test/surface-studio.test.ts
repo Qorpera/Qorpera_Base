@@ -741,6 +741,27 @@ describe("SurfaceStudioView", () => {
 		);
 		expect(cased).toContain('content: "<\\/STYLE>";');
 		expect(cased).toContain('const tag = "<\\/SCRIPT>";');
+
+		const pngRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 4096,
+			mediaType: "image/png",
+		};
+		const withBinaries = prepareStudioHtmlPreview(
+			'<!doctype html><html><body><img src="img/hero.png"><img src="../outside.png"></body></html>',
+			"surfaces/headband/modules/pod/index.html",
+			{},
+			"",
+			{
+				"surfaces/headband/modules/pod/img/hero.png": pngRef,
+				"surfaces/outside.png": pngRef,
+			},
+			"surfaces/headband",
+		);
+		expect(withBinaries).toContain('data-qorpera-src="modules/pod/img/hero.png"');
+		expect(withBinaries).not.toContain('src="img/hero.png"');
+		expect(withBinaries).not.toContain('data-qorpera-src="outside.png"');
 	});
 
 	it("hands the page frame only text that reads back as the page it checked", () => {
@@ -1784,7 +1805,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
-		await new Promise((resolve) => setTimeout(resolve, 40));
+		await vi.waitFor(() => expect(view.el.querySelectorAll(".studio-html-card")).toHaveLength(2), { timeout: 2000 });
 		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
 		const htmlCards = [...view.el.querySelectorAll<HTMLElement>(".studio-html-card")];
 		expect(htmlCards).toHaveLength(2);

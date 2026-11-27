@@ -170,4 +170,96 @@ describe("the Company File's hint channel", () => {
 		expect(removeAllChannels).not.toHaveBeenCalled();
 		expect(disconnect).not.toHaveBeenCalled();
 	});
+
+	it("waits for an in-flight folder-hint channel removal before opening a replacement channel on the same topic", async () => {
+		const { files, supabase } = company();
+		const pendingRemoval = deferred<string>();
+		supabase.removeChannel.mockImplementationOnce(() => {
+			realtime.order.push("remove-start");
+			return pendingRemoval.promise.then((status) => {
+				realtime.order.push("remove-done");
+				return status;
+			});
+		});
+		const first = files.folderHints(() => {});
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+
+		const closing = first.close();
+		await settle();
+		expect(realtime.order).toContain("remove-start");
+
+		const second = files.folderHints(() => {});
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+
+		pendingRemoval.resolve("ok");
+		await closing;
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(2);
+		const doneIndex = realtime.order.indexOf("remove-done");
+		const secondChannelIndex = realtime.order.findIndex(
+			(step, index) => index > doneIndex && step.startsWith("channel "),
+		);
+		expect(doneIndex).toBeGreaterThan(-1);
+		expect(secondChannelIndex).toBeGreaterThan(doneIndex);
+		await second.close();
+	});
+
+	it("shares one hint channel across separate WebCompanyFiles instances on the same cloud and company", async () => {
+		const stopA = new AbortController();
+		const stopB = new AbortController();
+		stops.push(stopA, stopB);
+		const f = fixture();
+		const supabase = f.cloud.supabase as unknown as {
+			realtime: { setAuth: ReturnType<typeof vi.fn> };
+			channel: ReturnType<typeof vi.fn>;
+			removeChannel: ReturnType<typeof vi.fn>;
+		};
+		supabase.realtime = {
+			setAuth: vi.fn(async () => {
+				realtime.order.push("setAuth");
+			}),
+		};
+		supabase.channel = vi.fn((topic: string, options: unknown) => {
+			realtime.order.push(`channel ${topic} ${JSON.stringify(options)}`);
+			return realtime.channel;
+		});
+		supabase.removeChannel = vi.fn(async () => {
+			realtime.order.push("remove");
+			return "ok";
+		});
+
+		const filesA = new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", stopA.signal, () => {});
+		const filesB = new WebCompanyFiles(f.cloud, profileA, userA.id, "owner", stopB.signal, () => {});
+
+		const seenA: number[] = [];
+		const seenB: number[] = [];
+		const statesB: boolean[] = [];
+		const hintsA = filesA.folderHints((seq) => seenA.push(seq));
+		await settle();
+		realtime.joined.status("SUBSCRIBED");
+
+		const hintsB = filesB.folderHints(
+			(seq) => seenB.push(seq),
+			(connected) => statesB.push(connected),
+		);
+		await settle();
+		expect(supabase.channel).toHaveBeenCalledTimes(1);
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(0);
+		expect(statesB).toEqual([true]);
+
+		realtime.broadcast.callback({ payload: { schema: "qorpera.folder-hint/v1", seq: 11 } });
+		expect(seenA).toEqual([11]);
+		expect(seenB).toEqual([11]);
+
+		await hintsB.close();
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(0);
+		realtime.broadcast.callback({ payload: { schema: "qorpera.folder-hint/v1", seq: 12 } });
+		expect(seenA).toEqual([11, 12]);
+		expect(seenB).toEqual([11]);
+
+		await hintsA.close();
+		expect(supabase.removeChannel).toHaveBeenCalledTimes(1);
+	});
 });

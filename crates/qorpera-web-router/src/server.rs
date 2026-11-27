@@ -1,5 +1,6 @@
 use crate::blob_store::{
-    stream_file_body, AcceptedEncodings, BlobError, BlobRangeRead, BlobRead, BlobStore, PutOutcome,
+    compress_bytes_for_encoding, is_valid_sha256, stream_file_body, AcceptedEncodings, BlobError,
+    BlobRangeRead, BlobRead, BlobStore, ContentEncoding, PutOutcome,
 };
 use crate::dns_verify::{default_dns_servers, verify_domains_once};
 use crate::postgres_sync::connect_postgres_client;
@@ -16,11 +17,12 @@ use crate::routes::{
 };
 use crate::security::{
     check_cross_site_write, constant_time_eq, extract_client_ip_cow, frame_ancestors_csp,
-    inject_preview_banner, inject_preview_inspector, is_content_hashed_preview_asset, parse_cookie,
-    prefers_danish, render_almost_ready_page, render_app_unavailable_page, render_not_found_page,
-    render_not_live_page, render_password_page, render_preview_inspector_script,
-    render_takedown_page, sanitize_next_path, sanitize_redirect_location, sign_preview_cookie,
-    sign_session_cookie, sign_surface_preview_cookie, verify_preview_cookie, verify_session_cookie,
+    inject_preview_banner, inject_preview_inspector_with_tag, is_content_hashed_preview_asset,
+    parse_cookie, prefers_danish, render_almost_ready_page, render_app_unavailable_page,
+    render_not_found_page, render_not_live_page, render_password_page,
+    render_preview_inspector_script, render_takedown_page, sanitize_next_path,
+    sanitize_redirect_location, sign_preview_cookie, sign_session_cookie,
+    sign_surface_preview_cookie, verify_preview_cookie, verify_session_cookie,
     verify_surface_preview_cookie, HSTS_HEADER, INSPECTOR_PATH, SITE_SESSION_COOKIE,
 };
 use bytes::Bytes;
@@ -31,7 +33,7 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -45,6 +47,11 @@ const MAX_FORM_BODY_BYTES: usize = 16 * 1024;
 const MAX_CONTROL_JSON_BYTES: usize = 64 * 1024;
 const MAX_BLOB_EXISTS_BODY_BYTES: usize = 256 * 1024;
 const MAX_BLOB_EXISTS_BATCH: usize = 1024;
+const MAX_BLOB_BATCH_BODY_BYTES: usize = 48 * 1024 * 1024;
+const MAX_BLOB_BATCH_FILES: usize = 1024;
+const BLOB_BATCH_CONTENT_TYPE: &str = "application/vnd.qorpera.blob-batch+v1";
+const PREVIEW_HTML_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+const PREVIEW_HTML_CACHE_ENTRY_MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PUBLIC_CONNS: usize = 4096;
 const MAX_INTERNAL_CONNS: usize = 256;
@@ -434,6 +441,167 @@ pub struct RouterConfig {
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
 }
 
+struct InspectorAsset {
+    version: String,
+    etag: HeaderValue,
+    inject_tag: Bytes,
+    preload_header: HeaderValue,
+    raw: Bytes,
+    brotli: Option<Bytes>,
+    zstd: Option<Bytes>,
+    gzip: Option<Bytes>,
+}
+
+impl InspectorAsset {
+    fn build(origins: &[String]) -> Self {
+        let raw = Bytes::from(render_preview_inspector_script(origins));
+        let digest = hex::encode(Sha256::digest(&raw));
+        let version = digest[..12].to_string();
+        let etag = HeaderValue::from_str(&format!("\"insp-{version}\""))
+            .unwrap_or_else(|_| HeaderValue::from_static("\"insp\""));
+        let inject_tag = Bytes::from(format!(
+            "\n<script src=\"{INSPECTOR_PATH}?v={version}\" defer></script>\n"
+        ));
+        let preload_header = HeaderValue::from_str(&format!(
+            "<{INSPECTOR_PATH}?v={version}>; rel=preload; as=script"
+        ))
+        .unwrap_or_else(|_| HeaderValue::from_static("</__qorpera/inspector.js>; rel=preload; as=script"));
+        let brotli = compress_bytes_for_encoding(&raw, ContentEncoding::Brotli);
+        let zstd = compress_bytes_for_encoding(&raw, ContentEncoding::Zstd);
+        let gzip = compress_bytes_for_encoding(&raw, ContentEncoding::Gzip);
+        Self {
+            version,
+            etag,
+            inject_tag,
+            preload_header,
+            raw,
+            brotli,
+            zstd,
+            gzip,
+        }
+    }
+
+    fn select(&self, accepted: AcceptedEncodings) -> (Bytes, Option<&'static str>) {
+        for (enc, _) in accepted.ranked_sidecars().into_iter().flatten() {
+            let candidate = match enc {
+                ContentEncoding::Brotli => self.brotli.as_ref(),
+                ContentEncoding::Zstd => self.zstd.as_ref(),
+                ContentEncoding::Gzip => self.gzip.as_ref(),
+                ContentEncoding::Identity => None,
+            };
+            if let Some(bytes) = candidate {
+                return (bytes.clone(), enc.header_value());
+            }
+        }
+        (self.raw.clone(), None)
+    }
+}
+
+#[derive(Default)]
+struct CachedPreviewHtml {
+    raw: Option<Bytes>,
+    brotli: Option<Bytes>,
+    zstd: Option<Bytes>,
+    gzip: Option<Bytes>,
+    accounted_bytes: usize,
+}
+
+impl CachedPreviewHtml {
+    fn recalc(&mut self) {
+        self.accounted_bytes = 128
+            + self.raw.as_ref().map_or(0, Bytes::len)
+            + self.brotli.as_ref().map_or(0, Bytes::len)
+            + self.zstd.as_ref().map_or(0, Bytes::len)
+            + self.gzip.as_ref().map_or(0, Bytes::len);
+    }
+
+    fn get(&self, enc: ContentEncoding) -> Option<Bytes> {
+        match enc {
+            ContentEncoding::Identity => self.raw.clone(),
+            ContentEncoding::Brotli => self.brotli.clone(),
+            ContentEncoding::Zstd => self.zstd.clone(),
+            ContentEncoding::Gzip => self.gzip.clone(),
+        }
+    }
+
+    fn set(&mut self, enc: ContentEncoding, bytes: Bytes) {
+        match enc {
+            ContentEncoding::Identity => self.raw = Some(bytes),
+            ContentEncoding::Brotli => self.brotli = Some(bytes),
+            ContentEncoding::Zstd => self.zstd = Some(bytes),
+            ContentEncoding::Gzip => self.gzip = Some(bytes),
+        }
+        self.recalc();
+    }
+}
+
+struct PreviewHtmlCacheInner {
+    map: HashMap<String, CachedPreviewHtml>,
+    order: VecDeque<String>,
+    total_bytes: usize,
+}
+
+struct PreviewHtmlCache {
+    inner: Mutex<PreviewHtmlCacheInner>,
+    max_bytes: usize,
+}
+
+impl PreviewHtmlCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            inner: Mutex::new(PreviewHtmlCacheInner {
+                map: HashMap::new(),
+                order: VecDeque::new(),
+                total_bytes: 0,
+            }),
+            max_bytes,
+        }
+    }
+
+    fn clear(&self) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.map.clear();
+            g.order.clear();
+            g.total_bytes = 0;
+        }
+    }
+
+    fn get(&self, sha256: &str, enc: ContentEncoding) -> Option<Bytes> {
+        self.inner
+            .lock()
+            .ok()?
+            .map
+            .get(sha256)
+            .and_then(|e| e.get(enc))
+    }
+
+    fn put(&self, sha256: &str, enc: ContentEncoding, bytes: Bytes) {
+        if bytes.len() > PREVIEW_HTML_CACHE_ENTRY_MAX_BYTES {
+            return;
+        }
+        let Ok(mut g) = self.inner.lock() else {
+            return;
+        };
+        let prev_size = g.map.get(sha256).map_or(0, |e| e.accounted_bytes);
+        let is_new = !g.map.contains_key(sha256);
+        let entry = g.map.entry(sha256.to_string()).or_default();
+        entry.set(enc, bytes);
+        let next_size = entry.accounted_bytes;
+        g.total_bytes = g.total_bytes.saturating_sub(prev_size) + next_size;
+        if is_new {
+            g.order.push_back(sha256.to_string());
+        }
+        while g.total_bytes > self.max_bytes {
+            let Some(oldest) = g.order.pop_front() else {
+                break;
+            };
+            if let Some(removed) = g.map.remove(&oldest) {
+                g.total_bytes = g.total_bytes.saturating_sub(removed.accounted_bytes);
+            }
+        }
+    }
+}
+
 pub struct RouterState {
     pub blobs: Arc<BlobStore>,
     pub routes: Arc<SharedRoutes>,
@@ -448,6 +616,8 @@ pub struct RouterState {
     pub trusted_proxies: Vec<IpAddr>,
     pub web_origins: Vec<String>,
     frame_ancestors_header: HeaderValue,
+    inspector_asset: Arc<InspectorAsset>,
+    preview_html_cache: Arc<PreviewHtmlCache>,
     pub dns_servers: Vec<SocketAddr>,
     pub database_url: Option<String>,
     pub auth_backend: Option<Arc<dyn EdgeAuthBackend>>,
@@ -478,6 +648,7 @@ impl RouterState {
         let web_origins = vec!["https://app.qorpera.com".to_string()];
         let frame_ancestors_header = HeaderValue::from_str(&frame_ancestors_csp(&web_origins))
             .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
+        let inspector_asset = Arc::new(InspectorAsset::build(&web_origins));
         Self {
             blobs,
             routes: Arc::new(SharedRoutes::new(RouteTable::from_snapshot(initial))),
@@ -501,6 +672,8 @@ impl RouterState {
             trusted_proxies: cfg.trusted_proxies.clone(),
             web_origins,
             frame_ancestors_header,
+            inspector_asset,
+            preview_html_cache: Arc::new(PreviewHtmlCache::new(PREVIEW_HTML_CACHE_MAX_BYTES)),
             dns_servers,
             database_url: cfg.database_url.clone(),
             auth_backend,
@@ -547,6 +720,8 @@ impl RouterState {
         if !origins.is_empty() {
             self.frame_ancestors_header = HeaderValue::from_str(&frame_ancestors_csp(&origins))
                 .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
+            self.inspector_asset = Arc::new(InspectorAsset::build(&origins));
+            self.preview_html_cache.clear();
             self.web_origins = origins;
         }
         self
@@ -1141,6 +1316,53 @@ async fn handle_internal(state: Arc<RouterState>, req: Request<Incoming>) -> Res
         };
     }
 
+    if method == Method::POST && path == "/_internal/blobs/batch" {
+        let content_type = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .unwrap_or("");
+        if !content_type.eq_ignore_ascii_case(BLOB_BATCH_CONTENT_TYPE) {
+            return text_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported batch content type");
+        }
+        let bytes = match read_limited_body(
+            req.into_body(),
+            MAX_BLOB_BATCH_BODY_BYTES,
+            state.body_read_timeout,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(BodyReadError::TooLarge) => {
+                return text_response(StatusCode::PAYLOAD_TOO_LARGE, "batch too large");
+            }
+            Err(BodyReadError::Timeout) => {
+                return text_response(StatusCode::REQUEST_TIMEOUT, "body timeout");
+            }
+            Err(BodyReadError::Failed) => {
+                return text_response(StatusCode::BAD_REQUEST, "invalid body");
+            }
+        };
+        let items = match parse_blob_batch_frames(bytes, state.blobs.max_blob_bytes()) {
+            Ok(parsed) => parsed,
+            Err(BlobError::TooLarge) => return text_response(StatusCode::PAYLOAD_TOO_LARGE, "blob too large"),
+            Err(_) => return text_response(StatusCode::BAD_REQUEST, "invalid blob batch frame"),
+        };
+        #[derive(Serialize)]
+        struct BlobBatchResponse {
+            stored: usize,
+            exists: usize,
+        }
+        return match state.blobs.put_batch(items, true).await {
+            Ok((stored, exists)) => json_response(StatusCode::OK, BlobBatchResponse { stored, exists }),
+            Err(BlobError::InvalidHash) => text_response(StatusCode::BAD_REQUEST, "invalid sha256"),
+            Err(BlobError::HashMismatch) => text_response(StatusCode::BAD_REQUEST, "sha256 mismatch"),
+            Err(BlobError::TooLarge) => text_response(StatusCode::PAYLOAD_TOO_LARGE, "blob too large"),
+            Err(_) => text_response(StatusCode::INTERNAL_SERVER_ERROR, "storage error"),
+        };
+    }
+
     if let Some(sha) = path.strip_prefix("/_internal/blobs/") {
         if method == Method::HEAD {
             return match state.blobs.exists(sha).await {
@@ -1425,7 +1647,7 @@ async fn handle_public(
 
     if matches!(scope, HostScope::PreviewSlot(_)) && req.uri().path() == INSPECTOR_PATH {
         drop(route_table);
-        return preview_inspector_response(&state, req.method());
+        return preview_inspector_response(&state, &req);
     }
 
     let preview_mode = match scope {
@@ -1477,6 +1699,8 @@ async fn handle_public(
                     }
                     return serve_static_file(
                         &state.blobs,
+                        &state.inspector_asset,
+                        &state.preview_html_cache,
                         &deployment.manifest,
                         resolved_path.as_ref(),
                         file,
@@ -1709,7 +1933,44 @@ pub fn parse_web_origins(raw: Option<&str>) -> Vec<String> {
     if out.is_empty() { default() } else { out }
 }
 
-fn preview_inspector_response(state: &RouterState, method: &Method) -> Response<BoxBody> {
+fn parse_blob_batch_frames(raw: Bytes, max_blob_bytes: usize) -> Result<Vec<(String, Bytes)>, BlobError> {
+    let slice = raw.as_ref();
+    let mut offset = 0usize;
+    let mut items = Vec::new();
+    while offset < slice.len() {
+        if items.len() >= MAX_BLOB_BATCH_FILES {
+            return Err(BlobError::TooLarge);
+        }
+        let Some(rel_nl) = slice[offset..].iter().position(|&b| b == b'\n') else {
+            return Err(BlobError::BodyRead);
+        };
+        let nl = offset + rel_nl;
+        let header = std::str::from_utf8(&slice[offset..nl]).map_err(|_| BlobError::BodyRead)?;
+        let Some((sha, len_str)) = header.split_once(' ') else {
+            return Err(BlobError::BodyRead);
+        };
+        if !is_valid_sha256(sha) {
+            return Err(BlobError::InvalidHash);
+        }
+        let len: usize = len_str.parse().map_err(|_| BlobError::BodyRead)?;
+        if len > max_blob_bytes {
+            return Err(BlobError::TooLarge);
+        }
+        let body_start = nl + 1;
+        let Some(body_end) = body_start.checked_add(len) else {
+            return Err(BlobError::BodyRead);
+        };
+        if body_end > slice.len() {
+            return Err(BlobError::BodyRead);
+        }
+        items.push((sha.to_string(), raw.slice(body_start..body_end)));
+        offset = body_end;
+    }
+    Ok(items)
+}
+
+fn preview_inspector_response(state: &RouterState, req: &Request<Incoming>) -> Response<BoxBody> {
+    let method = req.method();
     if !matches!(*method, Method::GET | Method::HEAD) {
         return Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
@@ -1718,24 +1979,70 @@ fn preview_inspector_response(state: &RouterState, method: &Method) -> Response<
             .body(full_body(Bytes::new()))
             .unwrap();
     }
-    let script = Bytes::from(render_preview_inspector_script(&state.web_origins));
-    let len = script.len();
+    let asset = &state.inspector_asset;
+    let version_matched = req
+        .uri()
+        .query()
+        .and_then(|q| query_param(q, "v"))
+        .is_some_and(|v| v == asset.version);
+    let cache_control = if version_matched {
+        "private, max-age=31536000, immutable"
+    } else {
+        "private, max-age=300, must-revalidate"
+    };
+    if let Some(inm) = req.headers().get("if-none-match").and_then(|v| v.to_str().ok()) {
+        if let Ok(etag_str) = asset.etag.to_str() {
+            if etag_matches(inm, etag_str) {
+                let mut res = Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("cache-control", cache_control)
+                    .header("vary", "Accept-Encoding")
+                    .header("strict-transport-security", HSTS_HEADER)
+                    .header("x-content-type-options", "nosniff")
+                    .header("x-robots-tag", "noindex, nofollow, noarchive")
+                    .header("cross-origin-resource-policy", "same-origin")
+                    .body(full_body(Bytes::new()))
+                    .unwrap();
+                res.headers_mut().insert(HeaderName::from_static("etag"), asset.etag.clone());
+                res.headers_mut().insert(
+                    HeaderName::from_static("content-security-policy"),
+                    state.frame_ancestors_header.clone(),
+                );
+                return res;
+            }
+        }
+    }
+    let accepted = req
+        .headers()
+        .get("accept-encoding")
+        .and_then(|v| v.to_str().ok())
+        .map_or(AcceptedEncodings::IDENTITY, AcceptedEncodings::from_header);
+    let (payload, encoding) = asset.select(accepted);
+    let len = payload.len();
     let body = if *method == Method::HEAD {
         full_body(Bytes::new())
     } else {
-        full_body(script)
+        full_body(payload)
     };
     let mut res = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/javascript; charset=utf-8")
         .header("content-length", len.to_string())
-        .header("cache-control", "no-store, no-transform")
+        .header("cache-control", cache_control)
+        .header("vary", "Accept-Encoding")
         .header("strict-transport-security", HSTS_HEADER)
         .header("x-content-type-options", "nosniff")
         .header("x-robots-tag", "noindex, nofollow, noarchive")
         .header("cross-origin-resource-policy", "same-origin")
         .body(body)
         .unwrap();
+    res.headers_mut().insert(HeaderName::from_static("etag"), asset.etag.clone());
+    if let Some(enc) = encoding {
+        res.headers_mut().insert(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_static(enc),
+        );
+    }
     res.headers_mut().insert(
         HeaderName::from_static("content-security-policy"),
         state.frame_ancestors_header.clone(),
@@ -1848,6 +2155,50 @@ async fn handle_member_pass(
         "{SITE_SESSION_COOKIE}={token}; Path=/; Max-Age={}; HttpOnly; Secure; SameSite=None; Partitioned",
         redeemed.max_age
     );
+    if is_preview_slot {
+        if let Some(version_id) = redeemed.version_id.as_deref() {
+            if let Some(chosen) = site.deployment_for(scope, Some(version_id)) {
+                if chosen.deployment.kind == DeploymentKind::Static {
+                    if let StaticResolution::File { file, .. } =
+                        resolve_static_path(&chosen.deployment.manifest, &next_path)
+                    {
+                        if file.content_type.starts_with("text/html")
+                            && file.bytes <= PREVIEW_HTML_CACHE_ENTRY_MAX_BYTES
+                            && state
+                                .preview_html_cache
+                                .get(&file.sha256, ContentEncoding::Brotli)
+                                .is_none()
+                        {
+                            let blobs = Arc::clone(&state.blobs);
+                            let cache = Arc::clone(&state.preview_html_cache);
+                            let inject_tag = state.inspector_asset.inject_tag.clone();
+                            let sha256 = file.sha256.clone();
+                            tokio::spawn(async move {
+                                let Ok(payload) = blobs.get_encoded(&sha256, AcceptedEncodings::IDENTITY).await else {
+                                    return;
+                                };
+                                let transformed = Bytes::from(inject_preview_inspector_with_tag(
+                                    &payload.bytes,
+                                    &inject_tag,
+                                ));
+                                cache.put(&sha256, ContentEncoding::Identity, transformed.clone());
+                                let raw_for_comp = transformed;
+                                let compressed = tokio::task::spawn_blocking(move || {
+                                    compress_bytes_for_encoding(&raw_for_comp, ContentEncoding::Brotli)
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some(comp) = compressed {
+                                    cache.put(&sha256, ContentEncoding::Brotli, comp);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
     let mut res = safe_redirect_response(StatusCode::SEE_OTHER, &next_path, Some(&set_cookie));
     if is_preview_slot {
         res.headers_mut().insert(
@@ -2004,6 +2355,8 @@ enum PreviewMode {
 #[allow(clippy::too_many_arguments)]
 async fn serve_static_file(
     blobs: &BlobStore,
+    inspector_asset: &InspectorAsset,
+    preview_html_cache: &PreviewHtmlCache,
     manifest: &crate::routes::SiteManifest,
     resolved_path: &str,
     file: &crate::routes::ManifestFile,
@@ -2027,11 +2380,20 @@ async fn serve_static_file(
 
     let is_html = file.content_type.starts_with("text/html");
     let transforms_html = is_html && preview_mode != PreviewMode::None;
-    let allow_conditional_and_encoding = !transforms_html && preview_mode != PreviewMode::NextBanner;
+    let is_surface_inspector_html = is_html && preview_mode == PreviewMode::SurfaceInspector;
+    let effective_etag = if is_surface_inspector_html {
+        HeaderValue::from_str(&format!("\"{}-si-{}\"", file.sha256, inspector_asset.version)).ok()
+    } else if transforms_html {
+        None
+    } else {
+        etag_hdr
+    };
+    let allow_conditional = is_surface_inspector_html || (!transforms_html && preview_mode != PreviewMode::NextBanner);
+    let allow_range = !transforms_html && preview_mode != PreviewMode::NextBanner;
 
-    if status == 200 && allow_conditional_and_encoding {
+    if status == 200 && allow_conditional {
         if let Some(inm) = req.headers().get("if-none-match").and_then(|v| v.to_str().ok()) {
-            let etag_str = etag_hdr.as_ref().and_then(|v| v.to_str().ok()).unwrap_or("");
+            let etag_str = effective_etag.as_ref().and_then(|v| v.to_str().ok()).unwrap_or("");
             if !etag_str.is_empty() && etag_matches(inm, etag_str) {
                 return build_static_response(
                     StatusCode::NOT_MODIFIED,
@@ -2041,7 +2403,7 @@ async fn serve_static_file(
                     resolved_path,
                     file,
                     content_type_hdr,
-                    etag_hdr,
+                    effective_etag,
                     is_public,
                     preview_mode,
                     is_html,
@@ -2054,7 +2416,7 @@ async fn serve_static_file(
     }
 
     if let Some(range_hdr) = req.headers().get("range").and_then(|v| v.to_str().ok()) {
-        if status == 200 && allow_conditional_and_encoding {
+        if status == 200 && allow_range {
             if let Some(range) = parse_single_range(range_hdr, file.bytes) {
                 match range {
                     RangeSpec::Valid(start, end) => {
@@ -2101,7 +2463,7 @@ async fn serve_static_file(
                             resolved_path,
                             file,
                             content_type_hdr,
-                            etag_hdr,
+                            effective_etag,
                             is_public,
                             preview_mode,
                             is_html,
@@ -2123,7 +2485,7 @@ async fn serve_static_file(
         }
     }
 
-    let accepted = if allow_conditional_and_encoding {
+    let accepted = if allow_conditional {
         req.headers()
             .get("accept-encoding")
             .and_then(|v| v.to_str().ok())
@@ -2133,6 +2495,104 @@ async fn serve_static_file(
     };
 
     let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+    if is_surface_inspector_html {
+        let preferred_enc = accepted
+            .ranked_sidecars()
+            .into_iter()
+            .flatten()
+            .next()
+            .map_or(ContentEncoding::Identity, |(enc, _)| enc);
+        if let Some(hit) = preview_html_cache.get(&file.sha256, preferred_enc) {
+            let len = hit.len();
+            let body = if *req.method() == Method::HEAD {
+                full_body(Bytes::new())
+            } else {
+                full_body(hit)
+            };
+            let mut res = build_static_response(
+                status_code,
+                Some(len),
+                None,
+                manifest,
+                resolved_path,
+                file,
+                content_type_hdr,
+                effective_etag,
+                is_public,
+                preview_mode,
+                is_html,
+                frame_ancestors,
+                preferred_enc.header_value(),
+                body,
+            );
+            if status_code == StatusCode::OK {
+                res.headers_mut()
+                    .append(HeaderName::from_static("link"), inspector_asset.preload_header.clone());
+            }
+            return res;
+        }
+        let raw_transformed = if let Some(cached_raw) = preview_html_cache.get(&file.sha256, ContentEncoding::Identity) {
+            cached_raw
+        } else {
+            let payload = match blobs.get_encoded(&file.sha256, AcceptedEncodings::IDENTITY).await {
+                Ok(p) => p,
+                Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "blob unavailable"),
+            };
+            let transformed = Bytes::from(inject_preview_inspector_with_tag(
+                &payload.bytes,
+                &inspector_asset.inject_tag,
+            ));
+            preview_html_cache.put(&file.sha256, ContentEncoding::Identity, transformed.clone());
+            transformed
+        };
+        let (final_bytes, encoding) = if preferred_enc != ContentEncoding::Identity {
+            let raw_for_comp = raw_transformed.clone();
+            let compressed = if raw_for_comp.len() >= 16 * 1024 {
+                tokio::task::spawn_blocking(move || compress_bytes_for_encoding(&raw_for_comp, preferred_enc))
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
+                compress_bytes_for_encoding(&raw_for_comp, preferred_enc)
+            };
+            if let Some(comp) = compressed {
+                preview_html_cache.put(&file.sha256, preferred_enc, comp.clone());
+                (comp, preferred_enc.header_value())
+            } else {
+                (raw_transformed, None)
+            }
+        } else {
+            (raw_transformed, None)
+        };
+        let len = final_bytes.len();
+        let body = if *req.method() == Method::HEAD {
+            full_body(Bytes::new())
+        } else {
+            full_body(final_bytes)
+        };
+        let mut res = build_static_response(
+            status_code,
+            Some(len),
+            None,
+            manifest,
+            resolved_path,
+            file,
+            content_type_hdr,
+            effective_etag,
+            is_public,
+            preview_mode,
+            is_html,
+            frame_ancestors,
+            encoding,
+            body,
+        );
+        if status_code == StatusCode::OK {
+            res.headers_mut()
+                .append(HeaderName::from_static("link"), inspector_asset.preload_header.clone());
+        }
+        return res;
+    }
+
     if transforms_html {
         let payload = match blobs.get_encoded(&file.sha256, AcceptedEncodings::IDENTITY).await {
             Ok(p) => p,
@@ -2140,7 +2600,9 @@ async fn serve_static_file(
         };
         let final_bytes = match preview_mode {
             PreviewMode::NextBanner => Bytes::from(inject_preview_banner(&payload.bytes, slug)),
-            PreviewMode::SurfaceInspector => Bytes::from(inject_preview_inspector(&payload.bytes)),
+            PreviewMode::SurfaceInspector => {
+                Bytes::from(inject_preview_inspector_with_tag(&payload.bytes, &inspector_asset.inject_tag))
+            }
             PreviewMode::None => payload.bytes,
         };
         let len = final_bytes.len();
@@ -2207,7 +2669,7 @@ async fn serve_static_file(
         resolved_path,
         file,
         content_type_hdr,
-        etag_hdr,
+        effective_etag,
         is_public,
         preview_mode,
         is_html,

@@ -1844,6 +1844,7 @@ export async function readCodingGuestOutput(
 	let waitedMs = 0;
 	let stepIndex = 0;
 	let watcher: FSWatcher | undefined;
+	let dirWatcher: FSWatcher | undefined;
 	let woke = false;
 	let notifyWaiter: (() => void) | undefined;
 	const onFsEvent = () => {
@@ -1858,6 +1859,12 @@ export async function readCodingGuestOutput(
 			watcher.on("error", () => undefined);
 		} catch {
 			watcher = undefined;
+		}
+		try {
+			dirWatcher = watch(command.directory, { persistent: false }, onFsEvent);
+			dirWatcher.on("error", () => undefined);
+		} catch {
+			dirWatcher = undefined;
 		}
 	}
 	try {
@@ -1924,6 +1931,7 @@ export async function readCodingGuestOutput(
 	} finally {
 		notifyWaiter = undefined;
 		watcher?.close();
+		dirWatcher?.close();
 	}
 }
 

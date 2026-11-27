@@ -137,6 +137,7 @@ export const NATIVE_HOST_CALLS: ReadonlyMap<string, "standard" | "long"> = new M
 	["qorpera_native_surface_renew_lease", "standard"],
 	["qorpera_native_surface_session_images", "standard"],
 	["qorpera_native_surface_start_session", "standard"],
+	["qorpera_native_surface_steer_session", "standard"],
 	["qorpera_native_office_operation", "standard"],
 	["qorpera_native_office_screen", "standard"],
 	["qorpera_native_office_start", "standard"],

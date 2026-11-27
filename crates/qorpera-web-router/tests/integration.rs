@@ -2755,7 +2755,7 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
 
     let mut cfg = test_config(None);
     cfg.auth_backend = Some(Arc::clone(&auth) as Arc<dyn EdgeAuthBackend>);
-    let state = Arc::new(RouterState::new(blobs, snapshot, &cfg));
+    let state = Arc::new(RouterState::new(Arc::clone(&blobs), snapshot, &cfg));
     let bound = BoundServers::bind(&cfg, state).await.unwrap();
     let pub_addr = bound.public_addr;
     let int_addr = bound.internal_addr;
@@ -2825,7 +2825,7 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
     assert_eq!(st, StatusCode::OK);
     let html_v1 = String::from_utf8(body.to_vec()).unwrap();
     assert!(html_v1.contains("Preview V1"));
-    assert!(html_v1.contains("<script src=\"/__qorpera/inspector.js\" defer></script>"));
+    assert!(html_v1.contains("<script src=\"/__qorpera/inspector.js?v=") && html_v1.contains("\" defer></script>"));
     assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
     assert_eq!(hdrs.get("x-robots-tag").unwrap(), "noindex, nofollow, noarchive");
     assert!(hdrs.get("x-frame-options").is_none());
@@ -2938,4 +2938,139 @@ async fn surface_preview_slots_enforce_version_isolation_inspector_caching_and_s
     assert_eq!(body, v2_hero);
     assert_eq!(hdrs.get("cache-control").unwrap(), "private, no-cache, no-transform");
     assert_eq!(hdrs.get("etag").unwrap(), &format!("\"{v2_hero_sha}\""));
+
+    let (st, html_br_hdrs, html_br_body) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/",
+            &[("cookie", cookie_p0.as_str()), ("accept-encoding", "br, gzip")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let html_etag = html_br_hdrs.get("etag").unwrap().to_str().unwrap().to_string();
+    assert!(html_etag.contains("-si-"));
+    let link_hdr = html_br_hdrs.get("link").unwrap().to_str().unwrap().to_string();
+    assert!(link_hdr.starts_with("</__qorpera/inspector.js?v=") && link_hdr.ends_with(">; rel=preload; as=script"));
+    let versioned_inspector_path = link_hdr
+        .strip_prefix('<')
+        .and_then(|s| s.split('>').next())
+        .unwrap()
+        .to_string();
+    let _ = html_br_body;
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            "/",
+            &[("cookie", cookie_p0.as_str()), ("if-none-match", html_etag.as_str())],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+
+    let (st, insp_hdrs, insp_br) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            &versioned_inspector_path,
+            &[("cookie", cookie_p0.as_str()), ("accept-encoding", "br, gzip")],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(insp_hdrs.get("content-encoding").unwrap(), "br");
+    assert_eq!(insp_hdrs.get("cache-control").unwrap(), "private, max-age=31536000, immutable");
+    assert!(insp_br.len() < script.len());
+    assert!(script.contains("qorpera-preview-ready"));
+    let insp_etag = insp_hdrs.get("etag").unwrap().to_str().unwrap().to_string();
+
+    let (st, _, _) = http_call(
+        pub_addr,
+        get(
+            "atelier-nord--p0.qorpera.site",
+            &versioned_inspector_path,
+            &[("cookie", cookie_p0.as_str()), ("if-none-match", insp_etag.as_str())],
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_MODIFIED);
+
+    let batch_a = Bytes::from("export const alpha = 'batch-blob-payload-alpha';\n".repeat(40));
+    let batch_b = Bytes::from("export const beta = 'batch-blob-payload-beta';\n".repeat(40));
+    let sha_a = sha256_hex(&batch_a);
+    let sha_b = sha256_hex(&batch_b);
+    let mut framed = Vec::new();
+    framed.extend_from_slice(format!("{sha_a} {}\n", batch_a.len()).as_bytes());
+    framed.extend_from_slice(&batch_a);
+    framed.extend_from_slice(format!("{sha_b} {}\n", batch_b.len()).as_bytes());
+    framed.extend_from_slice(&batch_b);
+
+    let post_batch = |body: Bytes, ct: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/blobs/batch")
+            .header("authorization", "Bearer secret-control-token")
+            .header("content-type", ct)
+            .body(Full::new(body))
+            .unwrap()
+    };
+    assert_eq!(
+        http_call(
+            int_addr,
+            Request::builder()
+                .method("POST")
+                .uri("/_internal/blobs/batch")
+                .header("content-type", "application/vnd.qorpera.blob-batch+v1")
+                .body(Full::new(Bytes::from(framed.clone())))
+                .unwrap()
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        http_call(int_addr, post_batch(Bytes::from(framed.clone()), "application/octet-stream")).await.0,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+    let (st, _, body) = http_call(
+        int_addr,
+        post_batch(Bytes::from(framed.clone()), "application/vnd.qorpera.blob-batch+v1"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["stored"], 2);
+    assert_eq!(parsed["exists"], 0);
+
+    let (st, _, body) = http_call(
+        int_addr,
+        post_batch(Bytes::from(framed), "application/vnd.qorpera.blob-batch+v1"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["stored"], 0);
+    assert_eq!(parsed["exists"], 2);
+
+    let mut bad_frame = Vec::new();
+    bad_frame.extend_from_slice(format!("{sha_a} 5\nhello").as_bytes());
+    assert_eq!(
+        http_call(
+            int_addr,
+            post_batch(Bytes::from(bad_frame), "application/vnd.qorpera.blob-batch+v1")
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    let compressed_a = blobs
+        .get_encoded(&sha_a, qorpera_web_router::blob_store::AcceptedEncodings::from_header("br, gzip"))
+        .await
+        .unwrap();
+    assert_eq!(compressed_a.encoding, qorpera_web_router::blob_store::ContentEncoding::Brotli);
+    assert!(compressed_a.bytes.len() < batch_a.len());
 }

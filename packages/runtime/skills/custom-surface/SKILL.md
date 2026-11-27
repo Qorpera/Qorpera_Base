@@ -9,7 +9,7 @@ A custom Studio surface is a living workspace tailored to a goal that product or
 
 ## Shape freely first
 - Read the member's goal, active company Interfaces, brief, and relevant company files or databases under `/company` using `company_search`, `company_read`, `company_list`, `data_describe`, and `data_query`.
-- Shape the layout freely with `compose_surface_layout` to add or reorder tabs and blocks (`chart`, `explainer` videos, `report` articles, `artifacts` visuals, `module` custom tools, and strategy or data blocks on any tab). Use `stage_surface_artifact` to stage bespoke visuals rendered on the machine directly into Preview, and call `inspect_surface` to check how the rendered page looks (desktop and mobile, light and dark) before finishing. When structure is a genuine taste choice, offer two or three concrete options by asking once early, then build on the answer.
+- Shape the layout freely with `compose_surface_layout` to add or reorder tabs and blocks (`chart`, `explainer` videos, `report` articles, `artifacts` visuals, `module` custom tools, and strategy or data blocks on any tab). Use `stage_surface_artifact` to stage bespoke visuals rendered on the machine directly into Preview, and call `inspect_surface` to check how the rendered page looks (desktop and mobile, light and dark) before finishing. For taste choices, pick the clearest layout and stage a live preview immediately; reserve `surface_ask` strictly for hard blockers (it escalates to the Co-Founder).
 - Fill the layout one coherent deliverable per `stage_surface_patch` call so each piece lands and approves cleanly on its own.
 
 ## Show, narrate, don't dump text

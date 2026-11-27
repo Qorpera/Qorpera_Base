@@ -163,19 +163,23 @@ function renderVisualAssets(
 		title: asset.title,
 		render: () => renderVisualImage(asset, pictures, "studio-fullscreen-img"),
 	}));
+	const pairGrid = assets.length === 2 || assets.length === 4;
 	return h(
 		"section",
-		{ class: "studio-section" },
+		{ class: "studio-section studio-visuals-section" },
 		heading ? h("div", { class: "studio-section-head" }, h("h2", null, heading)) : null,
 		h(
 			"div",
-			{ class: "studio-svg-grid" },
+			{ class: `studio-svg-grid${pairGrid ? " is-pair-grid" : ""}` },
 			assets.map((asset, index) => {
 				const open = () => fullscreen.openMedia(items, index);
 				const label = t("Show {name} large", { name: asset.title });
 				return h(
 					"figure",
-					{ class: `studio-svg-card${asset.changed ? " is-changed" : ""}`, "data-file": asset.path },
+					{
+						class: `studio-svg-card${asset.kind === "binary" ? " is-raster" : ""}${asset.changed ? " is-changed" : ""}`,
+						"data-file": asset.path,
+					},
 					h(
 						"button",
 						{
