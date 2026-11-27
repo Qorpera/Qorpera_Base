@@ -317,7 +317,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 						: 'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
 				);
 			}
-			if (captions.length > MAX_UNIQUE_CAPTIONS) {
+			if (kind !== "talk" && captions.length > MAX_UNIQUE_CAPTIONS) {
 				throw new CloudToolRefusal(
 					`TOO_MANY_CAPTIONS: ${args.scenesPath} has ${captions.length} unique captions (max ${MAX_UNIQUE_CAPTIONS}); trim it to one focused story`,
 				);

@@ -25,6 +25,7 @@ import {
 	readSurfaceLayout,
 	readSurfaceTalk,
 	resolveStudioFolderPath,
+	resolveSurfaceSource,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
@@ -1824,6 +1825,7 @@ export function checkStagedSurfaceDeliverables(
 	options?: { readonly allowMultipleDeliverables?: boolean },
 ): void {
 	const deliverablePaths = new Set<string>();
+	let talks = 0;
 	for (const op of ops) {
 		if (op.op === "delete") continue;
 		const normalized = op.path
@@ -1831,6 +1833,7 @@ export function checkStagedSurfaceDeliverables(
 			.replace(/^\/+|\/+$/g, "")
 			.toLowerCase();
 		if (TALK_FILE_RE.test(op.path)) {
+			if (!deliverablePaths.has(normalized)) talks += 1;
 			deliverablePaths.add(normalized);
 			if (op.op === "merge_json")
 				throw talkRefusal(op.path, ["a talk is written whole, with write_text, never merged"]);
@@ -1888,6 +1891,10 @@ export function checkStagedSurfaceDeliverables(
 		}
 	}
 	if (!options?.allowMultipleDeliverables && deliverablePaths.size > 1) {
+		if (talks > 0)
+			throw new CloudToolRefusal(
+				"Stage each talk alone in its own stage_surface_patch call, apart from any other talk, report (*.report.json) or standalone HTML document, so members can preview and approve it on its own. Nothing was staged.",
+			);
 		throw new CloudToolRefusal(
 			"Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call so members can preview, toggle, and approve each deliverable independently. Nothing was staged.",
 		);
@@ -1899,30 +1906,36 @@ async function pageRivals(staging: SurfaceLayoutStaging, signal: AbortSignal): P
 	if (!read) return [];
 	const layoutText = await staging.readLayout(signal);
 	const layout = layoutText === null ? undefined : readSurfaceLayout(layoutText);
-	const files = new Set<string>();
+	const sources: unknown[] = [];
 	if (layout && "layout" in layout) {
 		for (const tab of layout.layout.tabs)
 			for (const node of tab.blocks)
-				for (const block of node.type === "row" ? node.blocks : [node]) {
-					if (block.type !== "landscape") continue;
-					for (const source of [block.from].flat()) {
-						if (typeof source !== "string") continue;
-						try {
-							files.add(parseSurfaceBinding(source).path);
-						} catch {}
-					}
-				}
-	} else files.add(LANDSCAPE_DEFAULT_FILE);
-	const names: string[] = [];
-	for (const file of files) {
-		if (file.startsWith("/")) continue;
-		let parsed: unknown;
+				for (const block of node.type === "row" ? node.blocks : [node])
+					if (block.type === "landscape") sources.push(block.from);
+	} else sources.push(LANDSCAPE_DEFAULT_FILE);
+	const files = new Map<string, unknown>();
+	for (const choice of sources.flat()) {
+		if (typeof choice !== "string") continue;
+		let path: string;
 		try {
-			parsed = JSON.parse((await read(file, signal)) ?? "");
+			path = parseSurfaceBinding(choice).path;
 		} catch {
 			continue;
 		}
-		const players = isPlainRecord(parsed) && Array.isArray(parsed.players) ? parsed.players : [];
+		if (path.startsWith("/") || files.has(path)) continue;
+		try {
+			files.set(path, JSON.parse((await read(path, signal)) ?? ""));
+		} catch {
+			files.set(path, undefined);
+		}
+	}
+	const names: string[] = [];
+	for (const source of sources) {
+		const landscape = resolveSurfaceSource(source, (path) => files.get(path));
+		const players =
+			landscape.found && isPlainRecord(landscape.value) && Array.isArray(landscape.value.players)
+				? landscape.value.players
+				: [];
 		for (const player of players)
 			if (
 				isPlainRecord(player) &&

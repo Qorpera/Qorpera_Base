@@ -279,7 +279,7 @@ export interface SurfaceTalkRead {
 	readonly problems: readonly string[];
 }
 
-export const SURFACE_TALK_FORMAT = `A talk file (talks/<name>/${SURFACE_TALK_FILE}) is a narrated talk the founders watch: chapters of pictures, each with one spoken line shown as its caption. It is in one of three states, by what it holds. Waiting for the founder's words: {"starter"?,"title","sub"?,"question","asks":["<1-${SURFACE_TALK_ASKS_MAX} open questions for the founder>"],"found":["<what the vision gave>"],"missing":"<what it did not>"}. Points for the founder's yes: add "answer" (one sentence, <=${SURFACE_TALK_ANSWER_WORDS} words), "points":[{"text","from":"<where it comes from, e.g. Your vision>"}] (${SURFACE_TALK_POINTS[0]}-${SURFACE_TALK_POINTS[1]}, in order) and "leftOut":[{"what","goesTo"}]; no "chapters" yet. Made: add "agreed":"YYYY-MM-DD" (the day the founder said yes to the points), "tone", "whyThisLength", "chapters":[{"title","points":[<indexes of the points it carries, from 0>],"pictures":[...]}], "listen":{"day":"YYYY-MM-DD","heard":"<the answer as the cold listener said it back>","lines":<lines heard>,"marked":<lines marked>} and no "asks". "starter" is one of ${SURFACE_TALK_STARTER_IDS.join(", ")}; a talk without one names its own "has" (what is in it) and "not" (what never is). title <=6 words, sub <=20. A chapter has ${SURFACE_TALK_CHAPTER_PICTURES[0]}-${SURFACE_TALK_CHAPTER_PICTURES[1]} pictures and opens with a title picture; every point is carried by a chapter. Every picture has "kind", "say" (the spoken line, ${SURFACE_TALK_SAY_WORDS[0]}-${SURFACE_TALK_SAY_WORDS[1]} words, written for the ear), "from" (what it rests on, 1 or more of "yours", "plan", "post:<path of a *.report.json>", "bet:<what the bet claims>", "unchecked:<a figure no post has checked>") and "tone"? (${SURFACE_TALK_TONES.join(", ")}; brand colours come from the company's Identity). Kinds and their fields (w = words, c = characters, ? optional): title {kicker <=4w, title <=8w, sub? <=12w}; statement {text <=16w, sub? <=14w}, at most one picture in five; quote {text <=14w, by <=4w}; number {value <=8c, unit? <=6c, label <=9w, sub? <=12w}; bars {title? <=8w, unit, items: 2-9 of {label <=4w, value, show?, dim?}, line? {value, label <=6w}, max?}; split {title? <=8w, total, unit, parts: 2-6 of {label <=4w, value}} whose values sum to total; ring {percent 0-100, big <=7c, label <=8w, sub? <=12w}; meter {title <=9w, unit, max, pass {value, label <=4w}, stop {value, label <=4w}, higherIsBetter}; versus {left, right: {title <=4w, big? <=10c, lines: <=3 of <=8w}, verdict? <=10w}; steps {items: 2-4 of {title <=4w, lines: <=2 of <=6w, state: now|next|later}}; marks {title? <=8w, items: 2-7 of {mark: yes|part|no|open, label <=6w, note? <=8w}}; matrix {cols: 2-7 of <=3w, rows: 2-6 of {label <=3w, cells: one of y p n q per column, us?}}; open {items: 2-4 of {label <=3w, needs <=4w}}; timeline {items: 2-6 of {when <=3w, label <=6w}}; art {src: a picture file in this folder, alt}, each file once. A picture runs max(7, words/2.5 + 2.6) seconds and a talk at most ${SURFACE_TALK_MAX_MINUTES} minutes; there is no shortest length. Nothing shown or spoken is a code number (B3, bet 3, post 6), a page or tab name, or a phrase like "the Strategy says"; a starter talk stays inside its borders. A talk is written whole (write_text), never merged. Its voice is recorded with narrate_explainer on this file, only when the founder asks.`;
+export const SURFACE_TALK_FORMAT = `A talk file (talks/<name>/${SURFACE_TALK_FILE}) is a narrated talk the founders watch: chapters of pictures, each with one spoken line shown as its caption. It is in one of three states, by what it holds. Waiting for the founder's words: {"starter"?,"title","sub"?,"question","asks":["<1-${SURFACE_TALK_ASKS_MAX} open questions for the founder>"],"found":["<what the vision gave>"],"missing":"<what it did not>"}. Points for the founder's yes: add "answer" (one sentence, <=${SURFACE_TALK_ANSWER_WORDS} words), "points":[{"text","from":"<where it comes from, e.g. Your vision>"}] (${SURFACE_TALK_POINTS[0]}-${SURFACE_TALK_POINTS[1]}, in order) and "leftOut":[{"what","goesTo"}]; no "chapters" yet. Made: add "agreed":"YYYY-MM-DD" (the day the founder said yes to the points), "tone", "whyThisLength", "chapters":[{"title","points":[<indexes of the points it carries, from 0>],"pictures":[...]}], "listen":{"day":"YYYY-MM-DD","heard":"<the answer as the cold listener said it back>","lines":<lines heard>,"marked":<lines marked>} and no "asks". "starter" is one of ${SURFACE_TALK_STARTER_IDS.join(", ")}; a talk without one names its own "has" (what is in it) and "not" (what never is). title <=6 words, sub <=20. A chapter has ${SURFACE_TALK_CHAPTER_PICTURES[0]}-${SURFACE_TALK_CHAPTER_PICTURES[1]} pictures and opens with a title picture; every point is carried by a chapter. Every picture has "kind", "say" (the spoken line, ${SURFACE_TALK_SAY_WORDS[0]}-${SURFACE_TALK_SAY_WORDS[1]} words, written for the ear), "from" (what it rests on, 1 or more of "yours", "plan", "post:<path of a *.report.json, from the interface folder>", "bet:<what the bet claims>", "unchecked:<a figure no post has checked>") and "tone"? (${SURFACE_TALK_TONES.join(", ")}; brand colours come from the company's Identity). Kinds and their fields (w = words, c = characters, ? optional): title {kicker <=4w, title <=8w, sub? <=12w}; statement {text <=16w, sub? <=14w}, at most one picture in five; quote {text <=14w, by <=4w}; number {value <=8c, unit? <=6c, label <=9w, sub? <=12w}; bars {title? <=8w, unit, items: 2-9 of {label <=4w, value, show?, dim?}, line? {value, label <=6w}, max?}; split {title? <=8w, total, unit, parts: 2-6 of {label <=4w, value}} whose values sum to total; ring {percent 0-100, big <=7c, label <=8w, sub? <=12w}; meter {title <=9w, unit, max, pass {value, label <=4w}, stop {value, label <=4w}, higherIsBetter}; versus {left, right: {title <=4w, big? <=10c, lines: <=3 of <=8w}, verdict? <=10w}; steps {items: 2-4 of {title <=4w, lines: <=2 of <=6w, state: now|next|later}}; marks {title? <=8w, items: 2-7 of {mark: yes|part|no|open, label <=6w, note? <=8w}}; matrix {cols: 2-7 of <=3w, rows: 2-6 of {label <=3w, cells: one string with a letter of y p n q per column, e.g. "ypn", us?}}; open {items: 2-4 of {label <=3w, needs <=4w}}; timeline {items: 2-6 of {when <=3w, label <=6w}}; art {src: a picture file, its path from the interface folder, alt}, each file once. A picture runs max(7, words/2.5 + 2.6) seconds and a talk at most ${SURFACE_TALK_MAX_MINUTES} minutes; there is no shortest length. Nothing shown or spoken is a code number (B3, bet 3, post 6), a page or tab name, or a phrase like "the Strategy says"; a starter talk stays inside its borders, and the talk on why the company exists names no rival of the page's landscape ("ownWords":["<a word of the founders' own that a rival also has as its name>"] lets that word through). A talk is written whole (write_text), never merged. Its voice is recorded with narrate_explainer on this file, only when the founder asks.`;
 
 const PICTURE_FILE = /\.(?:png|jpe?g|webp|gif|avif|svg)$/i;
 const REPORT_FILE = /\.report\.json$/i;
@@ -310,7 +310,7 @@ const SPOKEN_BANNED: readonly (readonly [RegExp, string])[] = [
 ];
 
 const CODE_PATTERNS: readonly (readonly [RegExp, string])[] = [
-	[/\b[A-Z]\d{1,2}\b/, "a code number"],
+	[/\b(?!Q[1-4]\b)(?!H[12]\s+(?:19|20)\d\d\b)[A-Z]\d{1,2}\b/, "a code number"],
 	[/\b(?:bet|post|hypothesis|play|source|talk)\s+(?:no\.?\s*)?#?\d/i, "a code number"],
 	[/#\d/, "a code number"],
 	[/\btabs?\b/i, "a page or tab name"],
@@ -322,7 +322,7 @@ const CODE_PATTERNS: readonly (readonly [RegExp, string])[] = [
 
 const BORDER_WORDS: Readonly<Record<SurfaceTalkBorder, string>> = {
 	money: "prices or money",
-	rivals: "a rival",
+	rivals: "a rival the page names",
 	plan: "the steps of the plan",
 	tests: "the tests",
 	law: "the law",
@@ -749,7 +749,7 @@ function checkWording(
 			if (found)
 				report(
 					border,
-					`outside this talk's borders: ${BORDER_WORDS[border]} ("${found[0]}") never belongs in "${starter?.name}"`,
+					`outside this talk's borders: ${BORDER_WORDS[border]} ("${found[0]}") never belongs in "${starter?.name}"${border === "rivals" ? '; a word that is the founders\' own and not the rival goes in "ownWords"' : ""}`,
 				);
 		}
 	}
@@ -826,12 +826,13 @@ function parseListen(check: Check, bag: Bag, now: Date): SurfaceTalkListen | und
 	return { day, heard, lines, marked };
 }
 
-function rivalPatterns(names: readonly string[] | undefined): RegExp[] {
+function rivalPatterns(names: readonly string[] | undefined, own: readonly string[]): RegExp[] {
+	const ours = new Set(own.map((word) => word.toLowerCase()));
 	return (names ?? []).flatMap((name) => {
 		const trimmed = name.trim();
-		if (trimmed.length < 2) return [];
+		if (trimmed.length < 2 || ours.has(trimmed.toLowerCase())) return [];
 		const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-		return [new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu")];
+		return [new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u")];
 	});
 }
 
@@ -887,7 +888,14 @@ export function readSurfaceTalk(value: unknown, options: SurfaceTalkCheckOptions
 	const check: Check = { problems: [] };
 	if (!isBag(value)) return { problems: ["talk: must be a JSON object"] };
 	const now = options.now ?? new Date();
-	const rivals = rivalPatterns(options.rivals);
+	const ownWords =
+		value.ownWords === undefined
+			? []
+			: items(check, "talk", value, "ownWords", 0, 6).flatMap((entry, index) => {
+					const word = words(check, "talk", { [`ownWords[${index}]`]: entry }, `ownWords[${index}]`, 3);
+					return word === undefined ? [] : [word];
+				});
+	const rivals = rivalPatterns(options.rivals, ownWords);
 
 	let starter: SurfaceTalkStarter | undefined;
 	if (value.starter !== undefined) {
@@ -1003,6 +1011,7 @@ export function readSurfaceTalk(value: unknown, options: SurfaceTalkCheckOptions
 			});
 			if (drawn.length > 0 && drawn[0]?.kind !== "title")
 				check.problems.push(`${where}: must open with a title picture`);
+			checkWording(check, where, { title: chapter.title }, starter, rivals);
 			chapters.push({ title: chapterTitle, points: indexes, pictures: drawn });
 		});
 		const uncarried = points.map((_, index) => index).filter((index) => !carried.has(index));
@@ -1021,6 +1030,10 @@ export function readSurfaceTalk(value: unknown, options: SurfaceTalkCheckOptions
 		listen = parseListen(check, value, now);
 		if (listen && agreed && listen.day < agreed)
 			check.problems.push("listen: the cold listen is dated before the founder's yes to the points");
+		if (listen && listen.lines < pictures)
+			check.problems.push(
+				`listen: the cold listen heard ${listen.lines} lines and the talk now speaks ${pictures}; a line added since was never heard, so listen again with a fresh listener`,
+			);
 		if (value.cover !== undefined) {
 			if (
 				typeof value.cover === "number" &&
@@ -1043,6 +1056,13 @@ export function readSurfaceTalk(value: unknown, options: SurfaceTalkCheckOptions
 			whyThisLength: value.whyThisLength,
 		},
 		starter,
+		rivals,
+	);
+	checkWording(
+		check,
+		"talk",
+		{ question: value.question, asks: value.asks, found: value.found, missing: value.missing },
+		undefined,
 		rivals,
 	);
 
