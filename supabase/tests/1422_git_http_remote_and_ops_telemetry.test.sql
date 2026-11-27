@@ -108,8 +108,17 @@ begin
 	) or not exists (
 		select 1 from public.qorpera_code_changes
 		where environment_id = v_env and owner = 'acme' and name = 'demo' and n = 2 and kind = 'push' and main_after = v_sha_c
+	) or not exists (
+		select 1 from public.qorpera_code_repositories
+		where environment_id = v_env and owner = 'acme' and name = 'demo' and main_sha = v_sha_c and last_main = v_sha_c
 	) then
-		raise exception 'Expected found(1) and push(2) change rows in qorpera_code_changes';
+		raise exception 'Expected found(1), push(2), and updated main_sha/last_main when earlier push record was missing';
+	end if;
+	v_push := public.qorpera_record_git_http_push(
+		v_env, 'acme', 'demo', v_token_id, v_sha_b, v_sha_c, '["refs/heads/main"]'::jsonb
+	);
+	if coalesce((v_push ->> 'recorded')::boolean, true) is not false then
+		raise exception 'Expected duplicate push replay for main_after to skip recording, got %', v_push;
 	end if;
 
 	perform set_config('request.jwt.claims', json_build_object('role', 'authenticated', 'sub', v_owner::text)::text, true);

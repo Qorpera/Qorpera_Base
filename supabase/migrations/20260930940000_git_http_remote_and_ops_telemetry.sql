@@ -428,14 +428,7 @@ begin
 		end if;
 		if v_repo.last_main is not null
 			and v_before is not null
-			and v_repo.last_main is distinct from v_before
-			and not exists (
-				select 1 from public.qorpera_code_changes as ch
-				where ch.environment_id = v_repo.environment_id
-					and ch.owner = v_repo.owner
-					and ch.name = v_repo.name
-					and ch.main_before = v_before
-			) then
+			and v_repo.last_main is distinct from v_before then
 			perform public.qorpera_code_change_found(
 				v_repo.environment_id,
 				v_repo.owner,
@@ -471,13 +464,11 @@ begin
 				), 2000)
 			)
 		);
-		if v_repo.last_main is null or v_before is null or v_repo.last_main = v_before then
-			update public.qorpera_code_repositories
-			set main_sha = v_after
-			where environment_id = v_repo.environment_id
-				and owner = v_repo.owner
-				and name = v_repo.name;
-		end if;
+		update public.qorpera_code_repositories
+		set main_sha = v_after
+		where environment_id = v_repo.environment_id
+			and owner = v_repo.owner
+			and name = v_repo.name;
 	end if;
 
 	return jsonb_build_object(
