@@ -31,7 +31,9 @@ import {
 	cloudRuntimeHireBehavior,
 } from "../src/cloud-runtime-hire-overlays.ts";
 import {
+	createCodingPublishArtifactTool,
 	createCodingRecordChangeTool,
+	createCodingReportProgressTool,
 	createManageSurfaceAutomationTool,
 	createProposeSurfaceTool,
 	createStageSurfaceOpsActionTool,
@@ -4679,5 +4681,168 @@ describe("cloud surface runtime tools", () => {
 		});
 		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded.slice(0, 12)}`)).toBeNull();
 		expect(decodeChangeDiffOutput("__QORPERA_CHANGE_DIFF_V1__:not*base64:__QORPERA_CHANGE_DIFF_END__\n")).toBeNull();
+	});
+
+	it("publishes session artifacts and reports live progress via workbench tools and control-plane RPCs", async () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const artifactId = randomUUID();
+		const leaseToken = randomUUID();
+		const now = "2026-11-27T15:00:00Z";
+		const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const port = createControlPlaneSurfaceToolsPort(
+			{
+				async call(method, args) {
+					calls.push({ method, args });
+					if (method === "qorpera_native_surface_upsert_artifact") {
+						return {
+							id: artifactId,
+							sessionId,
+							surfaceId,
+							kind: args.p_kind,
+							artifactKey: args.p_artifact_key,
+							title: args.p_title,
+							summary: args.p_summary,
+							contentFormat: args.p_content_format,
+							contentText: args.p_content_text,
+							imageRef: args.p_image_ref,
+							changeId: args.p_change_id,
+							revision: 1,
+							createdByKind: "agent",
+							createdByUserId: null,
+							createdAt: now,
+							updatedAt: now,
+						};
+					}
+					if (method === "qorpera_native_surface_report_progress") {
+						return {
+							sessionId,
+							currentActivity: args.p_current_activity === "" ? null : args.p_current_activity,
+							progressSteps: args.p_progress_steps ?? [],
+							checksSummary: args.p_checks_summary ?? null,
+							updatedAt: now,
+						};
+					}
+					return {};
+				},
+			},
+			{ leaseToken },
+		);
+
+		const artifactTool = createCodingPublishArtifactTool(sessionId, { publishArtifact: port.publishArtifact! });
+		const parsedArtifact = artifactTool.parseArguments({
+			kind: "mockup",
+			artifactKey: "Checkout-Mockup",
+			title: "Checkout flow mockup",
+			summary: "Interactive HTML mockup",
+			contentFormat: "html",
+			contentText: "<main><h1>Checkout</h1></main>",
+		});
+		const artifactOut = await artifactTool.execute(parsedArtifact, toolContext());
+		expect(JSON.parse(artifactOut.value as string)).toMatchObject({
+			schema: "qorpera.surface-artifact-published/v1",
+			sessionId,
+			artifactId,
+			artifactKey: "checkout-mockup",
+			kind: "mockup",
+			revision: 1,
+		});
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_native_surface_upsert_artifact",
+			args: {
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+				p_artifact_key: "checkout-mockup",
+				p_content_format: "html",
+			},
+		});
+
+		expect(() =>
+			artifactTool.parseArguments({
+				kind: "mockup",
+				artifactKey: "bad key!",
+				title: "Bad",
+				contentFormat: "markdown",
+				contentText: "hi",
+			}),
+		).toThrow();
+		expect(() =>
+			artifactTool.parseArguments({
+				kind: "mockup",
+				artifactKey: "img",
+				title: "Img",
+				contentFormat: "image_ref",
+				contentText: "forbidden",
+				imageRef: { sha256: "a".repeat(64), bytes: 100, mediaType: "image/png" },
+			}),
+		).toThrow();
+
+		const progressTool = createCodingReportProgressTool(sessionId, { reportProgress: port.reportProgress! });
+		const parsedProgress = progressTool.parseArguments({
+			currentActivity: "Running checkout tests",
+			progressSteps: [
+				{ id: "s1", label: "Build mockup", status: "done" },
+				{ id: "s2", label: "Run tests", status: "in_progress", detail: "Vitest" },
+			],
+			checksSummary: {
+				status: "passed",
+				summary: "8 passed",
+				commands: [{ name: "vitest", status: "passed", durationMs: 420 }],
+			},
+		});
+		const progressOut = await progressTool.execute(parsedProgress, toolContext());
+		expect(JSON.parse(progressOut.value as string)).toMatchObject({
+			schema: "qorpera.surface-progress-reported/v1",
+			sessionId,
+			currentActivity: "Running checkout tests",
+			stepCount: 2,
+			checksStatus: "passed",
+		});
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_native_surface_report_progress",
+			args: {
+				p_session_id: sessionId,
+				p_lease_token: leaseToken,
+				p_current_activity: "Running checkout tests",
+			},
+		});
+
+		const clearActivityParsed = progressTool.parseArguments({ currentActivity: null });
+		await progressTool.execute(clearActivityParsed, toolContext());
+		expect(calls[2]?.args.p_current_activity).toBe("");
+
+		expect(() => progressTool.parseArguments({})).toThrow();
+		expect(() =>
+			progressTool.parseArguments({
+				progressSteps: [{ id: "s1", label: "Bad", status: "invalid" }],
+			}),
+		).toThrow();
+
+		expect(cloudActionEffect(artifactTool, {})).toBe("internal");
+		expect(cloudActionEffect(progressTool, {})).toBe("internal");
+
+		const appBrief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "web-app",
+			surfaceTitle: "Web App",
+			sourceKind: "code_repo",
+			surfaceKind: "web_app",
+			repositoryKey: "qorpera/qorpera_base",
+			briefMarkdown: null,
+		});
+		expect(appBrief).toContain("## App Workbench Collaboration");
+		expect(appBrief).toContain("coding_publish_artifact");
+		expect(appBrief).toContain("coding_report_progress");
+
+		const siteBrief = buildSurfaceTurnBrief({
+			sessionId,
+			surfaceSlug: "website",
+			surfaceTitle: "Website",
+			sourceKind: "code_repo",
+			surfaceKind: "website",
+			repositoryKey: "qorpera/site",
+			briefMarkdown: null,
+		});
+		expect(siteBrief).not.toContain("## App Workbench Collaboration");
 	});
 });

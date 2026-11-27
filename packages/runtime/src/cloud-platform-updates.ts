@@ -608,6 +608,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "App secrets, linked databases, and public login support",
 		text: "Hosted web and app interfaces now support runtime environment variables, granted company secrets, and a linked company database right from the app address menu. When a server or hybrid app deploys or auto-redeploys, Qorpera injects its granted secrets and a scoped DATABASE_URL directly into the running container without storing secrets in deployment metadata, and masks them from logs and error reports. Public sign-in and password forms are now allowed on verified custom domains and server or hybrid apps, while static sites on the default platform address stay protected.",
 	},
+	{
+		id: "app-workbench-isolated-tracks",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Isolated app update tracks, artifacts, and live progress",
+		text: "App interfaces now support isolated update tracks with rich inline discussion artifacts, live progress checklists, test status summaries, and non-destructive turn stopping. Coding turns on app tracks can publish or revise mockups, plans, reports, checklists, and diff summaries directly inside the session thread, and report their live current activity, step checklist, and verification results as work progresses. Founders can preview a single track in isolation, ship one track cleanly, combine specific tracks when ready, or stop an active turn without losing the session branch or workspace.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

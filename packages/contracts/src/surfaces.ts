@@ -346,6 +346,91 @@ export interface SurfaceChangeUnit {
 	readonly resolvedAt: string | null;
 }
 
+export const SURFACE_SESSION_ARTIFACT_KINDS = ["mockup", "plan", "report", "diff_summary", "checklist"] as const;
+export type SurfaceSessionArtifactKind = (typeof SURFACE_SESSION_ARTIFACT_KINDS)[number];
+
+export const SURFACE_SESSION_ARTIFACT_FORMATS = ["markdown", "html", "json", "image_ref"] as const;
+export type SurfaceSessionArtifactFormat = (typeof SURFACE_SESSION_ARTIFACT_FORMATS)[number];
+
+export const SURFACE_SESSION_ARTIFACT_AUTHORS = ["agent", "member", "system"] as const;
+export type SurfaceSessionArtifactAuthor = (typeof SURFACE_SESSION_ARTIFACT_AUTHORS)[number];
+
+export const SURFACE_SESSION_ARTIFACT_KEY_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,79}$/;
+export const SURFACE_SESSION_ARTIFACT_MAX_BYTES = 262_144;
+
+export const SURFACE_PROGRESS_STEP_STATUSES = ["pending", "in_progress", "done", "failed", "skipped"] as const;
+export type SurfaceProgressStepStatus = (typeof SURFACE_PROGRESS_STEP_STATUSES)[number];
+
+export const SURFACE_CHECKS_STATUSES = ["pending", "running", "passed", "failed", "skipped"] as const;
+export type SurfaceChecksStatus = (typeof SURFACE_CHECKS_STATUSES)[number];
+
+export const SURFACE_PREVIEW_SCOPES = ["combined", "track", "explicit"] as const;
+export type SurfacePreviewScope = (typeof SURFACE_PREVIEW_SCOPES)[number];
+
+export interface SurfaceSessionArtifact {
+	readonly id: string;
+	readonly sessionId: string;
+	readonly surfaceId: string;
+	readonly kind: SurfaceSessionArtifactKind;
+	readonly artifactKey: string;
+	readonly title: string;
+	readonly summary: string | null;
+	readonly contentFormat: SurfaceSessionArtifactFormat;
+	readonly contentText: string | null;
+	readonly imageRef: SurfaceImageRef | null;
+	readonly changeId: string | null;
+	readonly revision: number;
+	readonly createdByKind: SurfaceSessionArtifactAuthor;
+	readonly createdByUserId: string | null;
+	readonly createdAt: string;
+	readonly updatedAt: string;
+}
+
+export interface SurfaceSessionProgressStep {
+	readonly id: string;
+	readonly label: string;
+	readonly status: SurfaceProgressStepStatus;
+	readonly detail?: string | null;
+}
+
+export interface SurfaceSessionCheckCommand {
+	readonly name: string;
+	readonly status: SurfaceChecksStatus;
+	readonly durationMs?: number | null;
+}
+
+export interface SurfaceSessionChecksSummary {
+	readonly status: SurfaceChecksStatus;
+	readonly summary?: string | null;
+	readonly commands?: readonly SurfaceSessionCheckCommand[];
+	readonly updatedAt?: string | null;
+}
+
+export interface SurfaceSessionExternalPr {
+	readonly provider?: string | null;
+	readonly repository?: string | null;
+	readonly number?: number | null;
+	readonly url?: string | null;
+	readonly state?: string | null;
+	readonly headBranch?: string | null;
+	readonly baseBranch?: string | null;
+	readonly title?: string | null;
+	readonly updatedAt?: string | null;
+}
+
+export type SurfaceCombineTracksResult =
+	| {
+			readonly mode: "preview";
+			readonly sessionIds: readonly string[];
+			readonly previewState: SurfacePreviewCompositionState;
+	  }
+	| {
+			readonly mode: "land";
+			readonly sessionIds: readonly string[];
+			readonly changeIds: readonly string[];
+			readonly jobId: string | null;
+	  };
+
 export interface SurfaceSessionQuestion {
 	readonly text: string;
 	readonly options: readonly string[];
@@ -365,6 +450,12 @@ export interface SurfaceSession {
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
 	readonly supersedeKey?: string | null;
+	readonly trackBranch?: string | null;
+	readonly checksSummary?: SurfaceSessionChecksSummary | null;
+	readonly progressSteps?: readonly SurfaceSessionProgressStep[];
+	readonly currentActivity?: string | null;
+	readonly externalPr?: SurfaceSessionExternalPr | null;
+	readonly artifacts?: readonly SurfaceSessionArtifact[];
 	readonly branchHeadSha?: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
@@ -435,6 +526,8 @@ export interface SurfacePreviewFrameState {
 export interface SurfacePreviewCompositionState {
 	readonly surfaceId: string;
 	readonly mode: "single" | "compare";
+	readonly selectedSessionId?: string | null;
+	readonly previewScope?: SurfacePreviewScope;
 	readonly primary: SurfacePreviewFrameState;
 	readonly compareFrames: readonly {
 		readonly sessionId: string;
@@ -1028,6 +1121,137 @@ export function parseSurfaceUnseenNotes(value: unknown, label = "unseenNotes"): 
 	});
 }
 
+export function parseSurfaceSessionArtifact(value: unknown, label = "artifact"): SurfaceSessionArtifact {
+	const raw = parseRecord(value, label);
+	const artifactKey = parseBoundedText(raw.artifactKey, `${label}.artifactKey`, 80);
+	if (!SURFACE_SESSION_ARTIFACT_KEY_PATTERN.test(artifactKey)) {
+		throw new WireValueError(`${label}.artifactKey`);
+	}
+	const contentFormat = parseEnum(raw.contentFormat, SURFACE_SESSION_ARTIFACT_FORMATS, `${label}.contentFormat`);
+	let contentText: string | null = null;
+	if (raw.contentText !== null && raw.contentText !== undefined) {
+		if (
+			typeof raw.contentText !== "string" ||
+			UTF8_ENCODER.encode(raw.contentText).byteLength > SURFACE_SESSION_ARTIFACT_MAX_BYTES
+		) {
+			throw new WireValueError(`${label}.contentText`);
+		}
+		contentText = raw.contentText;
+	}
+	const imageRef =
+		raw.imageRef === null || raw.imageRef === undefined
+			? null
+			: parseSurfaceImageRef(raw.imageRef, `${label}.imageRef`);
+	return {
+		id: parseUuid(raw.id, `${label}.id`),
+		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
+		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
+		kind: parseEnum(raw.kind, SURFACE_SESSION_ARTIFACT_KINDS, `${label}.kind`),
+		artifactKey,
+		title: parseBoundedText(raw.title, `${label}.title`, 160),
+		summary: parseOptionalText(raw.summary, `${label}.summary`, 2000),
+		contentFormat,
+		contentText,
+		imageRef,
+		changeId: parseOptionalUuid(raw.changeId, `${label}.changeId`),
+		revision: parseInteger(raw.revision ?? 1, `${label}.revision`, 1, 100_000),
+		createdByKind: parseEnum(raw.createdByKind, SURFACE_SESSION_ARTIFACT_AUTHORS, `${label}.createdByKind`),
+		createdByUserId: parseOptionalUuid(raw.createdByUserId, `${label}.createdByUserId`),
+		createdAt: parseTimestamp(raw.createdAt, `${label}.createdAt`).text,
+		updatedAt: parseTimestamp(raw.updatedAt, `${label}.updatedAt`).text,
+	};
+}
+
+export function parseSurfaceSessionProgressStep(value: unknown, label = "progressStep"): SurfaceSessionProgressStep {
+	const raw = parseRecord(value, label);
+	const detail = raw.detail === undefined ? undefined : parseOptionalText(raw.detail, `${label}.detail`, 300);
+	return {
+		id: parseBoundedText(raw.id, `${label}.id`, 48),
+		label: parseBoundedText(raw.label, `${label}.label`, 160),
+		status: parseEnum(raw.status, SURFACE_PROGRESS_STEP_STATUSES, `${label}.status`),
+		...(detail !== undefined ? { detail } : {}),
+	};
+}
+
+export function parseSurfaceSessionChecksSummary(value: unknown, label = "checksSummary"): SurfaceSessionChecksSummary {
+	const raw = parseRecord(value, label);
+	const summary = raw.summary === undefined ? undefined : parseOptionalText(raw.summary, `${label}.summary`, 500);
+	const updatedAt =
+		raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
+	let commands: SurfaceSessionCheckCommand[] | undefined;
+	if (raw.commands !== undefined && raw.commands !== null) {
+		if (!Array.isArray(raw.commands) || raw.commands.length > 16) throw new WireValueError(`${label}.commands`);
+		commands = raw.commands.map((item, index) => {
+			const entry = parseRecord(item, `${label}.commands[${index}]`);
+			const durationMs =
+				entry.durationMs === undefined || entry.durationMs === null
+					? entry.durationMs
+					: parseInteger(entry.durationMs, `${label}.commands[${index}].durationMs`, 0, 999_999_999);
+			return {
+				name: parseBoundedText(entry.name, `${label}.commands[${index}].name`, 120),
+				status: parseEnum(entry.status, SURFACE_CHECKS_STATUSES, `${label}.commands[${index}].status`),
+				...(durationMs !== undefined ? { durationMs } : {}),
+			};
+		});
+	}
+	return {
+		status: parseEnum(raw.status, SURFACE_CHECKS_STATUSES, `${label}.status`),
+		...(summary !== undefined ? { summary } : {}),
+		...(commands !== undefined ? { commands } : {}),
+		...(updatedAt !== undefined ? { updatedAt } : {}),
+	};
+}
+
+export function parseSurfaceSessionExternalPr(value: unknown, label = "externalPr"): SurfaceSessionExternalPr {
+	const raw = parseRecord(value, label);
+	const provider = raw.provider === undefined ? undefined : parseOptionalText(raw.provider, `${label}.provider`, 40);
+	const repository =
+		raw.repository === undefined ? undefined : parseOptionalText(raw.repository, `${label}.repository`, 200);
+	const number =
+		raw.number === undefined || raw.number === null
+			? raw.number
+			: parseInteger(raw.number, `${label}.number`, 1, 100_000_000);
+	const url = raw.url === undefined ? undefined : parseOptionalText(raw.url, `${label}.url`, 512);
+	const state = raw.state === undefined ? undefined : parseOptionalText(raw.state, `${label}.state`, 40);
+	const headBranch =
+		raw.headBranch === undefined ? undefined : parseOptionalText(raw.headBranch, `${label}.headBranch`, 200);
+	const baseBranch =
+		raw.baseBranch === undefined ? undefined : parseOptionalText(raw.baseBranch, `${label}.baseBranch`, 200);
+	const title = raw.title === undefined ? undefined : parseOptionalText(raw.title, `${label}.title`, 240);
+	const updatedAt =
+		raw.updatedAt === undefined ? undefined : parseOptionalText(raw.updatedAt, `${label}.updatedAt`, 64);
+	return {
+		...(provider !== undefined ? { provider } : {}),
+		...(repository !== undefined ? { repository } : {}),
+		...(number !== undefined ? { number } : {}),
+		...(url !== undefined ? { url } : {}),
+		...(state !== undefined ? { state } : {}),
+		...(headBranch !== undefined ? { headBranch } : {}),
+		...(baseBranch !== undefined ? { baseBranch } : {}),
+		...(title !== undefined ? { title } : {}),
+		...(updatedAt !== undefined ? { updatedAt } : {}),
+	};
+}
+
+export function parseSurfaceCombineTracksResult(value: unknown, label = "combineTracks"): SurfaceCombineTracksResult {
+	const raw = parseRecord(value, label);
+	const mode = parseEnum(raw.mode, ["preview", "land"] as const, `${label}.mode`);
+	const sessionIds = parseUuidArray(raw.sessionIds, `${label}.sessionIds`, 8);
+	if (mode === "preview") {
+		return {
+			mode: "preview",
+			sessionIds,
+			previewState: parseSurfacePreviewCompositionState(raw.previewState, `${label}.previewState`),
+		};
+	}
+	return {
+		mode: "land",
+		sessionIds,
+		changeIds: parseUuidArray(raw.changeIds ?? [], `${label}.changeIds`, 256),
+		jobId: parseOptionalUuid(raw.jobId, `${label}.jobId`),
+	};
+}
+
 export function parseSurfaceSession(value: unknown, label = "session"): SurfaceSession {
 	const raw = parseRecord(value, label);
 	if (typeof raw.hasActiveChat !== "boolean") throw new WireValueError(`${label}.hasActiveChat`);
@@ -1068,6 +1292,40 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 					: (() => {
 							throw new WireValueError(`${label}.supersedeKey`);
 						})();
+	const trackBranch =
+		raw.trackBranch === undefined ? undefined : parseOptionalText(raw.trackBranch, `${label}.trackBranch`, 200);
+	const checksSummary =
+		raw.checksSummary === undefined
+			? undefined
+			: raw.checksSummary === null
+				? null
+				: parseSurfaceSessionChecksSummary(raw.checksSummary, `${label}.checksSummary`);
+	let progressSteps: SurfaceSessionProgressStep[] | undefined;
+	if (raw.progressSteps !== undefined && raw.progressSteps !== null) {
+		if (!Array.isArray(raw.progressSteps) || raw.progressSteps.length > 16) {
+			throw new WireValueError(`${label}.progressSteps`);
+		}
+		progressSteps = raw.progressSteps.map((item, index) =>
+			parseSurfaceSessionProgressStep(item, `${label}.progressSteps[${index}]`),
+		);
+	}
+	const currentActivity =
+		raw.currentActivity === undefined
+			? undefined
+			: parseOptionalText(raw.currentActivity, `${label}.currentActivity`, 240);
+	const externalPr =
+		raw.externalPr === undefined
+			? undefined
+			: raw.externalPr === null
+				? null
+				: parseSurfaceSessionExternalPr(raw.externalPr, `${label}.externalPr`);
+	let artifacts: SurfaceSessionArtifact[] | undefined;
+	if (raw.artifacts !== undefined && raw.artifacts !== null) {
+		if (!Array.isArray(raw.artifacts) || raw.artifacts.length > 64) {
+			throw new WireValueError(`${label}.artifacts`);
+		}
+		artifacts = raw.artifacts.map((item, index) => parseSurfaceSessionArtifact(item, `${label}.artifacts[${index}]`));
+	}
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -1082,6 +1340,12 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
 		...(supersedeKey !== undefined ? { supersedeKey } : {}),
+		...(trackBranch !== undefined ? { trackBranch } : {}),
+		...(checksSummary !== undefined ? { checksSummary } : {}),
+		...(progressSteps !== undefined ? { progressSteps } : {}),
+		...(currentActivity !== undefined ? { currentActivity } : {}),
+		...(externalPr !== undefined ? { externalPr } : {}),
+		...(artifacts !== undefined ? { artifacts } : {}),
 		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
 		hasActiveChat: raw.hasActiveChat,
 		question,
@@ -1200,9 +1464,19 @@ export function parseSurfacePreviewCompositionState(
 	if (!Array.isArray(raw.compareFrames) || raw.compareFrames.length > SURFACE_MAX_COMPARE_VARIANTS) {
 		throw new WireValueError(`${label}.compareFrames`);
 	}
+	const selectedSessionId =
+		raw.selectedSessionId === undefined
+			? undefined
+			: parseOptionalUuid(raw.selectedSessionId, `${label}.selectedSessionId`);
+	const previewScope =
+		raw.previewScope === undefined || raw.previewScope === null
+			? undefined
+			: parseEnum(raw.previewScope, SURFACE_PREVIEW_SCOPES, `${label}.previewScope`);
 	return {
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
 		mode,
+		...(selectedSessionId !== undefined ? { selectedSessionId } : {}),
+		...(previewScope !== undefined ? { previewScope } : {}),
 		primary: parseSurfacePreviewFrameState(raw.primary, `${label}.primary`),
 		compareFrames: raw.compareFrames.map((item, index) => {
 			const entry = parseRecord(item, `${label}.compareFrames[${index}]`);

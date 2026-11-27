@@ -6,10 +6,12 @@ import {
 	parsePointToChangeTarget,
 	parseSurfaceAppRuntimeConfig,
 	parseSurfaceAutomationSummary,
+	parseSurfaceCombineTracksResult,
 	parseSurfaceMigrationChecklist,
 	parseSurfacePreviewCompositionState,
 	parseSurfaceReconciliation,
 	parseSurfaceSession,
+	parseSurfaceSessionArtifact,
 	parseSurfaceSessionImages,
 	parseSurfaceSummary,
 	parseSurfaceUnseenNotes,
@@ -20,12 +22,14 @@ import {
 	type SurfaceArchetype,
 	type SurfaceAutomationSummary,
 	type SurfaceChangeUnit,
+	type SurfaceCombineTracksResult,
 	type SurfaceImageRef,
 	type SurfaceKind,
 	type SurfaceMigrationChecklist,
 	type SurfacePreviewCompositionState,
 	type SurfaceReconciliation,
 	type SurfaceSession,
+	type SurfaceSessionArtifact,
 	type SurfaceSessionImages,
 	type SurfaceSessionMessage,
 	type SurfaceSummary,
@@ -510,6 +514,56 @@ export class CloudSurfacesClient {
 		return parseSurfacePreviewCompositionState(data, "previewState");
 	}
 
+	async selectSurfaceTrackPreview(
+		surfaceId: string,
+		options: {
+			readonly sessionId?: string | null;
+			readonly combineSessionIds?: readonly string[] | null;
+			readonly activeRoute?: string;
+		} = {},
+	): Promise<SurfacePreviewCompositionState> {
+		const data = await this.#rpc("qorpera_select_surface_track_preview", {
+			p_surface_id: surfaceId,
+			p_session_id: options.sessionId ?? null,
+			p_combine_session_ids: options.combineSessionIds ? [...options.combineSessionIds] : null,
+			p_active_route: options.activeRoute ?? "/",
+		});
+		return parseSurfacePreviewCompositionState(data, "previewState");
+	}
+
+	async shipSurfaceTrack(sessionId: string, publish = false): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_ship_surface_track", {
+			p_session_id: sessionId,
+			p_publish: publish,
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
+	async combineSurfaceTracks(
+		surfaceId: string,
+		sessionIds: readonly string[],
+		land = false,
+	): Promise<SurfaceCombineTracksResult> {
+		const data = await this.#rpc("qorpera_combine_surface_tracks", {
+			p_surface_id: surfaceId,
+			p_session_ids: [...sessionIds],
+			p_land: land,
+		});
+		return parseSurfaceCombineTracksResult(data, "combineTracks");
+	}
+
+	async cancelSurfaceSessionTurn(sessionId: string): Promise<SurfaceSession> {
+		const data = await this.#rpc("qorpera_cancel_surface_session_turn", {
+			p_session_id: sessionId,
+		});
+		return parseSurfaceSession(data, "session");
+	}
+
+	async getSurfaceSessionArtifact(artifactId: string, signal?: AbortSignal): Promise<SurfaceSessionArtifact> {
+		const data = await this.#rpc("qorpera_get_surface_session_artifact", { p_artifact_id: artifactId }, signal);
+		return parseSurfaceSessionArtifact(data, "artifact");
+	}
+
 	async publishSurface(surfaceId: string): Promise<SurfaceSummary> {
 		const data = await this.#rpc("qorpera_publish_surface", { p_surface_id: surfaceId });
 		return parseSurfaceSummary(data, "surface");
@@ -647,10 +701,12 @@ export type {
 	SurfaceAppTargetEnv,
 	SurfaceAutomationSummary,
 	SurfaceChangeUnit,
+	SurfaceCombineTracksResult,
 	SurfaceMigrationChecklist,
 	SurfacePreviewCompositionState,
 	SurfaceReconciliation,
 	SurfaceSession,
+	SurfaceSessionArtifact,
 	SurfaceSessionMessage,
 	SurfaceSummary,
 	SurfaceWorkspace,

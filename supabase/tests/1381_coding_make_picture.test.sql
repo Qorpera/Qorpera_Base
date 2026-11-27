@@ -12,7 +12,7 @@ begin
 		raise exception 'qorpera_folder_commit missing expected coding make_picture patch or markers';
 	end if;
 	if strpos(v_begin, '''make_picture''') = 0
-		or strpos(v_begin, 'case when v_is_surface then 9 else 7 end') = 0 then
+		or strpos(v_begin, 'case when v_is_surface then 11 else 7 end') = 0 then
 		raise exception 'qorpera_begin_native_coding_execution missing make_picture allowlist update';
 	end if;
 end $$;
