@@ -1,9 +1,10 @@
-import type { InteractionAnswer, InteractionOutcome } from "../../cloud/interactions.ts";
+import { type InteractionAnswer, type InteractionOutcome, questionInput } from "../../cloud/interactions.ts";
 import type { OpenQuestion } from "../../cloud/open-questions.ts";
 import type { HostedStaffAgent, JsonValue } from "../../cloud/types.ts";
 import { agentFigure } from "../../ui/avatar.ts";
 import { h, icon, replace } from "../../ui/dom.ts";
 import { type InteractionCardContext, renderInteractionCard } from "../../ui/interaction-card.ts";
+import type { MailAddressCalls } from "../../ui/mail-address.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { ConversationState } from "../company.ts";
 import { ANSWERED_HOLD_MS, type OpenQuestions, questionApps } from "../open-questions.ts";
@@ -79,6 +80,7 @@ export class QuestionDock {
 	#shownKey = "";
 	#count = 0;
 	#stopWatch: () => void;
+	#cardAbort: AbortController | undefined;
 
 	constructor(host: QuestionDockHost, match: QuestionMatch) {
 		this.#host = host;
@@ -99,6 +101,8 @@ export class QuestionDock {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		this.#cardAbort?.abort();
+		this.#cardAbort = undefined;
 		this.#stopWatch();
 		this.#watched?.stop();
 		this.#watched = undefined;
@@ -149,6 +153,8 @@ export class QuestionDock {
 		// An answer shows the moment it is sent (the conversation's own); once the cloud took it, it is held (#answer).
 		const answer = this.#answerOf(current);
 		const index = cards.indexOf(current);
+		const canChooseMail =
+			questionInput(current.request) === "mail_address" ? this.#host.questions.canChooseMailAddress() : null;
 		const key = JSON.stringify([
 			current.interactionId,
 			answer && [answer.outcome, answer.answer, answer.pending],
@@ -158,11 +164,14 @@ export class QuestionDock {
 			this.#folded,
 			this.#held.has(current.interactionId),
 			presentationLocale(),
+			canChooseMail,
 		]);
 		if (key === this.#shownKey && !this.el.hidden) return;
 		const fresh =
 			this.el.hidden || this.#shownKey === "" || !this.#shownKey.startsWith(`["${current.interactionId}"`);
 		this.#shownKey = key;
+		this.#cardAbort?.abort();
+		this.#cardAbort = undefined;
 		this.el.hidden = false;
 		// Another card comes up while the last one flies off (the member went to another concept): it does not fly.
 		if (fresh) this.el.classList.remove("is-flying");
@@ -241,6 +250,9 @@ export class QuestionDock {
 				: null,
 			control("chevron-down", t("Hide the question"), () => this.#setFolded(true)),
 		);
+		const cardAbort = new AbortController();
+		this.#cardAbort = cardAbort;
+		const address = !answered && questionInput(current.request) === "mail_address";
 		const card = renderInteractionCard(
 			{
 				id: current.interactionId,
@@ -254,8 +266,10 @@ export class QuestionDock {
 				memberName: (userId) => this.#host.memberName(userId),
 				canAnswer: !answered,
 				inDock: true,
+				signal: cardAbort.signal,
 				...(this.#host.image ? { image: this.#host.image } : {}),
 				...(this.#host.app ? { app: this.#host.app } : {}),
+				...(address ? { mailAddress: this.#mailAddress(current, cardAbort.signal) } : {}),
 				answer: (outcome, value) => this.#answer(current, outcome, value),
 			},
 		);
@@ -289,6 +303,45 @@ export class QuestionDock {
 			h("span", { class: "question-dock-pill-label" }, label),
 			count > 1 ? h("span", { class: "question-dock-badge" }, String(count)) : null,
 		);
+	}
+
+	#mailAddress(question: OpenQuestion, signal: AbortSignal): MailAddressCalls {
+		const calls = this.#host.questions.mailAddressCalls(question);
+		return {
+			...calls,
+			choose: async (handle) => {
+				this.#errors.delete(question.interactionId);
+				let address: string;
+				try {
+					address = await calls.choose(handle);
+				} catch (error) {
+					if (signal.aborted) {
+						const said = this.#host.questions.conversationState(question.sessionId)?.interactionError;
+						this.#errors.set(
+							question.interactionId,
+							said ??
+								(error instanceof Error && error.message
+									? error.message
+									: t("The address could not be made. Try again.")),
+						);
+						this.#shownKey = "";
+						this.#draw();
+					}
+					throw error;
+				}
+				const answer = this.#host.questions.conversationState(question.sessionId)?.interactionAnswers?.[
+					question.interactionId
+				] ?? {
+					outcome: "answered",
+					answer: { values: [address] },
+					answeredAt: new Date().toISOString(),
+				};
+				this.#hold(question, { ...answer, pending: false });
+				this.#shownKey = "";
+				this.#draw();
+				return address;
+			},
+		};
 	}
 
 	async #answer(question: OpenQuestion, outcome: InteractionOutcome, value: Record<string, JsonValue>): Promise<void> {
@@ -382,6 +435,8 @@ export class QuestionDock {
 	}
 
 	#leave(): void {
+		this.#cardAbort?.abort();
+		this.#cardAbort = undefined;
 		if (reducedMotion()) {
 			this.el.hidden = true;
 			replace(this.el);

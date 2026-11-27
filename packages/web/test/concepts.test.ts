@@ -89,6 +89,13 @@ function company(questions: OpenQuestion[] = []) {
 		conversations,
 		conversation,
 		setExecutionSponsor: () => {},
+		canChooseMailAddress: () => true,
+		mailAddressCalls: () => ({
+			canChoose: true,
+			handles: async () => ({ domain: "inbox.qorpera.com", handles: [] }),
+			status: async () => "free" as const,
+			choose: async (handle: string) => `${handle}@inbox.qorpera.com`,
+		}),
 		answerInteraction: async () => {},
 	};
 	const agent = { id: AGENT, displayName: "Bob", appearance: {} } as unknown as HostedStaffAgent;

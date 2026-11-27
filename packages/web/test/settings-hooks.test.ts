@@ -399,7 +399,7 @@ describe("webhooks and mailboxes", () => {
 		add("mailbox", "sales");
 		await settle();
 		expect(section("mailbox").textContent).toContain(
-			"A new address is a name, a dot and the company's handle, like hello.acme.",
+			"A new address is the company's handle or a name, a dot and the handle, like acme or sales.acme.",
 		);
 
 		add("mailbox", "a.b");

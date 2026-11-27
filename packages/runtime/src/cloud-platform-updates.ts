@@ -109,7 +109,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-17",
 		title: "A company with no name yet, and its email address",
-		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as hello.acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
+		text: "A company can now start with no name: its vision's first line is then # No name yet. Call it the company and never invent a name; once the idea is clear, offer the founders up to three names once on a question card with a Not yet option. You no longer open the company's first email address: once it has a name and no address, ask the founder on an address card (ask_member with allowCustom and the address input), with handles made from the name as its options. They make the address, such as acme@…, and the handle stays the company's. More addresses with manage_hook are <box>.<handle>, under a handle the company owns.",
 	},
 	{
 		id: "coworker-messages-wake-on-request",
@@ -544,6 +544,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-27",
 		title: "Company connections: Gmail, Google Drive, and GitHub",
 		text: "Owners and admins can now connect company Gmail, Google Drive, and GitHub accounts again under Settings → Company connections (including a GitHub personal access token). Every agent gets those tools on its next run, and a connected GitHub account lets manage_code import existing private repositories while Gmail and Google Drive let agents read and bring in existing emails and documents. Keep new code hosted in Qorpera by default without asking for GitHub; suggest Settings → Company connections only when bringing in existing private code, mail, or files.",
+	},
+	{
+		id: "bare-company-email-handles",
+		kind: "behaviour",
+		date: "2026-11-27",
+		title: "Company email addresses use the bare handle",
+		text: "The company email address card now creates the bare company handle directly, such as acme@… instead of hello.acme@…, and lets founders edit the handle inline with live availability checks anywhere the card appears. Additional addresses created in Mailbox or with manage_hook stay <box>.<handle>, such as sales.acme@…, under a handle the company already owns. Never tell founders their main address starts with hello. or assume a hello. prefix.",
 	},
 ]);
 

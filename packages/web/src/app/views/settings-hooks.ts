@@ -413,7 +413,7 @@ export class HooksView {
 		const state = this.#handleCheck.state;
 		line.textContent = handleWords(state);
 		line.classList.toggle("is-ok", state === "free" || state === "ours");
-		line.classList.toggle("is-error", state === "taken" || state === "invalid");
+		line.classList.toggle("is-error", state === "taken" || state === "invalid" || state === "reserved");
 	}
 
 	async #copy(hook: EventHook): Promise<void> {

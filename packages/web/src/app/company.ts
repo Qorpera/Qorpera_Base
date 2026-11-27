@@ -3853,11 +3853,11 @@ export class CompanyController {
 		};
 	}
 
-	async chooseMailAddress(sessionId: string, interactionId: string, handle: string): Promise<void> {
+	async chooseMailAddress(sessionId: string, interactionId: string, handle: string): Promise<string> {
 		this.assertCanSend(sessionId);
 		this.conversation(sessionId).set({ interactionError: undefined });
 		const hooks = createWebEventHooks(this.#api.cloud, this.profile);
-		const localPart = `hello.${handle}`;
+		const localPart = handle;
 		let address: string | undefined;
 		try {
 			this.#answerSponsor(sessionId);
@@ -3871,6 +3871,7 @@ export class CompanyController {
 		}
 		if (!address) throw new Error(t("The address could not be made. Try again."));
 		await this.answerInteraction(sessionId, interactionId, "answered", { values: [address] });
+		return address;
 	}
 
 	/** The quotes of outside content in a conversation's draft: its records' words wherever they stand in «» marks. */

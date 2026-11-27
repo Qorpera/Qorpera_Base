@@ -53,9 +53,10 @@ select pg_temp.base_error($$insert into public.qorpera_company_mail_handles(hand
 
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 do $$
-declare c_shape constant text := 'A new address is a name, a dot and the company''s handle, like hello.acme';
+declare c_shape constant text := 'A new address is the company''s handle or a name, a dot and the handle, like acme or sales.acme';
 begin
-	perform pg_temp.base_error(pg_temp.mh_box('support'), '22023', c_shape);
+	perform pg_temp.base_error(pg_temp.mh_box('a'), '22023', c_shape);
+	perform pg_temp.base_error(pg_temp.mh_box('under_score'), '22023', c_shape);
 	perform pg_temp.base_error(pg_temp.mh_box('a.b.base'), '22023', c_shape);
 	perform pg_temp.base_error(pg_temp.mh_box(repeat('b', 40) || '.base'), '22023', c_shape);
 	perform pg_temp.base_error(pg_temp.mh_box('hello.' || repeat('h', 25)), '22023', c_shape);

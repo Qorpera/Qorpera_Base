@@ -6,7 +6,7 @@ export interface MailAddressCalls {
 	readonly canChoose: boolean;
 	readonly handles: (signal: AbortSignal) => Promise<MailHandles>;
 	readonly status: (handle: string, signal: AbortSignal) => Promise<MailHandleStatus>;
-	readonly choose: (handle: string) => Promise<void>;
+	readonly choose: (handle: string) => Promise<string>;
 }
 
 export const HANDLE_MAX_CHARACTERS = 24;
@@ -22,13 +22,14 @@ export function cleanHandle(text: string): string {
 		.slice(0, HANDLE_MAX_CHARACTERS);
 }
 
-export type HandleState = MailHandleStatus | "checking" | "unknown";
+export type HandleState = MailHandleStatus | "reserved" | "checking" | "unknown";
 
-const HANDLE_WORDS: Record<MailHandleStatus | "checking", string> = {
+const HANDLE_WORDS: Record<MailHandleStatus | "reserved" | "checking", string> = {
 	free: phrase("Free"),
 	ours: phrase("Already yours"),
 	taken: phrase("That one belongs to another company"),
 	invalid: phrase("Use a–z, 0–9 and hyphens"),
+	reserved: phrase("This mailbox name is reserved. Choose another."),
 	checking: phrase("Checking…"),
 };
 
@@ -71,7 +72,7 @@ export class HandleCheck {
 		this.#timer = setTimeout(() => {
 			this.#status(handle, abort.signal).then(
 				(status) => {
-					if (!abort.signal.aborted) this.#show(status);
+					if (!abort.signal.aborted) this.#show(status === "invalid" ? "reserved" : status);
 				},
 				() => {
 					if (!abort.signal.aborted) this.#show("unknown");
@@ -100,7 +101,7 @@ export function mailboxRefusal(error: unknown): string {
 	if (code === "0A000") return t("Company mail is not set up yet.");
 	if (code === "22023" && message.includes("reserved")) return t("This mailbox name is reserved. Choose another.");
 	if (code === "22023" && message.includes("handle"))
-		return t("A new address is a name, a dot and the company's handle, like hello.acme.");
+		return t("A new address is the company's handle or a name, a dot and the handle, like acme or sales.acme.");
 	if (code === "42501") return t("Only founders and admins can choose the address");
 	return describeError(error);
 }

@@ -25,6 +25,7 @@ import { type OpenQuestion, parseOpenQuestions } from "../src/cloud/open-questio
 import type { ActionReviewAnswer } from "../src/cloud/review-rules.ts";
 import type { HostedStaffAgent, JsonValue } from "../src/cloud/types.ts";
 import { refreshAppPreviews } from "../src/ui/interaction-card.ts";
+import type { MailAddressCalls } from "../src/ui/mail-address.ts";
 
 const SESSION = "11111111-1111-4111-8111-111111111111";
 const AGENT = "22222222-2222-4222-8222-222222222222";
@@ -134,6 +135,8 @@ function company(
 		company?: OpenDecision[];
 		spectator?: boolean;
 		draft?: (action: EmailDraftAction | "load", content?: EmailDraftContent) => Promise<EmailDraftState>;
+		mailRole?: "owner" | "admin" | "contributor";
+		mailAddress?: Partial<MailAddressCalls>;
 		refuse?: string;
 		/** The cloud takes the answer only when this resolves. */
 		gate?: Promise<void>;
@@ -170,7 +173,14 @@ function company(
 		listOpenQuestions: vi.fn(async () => questions),
 		setOpenDecisions: vi.fn(),
 		userId: MEMBER,
-		store: new Store({ team: { capabilities: { read: true, write: options.spectator !== true } } }),
+		store: new Store<{
+			team?: { role?: "owner" | "admin" | "contributor"; capabilities: { read: boolean; write: boolean } };
+		}>({
+			team: {
+				...(options.mailRole ? { role: options.mailRole } : {}),
+				capabilities: { read: true, write: options.spectator !== true },
+			},
+		}),
 		listCompanyOpenDecisions: vi.fn(async (): Promise<OpenDecision[]> => {
 			if (!options.company)
 				throw new CloudRpcError(
@@ -244,6 +254,23 @@ function company(
 		conversations,
 		conversation,
 		setExecutionSponsor: vi.fn(),
+		canChooseMailAddress: () => {
+			const role = controller.store.get().team?.role;
+			return role === "owner" || role === "admin";
+		},
+		mailAddressCalls: vi.fn(
+			(sessionId: string, interactionId: string): MailAddressCalls => ({
+				canChoose: controller.canChooseMailAddress(),
+				handles: vi.fn(async () => ({ domain: "inbox.qorpera.com", handles: [] })),
+				status: vi.fn(async (handle: string) => (handle === "taken" ? ("taken" as const) : ("free" as const))),
+				choose: vi.fn(async (handle: string) => {
+					const address = `${handle}@inbox.qorpera.com`;
+					await controller.answerInteraction(sessionId, interactionId, "answered", { values: [address] });
+					return address;
+				}),
+				...options.mailAddress,
+			}),
+		),
 		answerInteraction: vi.fn(
 			async (
 				sessionId: string,
@@ -2439,5 +2466,215 @@ describe("the decisions dock in the Co-Founder chat", () => {
 		await settle();
 		unsub();
 		expect(updates).toBe(0);
+	});
+
+	it("edits, checks availability, and creates a bare-handle email address inline in DecisionDock", async () => {
+		const mailCard: InteractionRequest = {
+			surface: "question",
+			title: "Pick namah's company email address",
+			body: "Pick a handle below or enter your own.",
+			payload: {
+				allowCustom: true,
+				input: { kind: "mail_address" },
+				options: [
+					{ label: "namah", value: "namah" },
+					{ label: "namah-dk", value: "namah-dk" },
+				],
+			},
+		};
+		const statusSignals: AbortSignal[] = [];
+		const handleSignals: AbortSignal[] = [];
+		const selectSessionAccount = vi.fn(async () => "conn-1");
+		const listConnections = vi.fn(async () => ({ connections: [] }));
+		const status = vi.fn(async (handle: string, signal: AbortSignal) => {
+			statusSignals.push(signal);
+			return handle === "taken" ? ("taken" as const) : ("free" as const);
+		});
+		const handles = vi.fn(async (signal: AbortSignal) => {
+			handleSignals.push(signal);
+			return { domain: "inbox.qorpera.com", handles: [] };
+		});
+		const { host, controller, answers } = company({
+			questions: [question(CARD_A, mailCard)],
+			mailRole: "owner",
+			mailAddress: { status, handles },
+			accounts: { listConnections, selectSessionAccount },
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".interaction-address-box")).toBeNull();
+		const field = dock.el.querySelector<HTMLInputElement>(".interaction-address-handle")!;
+		expect(field.value).toBe("namah");
+		expect(field.disabled).toBe(false);
+		expect(dock.el.querySelector(".interaction-address-domain")?.textContent).toBe("@inbox.qorpera.com");
+
+		await vi.advanceTimersByTimeAsync(260);
+		await settle();
+		expect(status).toHaveBeenCalledWith("namah", expect.any(AbortSignal));
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe("Free");
+		const useButton = () =>
+			[...dock.el.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")].find(
+				(pill) => pill.textContent === "Use this address",
+			);
+		expect(useButton()?.disabled).toBe(false);
+
+		field.value = "taken";
+		field.dispatchEvent(new Event("input"));
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe("Checking…");
+		expect(useButton()?.disabled).toBe(true);
+		await vi.advanceTimersByTimeAsync(260);
+		await settle();
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe(
+			"That one belongs to another company",
+		);
+		expect(useButton()?.disabled).toBe(true);
+
+		field.value = "my-namah";
+		field.dispatchEvent(new Event("input"));
+		await vi.advanceTimersByTimeAsync(260);
+		await settle();
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe("Free");
+		expect(useButton()?.disabled).toBe(false);
+
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		useButton()!.click();
+		await settle();
+		expect(selectSessionAccount).toHaveBeenCalledWith(SESSION, controller.signal);
+		expect(answers).toEqual([[SESSION, CARD_A, "answered", { values: ["my-namah@inbox.qorpera.com"] }]]);
+		expect(dock.el.hidden).toBe(true);
+		expect(dock.decided).toHaveLength(1);
+		expect(dock.decided[0]?.state).toBe("sent");
+		const decided = dock.renderDecided(dock.decided[0]!);
+		expect(decided.querySelector(".decided-rule")?.textContent).toBe("Decided");
+		expect(decided.querySelector(".decided-answer")?.textContent).toBe("my-namah@inbox.qorpera.com");
+		expect(handleSignals[0]?.aborted).toBe(true);
+		expect(statusSignals.at(-1)?.aborted).toBe(true);
+		dock.dispose();
+	});
+
+	it("updates DecisionDock mail address editability when team role loads and aborts probes on dispose", async () => {
+		const mailCard: InteractionRequest = {
+			surface: "question",
+			title: "Your company's email address",
+			payload: {
+				allowCustom: true,
+				input: { kind: "mail_address" },
+				options: [{ label: "namah", value: "namah" }],
+			},
+		};
+		const handleSignals: AbortSignal[] = [];
+		const handles = vi.fn((signal: AbortSignal) => {
+			handleSignals.push(signal);
+			return new Promise<{ domain: string | null; handles: string[] }>(() => {});
+		});
+		const { host, controller } = company({
+			questions: [question(CARD_A, mailCard)],
+			mailAddress: { handles },
+		});
+		const dock = new DecisionDock(host);
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector<HTMLInputElement>(".interaction-address-handle")?.disabled).toBe(true);
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe(
+			"Only founders and admins can choose the address",
+		);
+		expect(handleSignals).toHaveLength(1);
+		expect(handleSignals[0]?.aborted).toBe(false);
+
+		controller.store.set({ team: { role: "owner", capabilities: { read: true, write: true } } });
+		await settle();
+		expect(handleSignals[0]?.aborted).toBe(true);
+		expect(handleSignals).toHaveLength(2);
+		expect(handleSignals[1]?.aborted).toBe(false);
+		expect(dock.el.querySelector<HTMLInputElement>(".interaction-address-handle")?.disabled).toBe(false);
+
+		dock.dispose();
+		expect(handleSignals[1]?.aborted).toBe(true);
+	});
+
+	it("surfaces mail address refusal in DecisionDock when creation fails inline or answer fails after unmount", async () => {
+		const mailCard: InteractionRequest = {
+			surface: "question",
+			title: "Your company's email address",
+			payload: {
+				allowCustom: true,
+				input: { kind: "mail_address" },
+				options: [{ label: "namah", value: "namah" }],
+			},
+		};
+		const inlineRefusal = company({
+			questions: [question(CARD_A, mailCard)],
+			mailRole: "owner",
+			mailAddress: {
+				choose: vi.fn(async () => {
+					throw new Error("This address is taken.");
+				}),
+			},
+		});
+		const dock1 = new DecisionDock(inlineRefusal.host);
+		document.body.append(dock1.el);
+		await settle();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		await settle();
+		[...dock1.el.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")]
+			.find((pill) => pill.textContent === "Use this address")!
+			.click();
+		await settle();
+		expect(dock1.el.querySelector(".interaction-address-check")?.textContent).toBe("This address is taken.");
+		expect(dock1.el.querySelector(".decision-error")).toBeNull();
+		dock1.dispose();
+
+		const answerRefusal = company({
+			questions: [question(CARD_A, mailCard)],
+			mailRole: "owner",
+			refuse: "Select an active model account, then try again.",
+		});
+		const dock2 = new DecisionDock(answerRefusal.host);
+		document.body.append(dock2.el);
+		await settle();
+		await vi.advanceTimersByTimeAsync(SETTLE_MS);
+		await settle();
+		[...dock2.el.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")]
+			.find((pill) => pill.textContent === "Use this address")!
+			.click();
+		await settle();
+		expect(dock2.el.hidden).toBe(false);
+		expect(dock2.el.querySelector(".decision-error")?.textContent).toBe(
+			"Select an active model account, then try again.",
+		);
+		dock2.dispose();
+	});
+
+	it("wires mail address cards inline in QuestionDock with live availability check and abort cleanup", async () => {
+		const appMailCard: InteractionRequest = {
+			surface: "question",
+			title: "Pick namah's company email address",
+			body: "See [the shop](app:shop-calm).",
+			payload: {
+				allowCustom: true,
+				input: { kind: "mail_address" },
+				options: [{ label: "namah", value: "namah" }],
+			},
+		};
+		const { host, answers } = company({
+			questions: [question(CARD_A, appMailCard)],
+			mailRole: "owner",
+		});
+		const dock = new QuestionDock(host, (apps) => apps.has("shop-calm"));
+		document.body.append(dock.el);
+		await settle();
+		expect(dock.el.querySelector(".interaction-address-box")).toBeNull();
+		expect(dock.el.querySelector<HTMLInputElement>(".interaction-address-handle")?.disabled).toBe(false);
+		await vi.advanceTimersByTimeAsync(260);
+		await settle();
+		expect(dock.el.querySelector(".interaction-address-check")?.textContent).toBe("Free");
+		[...dock.el.querySelectorAll<HTMLButtonElement>(".interaction-actions .btn")]
+			.find((pill) => pill.textContent === "Use this address")!
+			.click();
+		await settle();
+		expect(answers).toEqual([[SESSION, CARD_A, "answered", { values: ["namah@inbox.qorpera.com"] }]]);
+		expect(dock.el.textContent).toContain("Sent to Bob");
+		dock.dispose();
 	});
 });
