@@ -359,14 +359,27 @@ $old$				update public.qorpera_surface_reconciliations
 $new$				update public.qorpera_surface_reconciliations
 				set auto_approve_after = false, auto_publish_after = false, updated_at = v_now
 				where id = v_rec.id;$new$,
-$old$						'reconciliationId', v_rec.id,
-						'autoPublish', v_surface.auto_publish$old$,
-$new$						'reconciliationId', v_rec.id,
-						'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
-$old$						'changeIds', to_jsonb(v_rec.selected_change_ids),
-						'autoPublish', v_surface.auto_publish$old$,
-$new$						'changeIds', to_jsonb(v_rec.selected_change_ids),
-						'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
+$old$							'reconciliationId', v_rec.id,
+							'autoPublish', v_surface.auto_publish$old$,
+$new$							'reconciliationId', v_rec.id,
+							'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
+$old$							'changeIds', to_jsonb(v_rec.selected_change_ids),
+							'autoPublish', v_surface.auto_publish$old$,
+$new$							'changeIds', to_jsonb(v_rec.selected_change_ids),
+							'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
+$old$							if v_retry_rec.id is not null and v_retry_rec.status in ('queued', 'running') then
+								v_retry_enqueued := true;$old$,
+$new$							if v_retry_rec.id is not null and v_retry_rec.status in ('queued', 'running') then
+								if coalesce(v_rec.auto_publish_after, false) then
+									update public.qorpera_surface_reconciliations
+									set auto_publish_after = true, updated_at = v_now
+									where id = v_retry_rec.id;
+								end if;
+								v_retry_enqueued := true;$new$,
+$old$										'reconciliationId', v_retry_rec.id,
+										'autoPublish', v_surface.auto_publish$old$,
+$new$										'reconciliationId', v_retry_rec.id,
+										'autoPublish', (v_surface.auto_publish or coalesce(v_rec.auto_publish_after, false))$new$,
 $old$				error_detail = case when status in ('queued', 'running') then 'Change updated' else error_detail end,
 				auto_approve_after = false,$old$,
 $new$				error_detail = case when status in ('queued', 'running') then 'Change updated' else error_detail end,
