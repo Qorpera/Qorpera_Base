@@ -455,6 +455,16 @@ const ICON_PATHS: Record<string, string[]> = {
 		"M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2",
 		"M10 11v6M14 11v6",
 	],
+	star: ["M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2Z"],
+	ban: ["M12 2a10 10 0 1 0 0 20 10 10 0 1 0 0-20Z", "m4.93 4.93 14.14 14.14"],
+	archive: ["M3 4h18v4H3Z", "M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8", "M10 12h4"],
+	restore: ["M3 7v6h6", "M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"],
+	unsubscribe: [
+		"M22 10.5V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v12c0 1.1.9 2 2 2h12.5",
+		"m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7",
+		"m17 17 5 5",
+		"m22 17-5 5",
+	],
 };
 
 export function icon(name: keyof typeof ICON_PATHS | string): SVGSVGElement {
