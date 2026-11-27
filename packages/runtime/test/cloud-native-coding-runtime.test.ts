@@ -3863,4 +3863,168 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 			await rm(identityRoot, { recursive: true, force: true });
 		}
 	});
+
+	it("enriches coding_record_change with git diff stats and advances lastRecordedHeadSha except for optionGroup siblings", async () => {
+		const identityRoot = await mkdtemp(join(tmpdir(), "qcc-change-diff-"));
+		try {
+			const f = fixture();
+			const baseSha = "a".repeat(40);
+			const commit1 = "1".repeat(40);
+			const optionCommit = "2".repeat(40);
+			const commit2 = "3".repeat(40);
+			const surfaceSessionId = randomUUID();
+			f.coding.repository = { host: "qorpera", owner: "acme", name: "website", baseBranch: "main" };
+			f.coding.baseSha = baseSha;
+			(f.coding as Record<string, unknown>).surfaceSessionId = surfaceSessionId;
+
+			const diffCommands: string[] = [];
+			const diffByPair = new Map<string, string>([
+				[`${baseSha} ${commit1}`, "10\t2\tsrc/hero.ts\0"],
+				[`${commit1} ${optionCommit}`, "5\t0\tsrc/variant.ts\0"],
+				[`${commit1} ${commit2}`, "7\t3\tsrc/footer.ts\0"],
+			]);
+			vi.mocked(f.gateway.start).mockImplementation(async (_scope, input) => {
+				diffCommands.push(input.command);
+				const match = input.command.match(/git diff --numstat --no-renames -z ([0-9a-f]{40}) ([0-9a-f]{40})/);
+				const raw = match ? (diffByPair.get(`${match[1]} ${match[2]}`) ?? "") : "";
+				const encoded = Buffer.from(raw, "utf8").toString("base64");
+				const out = `__QORPERA_CHANGE_DIFF_V1__:${encoded}:__QORPERA_CHANGE_DIFF_END__\n`;
+				return {
+					schema: "qorpera.coding-command-result/v2",
+					workerId: f.scope.workerId,
+					commandId: input.commandId,
+					inputSha256: input.inputSha256,
+					state: "succeeded",
+					exitCode: 0,
+					output: out,
+					truncated: false,
+					log: { offset: 0, nextOffset: out.length, totalBytes: out.length, limitBytes: 67108864, limitReached: false },
+				};
+			});
+			const ledger = new Map<string, { receiptId: string; result: unknown }>();
+			f.control.beginToolOperation.mockImplementation(async (b, input) => {
+				let row = ledger.get(input.logicalOperationKey);
+				if (!row) {
+					row = { receiptId: input.receiptId, result: null };
+					ledger.set(input.logicalOperationKey, row);
+				}
+				return {
+					run_id: b.runId,
+					receipt_id: row.receiptId,
+					state: row.result === null ? "executing" : "completed",
+					result: row.result,
+					output_snapshot_id: null,
+					proposal_id: null,
+					folder_commit_id: null,
+				};
+			});
+			f.control.completeToolOperation.mockImplementation(async (b, input) => {
+				const row = [...ledger.values()].find((r) => r.receiptId === input.receiptId);
+				if (row) row.result = structuredClone(input.result);
+				return { run_id: b.runId, receipt_id: input.receiptId, state: "completed", result: input.result };
+			});
+
+			const recordedCalls: Record<string, unknown>[] = [];
+			const recordChange = vi.fn(async (_sessionId, req) => {
+				recordedCalls.push(structuredClone(req) as Record<string, unknown>);
+				return { changeId: randomUUID(), seq: recordedCalls.length, openChangeCount: recordedCalls.length };
+			});
+			f.turn.surfaceSession = {
+				sessionId: surfaceSessionId,
+				surfaceSlug: "website",
+				surfaceTitle: "Website",
+				sourceKind: "code_repo",
+				briefMarkdown: null,
+				repositoryKey: "acme/website",
+				folderRoot: null,
+				explorationVariantLabel: null,
+				identityContext: null,
+				sharedAssets: null,
+				pointToChangeTarget: null,
+				conflictPaths: [],
+				conflictDetails: [],
+				previewBaseChanges: [],
+				openChanges: [],
+				resolvedChanges: [],
+				recordChange,
+			};
+
+			vi.mocked(runCloudNativeRunToolSession).mockImplementationOnce(async (options) => {
+				const run = await CloudNativeToolRun.open(f.binding, options.controlPlane, options.signal);
+				try {
+					const adapters = await options.tools(
+						f.authority.identity,
+						new CloudNativeToolOperations(run, options.controlPlane),
+						run,
+					);
+					const recordTool = adapters.tools.find((tool) => tool.name === "coding_record_change")!;
+					await recordTool.execute(
+						recordTool.parseArguments({
+							title: "Update hero",
+							summary: "First stacked change",
+							commitSha: commit1,
+						}),
+						f.context,
+					);
+					await recordTool.execute(
+						recordTool.parseArguments({
+							title: "Hero variant A",
+							summary: "Option variant",
+							parentSha: commit1,
+							commitSha: optionCommit,
+							optionGroup: "hero",
+							createNew: true,
+						}),
+						f.context,
+					);
+					await recordTool.execute(
+						recordTool.parseArguments({
+							title: "Update footer",
+							summary: "Stacked on first change",
+							commitSha: commit2,
+							createNew: true,
+						}),
+						f.context,
+					);
+					const finishTool = adapters.tools.find((tool) => tool.name === "coding_finish")!;
+					await finishTool.execute(
+						finishTool.parseArguments({
+							operationKey: "fin-diff-1",
+							headSha: commit2,
+							summary: "Recorded staged changes.",
+						}),
+						f.context,
+					);
+					return { providerSessionId: "diff-thread", toolCalls: 4, codexVersion: "pinned", fencedRequests: 1 };
+				} finally {
+					run.close();
+				}
+			});
+
+			await f.runtime.execute(f.request, identityRoot, f.context.signal, f.turn);
+
+			expect(diffCommands).toHaveLength(3);
+			expect(diffCommands[0]).toContain(`${baseSha} ${commit1}`);
+			expect(diffCommands[1]).toContain(`${commit1} ${optionCommit}`);
+			expect(diffCommands[2]).toContain(`${commit1} ${commit2}`);
+			expect(recordedCalls[0]).toMatchObject({
+				commitSha: commit1,
+				affectedPaths: ["src/hero.ts"],
+				diffStats: { filesChanged: 1, additions: 10, deletions: 2 },
+			});
+			expect(recordedCalls[1]).toMatchObject({
+				commitSha: optionCommit,
+				optionGroup: "hero",
+				affectedPaths: ["src/variant.ts"],
+				diffStats: { filesChanged: 1, additions: 5, deletions: 0 },
+			});
+			expect(recordedCalls[2]).toMatchObject({
+				commitSha: commit2,
+				affectedPaths: ["src/footer.ts"],
+				diffStats: { filesChanged: 1, additions: 7, deletions: 3 },
+			});
+		} finally {
+			await rm(identityRoot, { recursive: true, force: true });
+		}
+	});
 });

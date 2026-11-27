@@ -676,6 +676,8 @@ const CHANGE_DIFF_MAX_OUTPUT_BYTES = 256 * 1024;
 const CHANGE_DIFF_MAX_PATHS = 500;
 const CHANGE_DIFF_MAX_PATH_CHARS = 512;
 const CHANGE_DIFF_MARKER = "__QORPERA_CHANGE_DIFF_V1__";
+const CHANGE_DIFF_END_MARKER = "__QORPERA_CHANGE_DIFF_END__";
+const CHANGE_DIFF_BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 const CHANGE_DIFF_SHA_RE = /^[0-9a-f]{40}$/;
 
 export interface CodingChangeDiffSummary {
@@ -716,19 +718,22 @@ export function parseGitNumstatZ(raw: string): CodingChangeDiffSummary | null {
 
 export function decodeChangeDiffOutput(output: string): CodingChangeDiffSummary | null {
 	const prefix = `${CHANGE_DIFF_MARKER}:`;
+	const suffix = `:${CHANGE_DIFF_END_MARKER}`;
 	const index = output.indexOf(prefix);
 	if (index < 0) return null;
-	const encoded = output
+	const line = output
 		.slice(index + prefix.length)
 		.split(/\r?\n/, 1)[0]
 		?.trim();
-	if (encoded === undefined) return null;
+	if (line === undefined || !line.endsWith(suffix)) return null;
+	const encoded = line.slice(0, -suffix.length);
 	if (!encoded) {
 		return {
 			affectedPaths: [],
 			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
 		};
 	}
+	if (encoded.length % 4 !== 0 || !CHANGE_DIFF_BASE64_RE.test(encoded)) return null;
 	try {
 		const raw = Buffer.from(encoded, "base64").toString("utf8");
 		return parseGitNumstatZ(raw);
@@ -756,7 +761,7 @@ export async function inspectCodingChangeDiff(options: {
 	const timeoutMs = options.timeoutMs ?? CHANGE_DIFF_TIMEOUT_MS;
 	const basePollMs = options.pollMs ?? FINISH_PREFLIGHT_POLL_MS;
 	const maxPollMs = Math.max(basePollMs, Math.min(FINISH_PREFLIGHT_MAX_POLL_MS, basePollMs * 4));
-	const command = `set -o pipefail; git rev-parse --verify -q ${parentSha}^{commit} >/dev/null && git rev-parse --verify -q ${commitSha}^{commit} >/dev/null && out="$(git diff --numstat --no-renames -z ${parentSha} ${commitSha} | base64 | tr -d '\\r\\n')" && printf '${CHANGE_DIFF_MARKER}:%s\\n' "$out"`;
+	const command = `set -o pipefail; git rev-parse --verify -q ${parentSha}^{commit} >/dev/null && git rev-parse --verify -q ${commitSha}^{commit} >/dev/null && out="$(git diff --numstat --no-renames -z ${parentSha} ${commitSha} | base64 | tr -d '\\r\\n')" && printf '${CHANGE_DIFF_MARKER}:%s:${CHANGE_DIFF_END_MARKER}\\n' "$out"`;
 	const subKey = preflightSubOperationKey(`${parentSha}:${commitSha}`, "change-diff");
 	const subArgs = { operationKey: subKey, command, timeoutMs };
 
@@ -848,10 +853,11 @@ export async function inspectCodingChangeDiff(options: {
 			);
 			await checkAuthority(context);
 		}
-		if (receipt.state !== "succeeded") return null;
+		if (receipt.state !== "succeeded" || receipt.log.limitReached) return null;
 		let rawOutput = receipt.log.offset === 0 ? receipt.output : "";
 		let offset = receipt.log.offset === 0 ? receipt.log.nextOffset : 0;
-		while (offset < receipt.log.totalBytes && rawOutput.length < CHANGE_DIFF_MAX_OUTPUT_BYTES) {
+		let totalBytes = receipt.log.totalBytes;
+		while (offset < totalBytes && rawOutput.length < CHANGE_DIFF_MAX_OUTPUT_BYTES) {
 			const page = parseCloudCodingCommandReceipt(
 				await cloudToolRequest(
 					(signal) =>
@@ -868,10 +874,13 @@ export async function inspectCodingChangeDiff(options: {
 				),
 			);
 			await checkAuthority(context);
+			if (page.log.limitReached) return null;
+			totalBytes = page.log.totalBytes;
 			if (page.log.nextOffset <= offset) break;
 			rawOutput += page.output;
 			offset = page.log.nextOffset;
 		}
+		if (offset < totalBytes) return null;
 		return decodeChangeDiffOutput(rawOutput);
 	} catch (error) {
 		if (context.signal.aborted) throw error;

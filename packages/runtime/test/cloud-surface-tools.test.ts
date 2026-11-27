@@ -4555,15 +4555,30 @@ describe("cloud surface runtime tools", () => {
 			args: { p_supersede_key: "daily-metrics" },
 		});
 
-		const rawNumstat = "12\t3\tsrc/app.tsx\0-\t-\tassets/logo.png\0";
+		const rawNumstat = "12\t3\tsrc/app.tsx\0-\t-\tassets/logo.png\04\t1\tdir/file\twith\ttab.ts\0";
 		expect(parseGitNumstatZ(rawNumstat)).toEqual({
-			affectedPaths: ["src/app.tsx", "assets/logo.png"],
-			diffStats: { filesChanged: 2, additions: 12, deletions: 3 },
+			affectedPaths: ["src/app.tsx", "assets/logo.png", "dir/file\twith\ttab.ts"],
+			diffStats: { filesChanged: 3, additions: 16, deletions: 4 },
 		});
+		expect(parseGitNumstatZ("")).toEqual({
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		});
+		const overCap = Array.from({ length: 505 }, (_, i) => `1\t0\tf-${i}.ts`).join("\0");
+		const capped = parseGitNumstatZ(overCap);
+		expect(capped?.affectedPaths).toHaveLength(500);
+		expect(capped?.diffStats).toEqual({ filesChanged: 505, additions: 505, deletions: 0 });
+
 		const encoded = Buffer.from(rawNumstat, "utf8").toString("base64");
-		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded}\n`)).toEqual({
-			affectedPaths: ["src/app.tsx", "assets/logo.png"],
-			diffStats: { filesChanged: 2, additions: 12, deletions: 3 },
+		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded}:__QORPERA_CHANGE_DIFF_END__\n`)).toEqual({
+			affectedPaths: ["src/app.tsx", "assets/logo.png", "dir/file\twith\ttab.ts"],
+			diffStats: { filesChanged: 3, additions: 16, deletions: 4 },
 		});
+		expect(decodeChangeDiffOutput("__QORPERA_CHANGE_DIFF_V1__::__QORPERA_CHANGE_DIFF_END__\n")).toEqual({
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		});
+		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded.slice(0, 12)}`)).toBeNull();
+		expect(decodeChangeDiffOutput("__QORPERA_CHANGE_DIFF_V1__:not*base64:__QORPERA_CHANGE_DIFF_END__\n")).toBeNull();
 	});
 });

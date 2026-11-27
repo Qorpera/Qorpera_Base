@@ -1,15 +1,22 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import type { CloudCodingCommandScope } from "@qorpera/contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CloudCodingCommandGateway } from "../src/cloud-coding-command-tools.ts";
 import {
 	buildFinishConflictPreflightCommand,
 	CODING_FINISH_CONFLICT_SCHEMA,
 	decodeFinishConflictPreflightOutput,
 	formatCodingFinishConflictFeedback,
+	inspectCodingChangeDiff,
 } from "../src/cloud-coding-preflight-land.ts";
+import type { CloudToolContext } from "../src/cloud-native-tool-boundary.ts";
+import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
+import { nativeToolAuthorityFixture } from "./fixtures/native-tool-authority-fixture.ts";
 
 const exec = promisify(execFile);
 const GIT = "git";
@@ -147,5 +154,252 @@ describe("cloud-coding-preflight-land", () => {
 			conflictMessages: [],
 		});
 		expect(decodeFinishConflictPreflightOutput("not a marker")).toBeNull();
+	});
+
+	it("inspectCodingChangeDiff parses real git numstat output and rejects truncated, failed, or invalid inputs", async () => {
+		const f = await setupFixture();
+		await writeFile(join(f.sessionWorktree, "app.ts"), "export const v = 2;\nexport const extra = 3;\n");
+		await writeFile(join(f.sessionWorktree, "logo.bin"), Buffer.from([0, 1, 2, 3, 255]));
+		await git(f.sessionWorktree, "add", "app.ts", "logo.bin");
+		await git(f.sessionWorktree, "commit", "-m", "edit app and add binary");
+		const headSha = await git(f.sessionWorktree, "rev-parse", "HEAD");
+
+		const { binding, authority } = nativeToolAuthorityFixture();
+		const scope: CloudCodingCommandScope = {
+			workerId: randomUUID(),
+			vmId: randomUUID(),
+			requestId: randomUUID(),
+			turn: 1,
+		};
+		const context: CloudToolContext = {
+			companyId: authority.identity.companyId,
+			runId: binding.runId,
+			identity: authority.identity,
+			callId: "diff-1",
+			argumentSha256: "a".repeat(64),
+			signal: new AbortController().signal,
+		};
+		const makeOps = (): Pick<CloudNativeToolOperations, "execute"> => ({
+			execute: vi.fn(async (input) => {
+				const out = await input.perform(input.operation, {
+					receiptId: randomUUID(),
+					inputSha256: "b".repeat(64),
+					signal: input.signal,
+				});
+				return out.content;
+			}),
+		});
+
+		const realGateway: CloudCodingCommandGateway = {
+			authorize: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(async (_scope, input) => {
+				const { stdout } = await exec("bash", ["-c", input.command], { cwd: f.sessionWorktree, env: GIT_ENV });
+				const bytes = Buffer.byteLength(stdout, "utf8");
+				return {
+					schema: "qorpera.coding-command-result/v2",
+					workerId: scope.workerId,
+					commandId: input.commandId,
+					inputSha256: input.inputSha256,
+					state: "succeeded",
+					exitCode: 0,
+					output: stdout,
+					truncated: false,
+					log: { offset: 0, nextOffset: bytes, totalBytes: bytes, limitBytes: 67108864, limitReached: false },
+				};
+			}),
+			read: vi.fn(),
+			cancel: vi.fn(),
+		};
+
+		const realSummary = await inspectCodingChangeDiff({
+			scope,
+			operations: makeOps(),
+			gateway: realGateway,
+			checkAuthority: vi.fn().mockResolvedValue(undefined),
+			parentSha: f.baseSha,
+			commitSha: headSha,
+			context,
+		});
+		expect(realSummary).toEqual({
+			affectedPaths: ["app.ts", "logo.bin"],
+			diffStats: { filesChanged: 2, additions: 2, deletions: 1 },
+		});
+
+		const noopOps = makeOps();
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: noopOps,
+				gateway: realGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: f.baseSha,
+				commitSha: f.baseSha,
+				context,
+			}),
+		).toBeNull();
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: noopOps,
+				gateway: realGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: "not-a-sha",
+				commitSha: headSha,
+				context,
+			}),
+		).toBeNull();
+		expect(noopOps.execute).not.toHaveBeenCalled();
+
+		const encodedPayload = Buffer.from("4\t1\tsrc/a.ts\0", "utf8").toString("base64");
+		const fullOutput = `__QORPERA_CHANGE_DIFF_V1__:${encodedPayload}:__QORPERA_CHANGE_DIFF_END__\n`;
+		const splitAt = Math.floor(fullOutput.length / 2);
+		const pagedGateway: CloudCodingCommandGateway = {
+			authorize: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(async (_scope, input) => ({
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state: "succeeded",
+				exitCode: 0,
+				output: fullOutput.slice(0, splitAt),
+				truncated: true,
+				log: {
+					offset: 0,
+					nextOffset: splitAt,
+					totalBytes: fullOutput.length,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			})),
+			read: vi.fn(async (_scope, input) => ({
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: input.commandId,
+				inputSha256: "b".repeat(64),
+				state: "succeeded",
+				exitCode: 0,
+				output: fullOutput.slice(input.offset),
+				truncated: false,
+				log: {
+					offset: input.offset,
+					nextOffset: fullOutput.length,
+					totalBytes: fullOutput.length,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			})),
+			cancel: vi.fn(),
+		};
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: makeOps(),
+				gateway: pagedGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: f.baseSha,
+				commitSha: headSha,
+				context,
+			}),
+		).toEqual({
+			affectedPaths: ["src/a.ts"],
+			diffStats: { filesChanged: 1, additions: 4, deletions: 1 },
+		});
+
+		const limitReachedGateway: CloudCodingCommandGateway = {
+			authorize: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(async (_scope, input) => ({
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state: "succeeded",
+				exitCode: 0,
+				output: fullOutput,
+				truncated: true,
+				log: {
+					offset: 0,
+					nextOffset: fullOutput.length,
+					totalBytes: fullOutput.length,
+					limitBytes: fullOutput.length,
+					limitReached: true,
+				},
+			})),
+			read: vi.fn(),
+			cancel: vi.fn(),
+		};
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: makeOps(),
+				gateway: limitReachedGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: f.baseSha,
+				commitSha: headSha,
+				context,
+			}),
+		).toBeNull();
+
+		const truncatedGateway: CloudCodingCommandGateway = {
+			authorize: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(async (_scope, input) => ({
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state: "succeeded",
+				exitCode: 0,
+				output: fullOutput.slice(0, splitAt),
+				truncated: false,
+				log: {
+					offset: 0,
+					nextOffset: splitAt,
+					totalBytes: splitAt,
+					limitBytes: 67108864,
+					limitReached: false,
+				},
+			})),
+			read: vi.fn(),
+			cancel: vi.fn(),
+		};
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: makeOps(),
+				gateway: truncatedGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: f.baseSha,
+				commitSha: headSha,
+				context,
+			}),
+		).toBeNull();
+
+		const failedGateway: CloudCodingCommandGateway = {
+			authorize: vi.fn().mockResolvedValue(undefined),
+			start: vi.fn(async (_scope, input) => ({
+				schema: "qorpera.coding-command-result/v2",
+				workerId: scope.workerId,
+				commandId: input.commandId,
+				inputSha256: input.inputSha256,
+				state: "failed",
+				exitCode: 128,
+				output: "",
+				truncated: false,
+				log: { offset: 0, nextOffset: 0, totalBytes: 0, limitBytes: 67108864, limitReached: false },
+			})),
+			read: vi.fn(),
+			cancel: vi.fn(),
+		};
+		expect(
+			await inspectCodingChangeDiff({
+				scope,
+				operations: makeOps(),
+				gateway: failedGateway,
+				checkAuthority: vi.fn().mockResolvedValue(undefined),
+				parentSha: f.baseSha,
+				commitSha: headSha,
+				context,
+			}),
+		).toBeNull();
 	});
 });

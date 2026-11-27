@@ -50,11 +50,18 @@ declare
 	v_errcode text;
 	v_sup_s1 uuid;
 	v_sup_s2 uuid;
+	v_sup_s3 uuid;
 	v_sup_c1 uuid;
 	v_sup_c2 uuid;
+	v_sup_c2b uuid;
+	v_sup_opt1 uuid;
+	v_sup_opt2 uuid;
 	v_sup_s1_json jsonb;
 	v_sup_s2_json jsonb;
 	v_toggled uuid[];
+	v_rec_approve public.qorpera_surface_reconciliations%rowtype;
+	v_rec_carry public.qorpera_surface_reconciliations%rowtype;
+	v_coding_lease uuid;
 begin
 	update public.qorpera_surface_settings set enabled = true, updated_at = clock_timestamp() where singleton = true;
 
@@ -335,6 +342,20 @@ begin
 		'newer member preview reconciliation supersedes running prior member preview reconciliation too'
 	);
 
+	v_rec_approve := public.qorpera_surface_enqueue_silent_reconciliation(
+		v_folder_surface, array[v_c1, v_c2], array['layout.json'], v_owner, true, true
+	);
+	update public.qorpera_surfaces set folder_revision = folder_revision + 1 where id = v_folder_surface;
+	v_rec_carry := public.qorpera_surface_enqueue_silent_reconciliation(
+		v_folder_surface, array[v_c1, v_c2], array['layout.json'], v_owner, false, false
+	);
+	perform pg_temp.swgrh_assert(
+		v_rec_carry.id <> v_rec_approve.id
+		and v_rec_carry.auto_approve_after = true
+		and not exists (select 1 from public.qorpera_surface_reconciliations where id = v_rec_approve.id),
+		'stale same-selection reconciliation superseding carries auto_approve_after forward onto the replacement'
+	);
+
 	v_sup_s1 := (public.qorpera_service_start_surface_session(
 		v_profile, v_code_surface, 'Sync latest upstream commits (run 1)', 'Refresh Web App 1',
 		'automation', 'GitHub Sync', null, null, null, 'github-sync'
@@ -357,9 +378,14 @@ begin
 		'automation', 'GitHub Sync', null, null, null, 'github-sync'
 	) ->> 'sessionId')::uuid;
 	v_sup_c2 := (public.qorpera_record_surface_change(
-		v_sup_s2, 'Sync run 2', 'Second sync snapshot', 'git_range',
-		repeat('1', 40), repeat('3', 40), '{}'::uuid[], array['src/app.ts', 'src/nav.ts'],
-		jsonb_build_object('filesChanged', 2, 'additions', 25, 'deletions', 5), null, true
+		v_sup_s2, 'Sync run 2 part 1', 'Second sync snapshot part 1', 'git_range',
+		repeat('1', 40), repeat('3', 40), '{}'::uuid[], array['src/app.ts'],
+		jsonb_build_object('filesChanged', 1, 'additions', 20, 'deletions', 3), null, false
+	) ->> 'changeId')::uuid;
+	v_sup_c2b := (public.qorpera_record_surface_change(
+		v_sup_s2, 'Sync run 2 part 2', 'Second sync snapshot part 2', 'git_range',
+		repeat('3', 40), repeat('5', 40), array[v_sup_c2], array['src/nav.ts'],
+		jsonb_build_object('filesChanged', 1, 'additions', 5, 'deletions', 2), null, true
 	) ->> 'changeId')::uuid;
 
 	select toggled_change_ids into v_toggled
@@ -372,15 +398,39 @@ begin
 	perform pg_temp.swgrh_assert(
 		(select status = 'discarded' and supersede_key = 'github-sync' from public.qorpera_surface_changes where id = v_sup_c1)
 		and (select status = 'staged' and supersede_key = 'github-sync' from public.qorpera_surface_changes where id = v_sup_c2)
+		and (select status = 'staged' and supersede_key = 'github-sync' from public.qorpera_surface_changes where id = v_sup_c2b)
 		and (select state = 'discarded' from public.qorpera_surface_sessions where id = v_sup_s1)
 		and v_toggled = array[v_sup_c2]
 		and v_sup_s2_json ->> 'supersedeKey' = 'github-sync'
 		and v_sup_s2_json #>> '{changes,0,supersedeKey}' = 'github-sync'
 		and exists (
 			select 1 from public.qorpera_surface_session_messages m
-			where m.session_id = v_sup_s1 and m.change_id = v_sup_c1 and m.body = 'Superseded by newer update: Sync run 2'
+			where m.session_id = v_sup_s1 and m.change_id = v_sup_c1 and m.body = 'Superseded by newer update: Sync run 2 part 1'
 		),
-		'supersede_key discards prior open change, transitions superseded session, swaps toggled preview selection, and exposes supersedeKey in JSON'
+		'supersede_key discards prior session change while keeping stacked changes in the same session, swaps toggled preview selection, and exposes supersedeKey'
+	);
+
+	v_sup_s3 := (public.qorpera_service_start_surface_session(
+		v_profile, v_code_surface, 'Sync with options (run 3)', 'Refresh Web App 3',
+		'automation', 'GitHub Sync', null, null, null, 'github-sync'
+	) ->> 'sessionId')::uuid;
+	v_sup_opt1 := (public.qorpera_record_surface_change(
+		v_sup_s3, 'Option A', 'Direction A', 'git_range',
+		repeat('1', 40), repeat('6', 40), '{}'::uuid[], array['src/a.ts'],
+		jsonb_build_object('filesChanged', 1, 'additions', 8, 'deletions', 1), null, false, 'hero-sync', 'Hero sync'
+	) ->> 'changeId')::uuid;
+	v_sup_opt2 := (public.qorpera_record_surface_change(
+		v_sup_s3, 'Option B', 'Direction B', 'git_range',
+		repeat('1', 40), repeat('7', 40), '{}'::uuid[], array['src/b.ts'],
+		jsonb_build_object('filesChanged', 1, 'additions', 9, 'deletions', 2), null, true, 'hero-sync', 'Hero sync'
+	) ->> 'changeId')::uuid;
+
+	perform pg_temp.swgrh_assert(
+		(select status = 'staged' from public.qorpera_surface_changes where id = v_sup_opt1)
+		and (select status = 'staged' from public.qorpera_surface_changes where id = v_sup_opt2)
+		and (select status = 'discarded' from public.qorpera_surface_changes where id = v_sup_c2)
+		and (select status = 'discarded' from public.qorpera_surface_changes where id = v_sup_c2b),
+		'optionGroup siblings inside a supersedeKey session do not discard each other while superseding prior sessions'
 	);
 
 	perform pg_temp.swgrh_as(v_owner);
@@ -444,6 +494,52 @@ begin
 		and v_sync_change.diff_stats = jsonb_build_object('filesChanged', 2, 'additions', 42, 'deletions', 7),
 		'fallback coding completion sync populates affected_paths and diff_stats from staged artifact'
 	);
+
+	v_coding_lease := extensions.gen_random_uuid();
+	update public.qorpera_coding_sessions
+	set lease_owner = 'test-exec', lease_token = v_coding_lease, lease_until = clock_timestamp() + interval '10 minutes'
+	where worker_id = v_worker.id;
+
+	perform set_config('request.jwt.claims', '{"role":"service_role"}', true);
+	set local role service_role;
+
+	begin
+		perform public.qorpera_complete_coding_turn(
+			v_worker.id, v_coding_lease, 'succeeded', 'Incomplete diff stats empty.', null, null, null,
+			jsonb_build_array(jsonb_build_object(
+				'kind', 'staged',
+				'branch', v_coding.branch,
+				'baseSha', repeat('1', 40),
+				'headSha', repeat('4', 40),
+				'diffStats', '{}'::jsonb
+			)),
+			null, null, null
+		);
+		perform pg_temp.swgrh_assert(false, 'empty diffStats object must be refused by qorpera_complete_coding_turn');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.swgrh_assert(v_errcode = '22023', 'empty diffStats must raise 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	begin
+		perform public.qorpera_complete_coding_turn(
+			v_worker.id, v_coding_lease, 'succeeded', 'Incomplete diff stats partial.', null, null, null,
+			jsonb_build_array(jsonb_build_object(
+				'kind', 'staged',
+				'branch', v_coding.branch,
+				'baseSha', repeat('1', 40),
+				'headSha', repeat('4', 40),
+				'diffStats', jsonb_build_object('additions', 1)
+			)),
+			null, null, null
+		);
+		perform pg_temp.swgrh_assert(false, 'partial diffStats object must be refused by qorpera_complete_coding_turn');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.swgrh_assert(v_errcode = '22023', 'partial diffStats must raise 22023, got ' || coalesce(v_errcode, 'null'));
+	end;
+
+	reset role;
 
 	update public.qorpera_surface_sessions
 	set state = 'discarded', lease_token = null, lease_expires_at = null

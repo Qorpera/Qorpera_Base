@@ -310,6 +310,9 @@ $new$				if v_expired_session.is_internal and v_expired_session.origin_ref ? 're
 select pg_temp.swgrh_patch(
 	'public.qorpera_surface_enqueue_silent_reconciliation(uuid,uuid[],text[],uuid,boolean,boolean)'::regprocedure,
 	array[
+$old$	v_now timestamptz := clock_timestamp();$old$,
+$new$	v_auto_approve boolean := coalesce(p_auto_approve_after, false);
+	v_now timestamptz := clock_timestamp();$new$,
 $old$	-- WHY: Supersede unstarted member-initiated preview reconciliations in session-then-reconciliation lock order so rapid toggles never fan out concurrent runs or strand reconciling previews.
 	if v_explicit_member and not coalesce(p_auto_approve_after, false) then
 		for v_sup in
@@ -368,7 +371,7 @@ $old$	-- WHY: Supersede unstarted member-initiated preview reconciliations in se
 	end if;$old$,
 $new$	-- WHY: Supersede stale same-selection and prior member preview reconciliations in session-then-reconciliation lock order; discarding the internal session stops active workers via claim/auth/expiry sweeps without lock inversion.
 	for v_sup in
-		select r.id as rec_id, r.session_id, r.status as rec_status
+		select r.id as rec_id, r.session_id, r.status as rec_status, r.auto_approve_after as rec_auto_approve
 		from public.qorpera_surface_reconciliations r
 		where r.surface_id = p_surface_id
 			and r.composition_key <> v_comp_key
@@ -380,6 +383,7 @@ $new$	-- WHY: Supersede stale same-selection and prior member preview reconcilia
 			)
 		order by r.created_at asc, r.id asc
 	loop
+		v_auto_approve := v_auto_approve or coalesce(v_sup.rec_auto_approve, false);
 		if v_sup.session_id is not null then
 			update public.qorpera_surface_sessions s
 			set
@@ -409,7 +413,7 @@ $new$	-- WHY: Supersede stale same-selection and prior member preview reconcilia
 		end if;
 	end loop;
 
-	if v_explicit_member and not coalesce(p_auto_approve_after, false) then
+	if v_explicit_member and not v_auto_approve then
 		for v_sup in
 			select r.id as rec_id, r.session_id, r.selected_change_ids
 			from public.qorpera_surface_reconciliations r
@@ -471,7 +475,11 @@ $new$	-- WHY: Supersede stale same-selection and prior member preview reconcilia
 					);
 			end if;
 		end loop;
-	end if;$new$
+	end if;$new$,
+$old$			auto_approve_after = coalesce(p_auto_approve_after, false),$old$,
+$new$			auto_approve_after = v_auto_approve,$new$,
+$old$			v_ordered_ids, 'queued', v_paths, coalesce(p_auto_approve_after, false),$old$,
+$new$			v_ordered_ids, 'queued', v_paths, v_auto_approve,$new$
 	]
 );
 
@@ -503,12 +511,13 @@ $new$			or case when v_session.surface_session_id is not null then
 				or (p_artifacts -> 0 ? 'diffStats' and p_artifacts -> 0 -> 'diffStats' <> 'null'::jsonb and (
 					jsonb_typeof(p_artifacts -> 0 -> 'diffStats') <> 'object'
 					or (p_artifacts -> 0 -> 'diffStats') - array['filesChanged','additions','deletions'] <> '{}'::jsonb
-					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'filesChanged') <> 'number'
-					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'additions') <> 'number'
-					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'deletions') <> 'number'
-					or (p_artifacts -> 0 -> 'diffStats' ->> 'filesChanged') !~ '^[0-9]{1,6}$'
-					or (p_artifacts -> 0 -> 'diffStats' ->> 'additions') !~ '^[0-9]{1,8}$'
-					or (p_artifacts -> 0 -> 'diffStats' ->> 'deletions') !~ '^[0-9]{1,8}$'
+					or not ((p_artifacts -> 0 -> 'diffStats') ?& array['filesChanged','additions','deletions'])
+					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'filesChanged') is distinct from 'number'
+					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'additions') is distinct from 'number'
+					or jsonb_typeof(p_artifacts -> 0 -> 'diffStats' -> 'deletions') is distinct from 'number'
+					or coalesce((p_artifacts -> 0 -> 'diffStats' ->> 'filesChanged') !~ '^[0-9]{1,6}$', true)
+					or coalesce((p_artifacts -> 0 -> 'diffStats' ->> 'additions') !~ '^[0-9]{1,8}$', true)
+					or coalesce((p_artifacts -> 0 -> 'diffStats' ->> 'deletions') !~ '^[0-9]{1,8}$', true)
 				))$new$
 	]
 );
@@ -729,6 +738,12 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 		raise exception 'supersedeKey must be 1..80 lower-case letters, digits, dots, colons, underscores, or hyphens' using errcode = '22023';
 	end if;
 
+	if v_supersede_key is not null and not coalesce(v_session.is_internal, false) then
+		perform pg_catalog.pg_advisory_xact_lock(
+			pg_catalog.hashtextextended('qorpera.surface-supersede:' || v_session.surface_id::text || ':' || v_supersede_key, 0)
+		);
+	end if;
+
 	insert into public.qorpera_surface_changes(
 		profile_id, surface_id, session_id, seq, title, summary, kind,
 		parent_sha, head_sha, depends_on_change_ids, preview_base_change_ids,
@@ -753,6 +768,7 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 				and ch.profile_id = v_session.profile_id
 				and ch.supersede_key = v_supersede_key
 				and ch.status in ('staged', 'conflicted')
+				and ch.session_id <> p_session_id
 				and ch.id <> v_change.id
 			order by ch.id asc
 			for update
@@ -844,7 +860,7 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 				from public.qorpera_surface_sessions ps
 				where ps.id = v_superseded_sid
 					and ps.state not in ('queued', 'running', 'reconciling', 'reconciling_running')
-				for update skip locked;
+				for update;
 				if found then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_superseded_sid);
 				end if;
