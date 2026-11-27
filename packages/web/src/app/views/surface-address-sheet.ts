@@ -518,6 +518,20 @@ export class SurfaceAddress {
 		else this.open(fromKeyboard);
 	}
 
+	openSource(fromKeyboard = false): void {
+		const source = this.#setup.canManage() ? this.#setup.codeSource?.() : undefined;
+		if (!source) {
+			this.toggle(fromKeyboard);
+			return;
+		}
+		if (this.#open && this.#page.kind === "source") {
+			this.close(true);
+			return;
+		}
+		if (!this.#open) this.open(fromKeyboard);
+		if (this.#open) this.#openSource(source);
+	}
+
 	open(fromKeyboard = false): void {
 		if (this.#open || !this.#liveUrl || this.#setup.signal.aborted) return;
 		const takeFocus = fromKeyboard || document.activeElement === this.#addressButton();
@@ -534,7 +548,7 @@ export class SurfaceAddress {
 				if (this.#armed && !(target instanceof Element && target.closest("[data-armed='true']")))
 					this.#disarm(true);
 				if (this.#sheet.contains(target)) return;
-				if (target instanceof Element && target.closest(".surface-pill-address")) return;
+				if (target instanceof Element && target.closest(".surface-pill-address, .workbench-repo-chip")) return;
 				this.close();
 			},
 			{ capture: true, signal: listeners.signal },

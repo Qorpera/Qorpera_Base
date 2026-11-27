@@ -34,7 +34,9 @@ import type { SurfaceMount, SurfaceViewHost } from "./surface-view.ts";
 export type WorkbenchPanelTab = "preview" | "mockups" | "plans" | "changes";
 
 const PANEL_WIDTH_KEY = "qorpera.web.workbench-panel-width.v1";
-const PANEL_DEFAULT_WIDTH = 480;
+const TRACKS_WIDTH = 236;
+const THREAD_MIN_WIDTH = 380;
+const PANEL_DEFAULT_WIDTH = 440;
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 920;
 const PANEL_MAX_SHARE = 0.62;
@@ -97,14 +99,6 @@ function cachedMarkdown(text: string): HTMLElement {
 		parsedMarkdownCache.delete(oldest);
 	}
 	return rendered.cloneNode(true) as HTMLElement;
-}
-
-function panelCap(): number {
-	const scale = uiScale();
-	return Math.max(
-		PANEL_MIN_WIDTH,
-		Math.min(PANEL_MAX_WIDTH, Math.floor((window.innerWidth * PANEL_MAX_SHARE) / scale)),
-	);
 }
 
 function isMockupArtifact(artifact: SurfaceSessionArtifact): boolean {
@@ -277,7 +271,6 @@ export class AppWorkbenchView {
 		"aria-orientation": "vertical",
 		"aria-valuemin": String(PANEL_MIN_WIDTH),
 	});
-	readonly #panelHead = h("div", { class: "workbench-panel-head" });
 	readonly #panelContent = h("div", { class: "workbench-panel-content" });
 	readonly #previewPane = h("div", { class: "workbench-preview-pane", hidden: true });
 	readonly #previewToolbar = h("div", { class: "workbench-preview-toolbar" });
@@ -307,6 +300,9 @@ export class AppWorkbenchView {
 	#liveMount: SurfaceMount | undefined;
 	#liveMountedFor = "";
 	#liveMountParked = false;
+	#tracksOpen = true;
+	#tracksUserPinned = false;
+	#bodyResizeObserver: ResizeObserver | undefined;
 	#panelOpen = true;
 	#panelTab: WorkbenchPanelTab = "preview";
 	#panelWidth = PANEL_DEFAULT_WIDTH;
@@ -327,7 +323,6 @@ export class AppWorkbenchView {
 	#headKey = "";
 	#progressKey = "";
 	#threadKey = "";
-	#panelKey = "";
 	#previewKey = "";
 	#mockupPaneKey = "";
 	#planPaneKey = "";
@@ -337,6 +332,7 @@ export class AppWorkbenchView {
 	#lastRenderedMessageCount = 0;
 	#lastSyncedRoute = "/";
 	#lastTrackAutoSyncKey = "";
+	#lastInitialTrackSyncKey = "";
 
 	constructor(host: SurfaceViewHost, signal: AbortSignal, options: AppWorkbenchOptions = {}) {
 		this.#host = host;
@@ -374,7 +370,7 @@ export class AppWorkbenchView {
 		this.#previewViewport.append(this.#door.el, this.#liveMountSlot, this.#previewEmpty);
 		this.#previewPane.append(this.#previewToolbar, this.#previewViewport);
 		this.#panelContent.append(this.#previewPane, this.#mockupsPane, this.#plansPane, this.#changesPane);
-		this.#panel.append(this.#panelResizer, this.#panelHead, this.#panelContent);
+		this.#panel.append(this.#panelResizer, this.#panelContent);
 
 		this.#tracksRail.append(this.#tracksTop, this.#combineBar, this.#trackList);
 		this.#threadScroll.append(this.#progressSlot, this.#messagesSlot);
@@ -388,8 +384,11 @@ export class AppWorkbenchView {
 			canManage: () => host.managesSites?.() === true,
 			changed: () => {
 				if (this.#surface && !this.#parked && !this.#deactivated) {
+					const workspace = this.#host.store.workspace(this.#surface.id);
+					const selectedId = this.#host.store.selectedTrackOf(this.#surface.id);
+					const selected = selectedId ? this.#findSession(workspace, selectedId) : undefined;
 					this.#barKey = "";
-					this.#drawBar(this.#surface);
+					this.#drawBar(this.#surface, workspace, selected);
 				}
 			},
 			slugChanged: ({ slug, url }) => {
@@ -421,7 +420,11 @@ export class AppWorkbenchView {
 		});
 
 		this.#wireEvents(life);
-		this.#applyPanelWidth();
+		if (typeof ResizeObserver !== "undefined") {
+			this.#bodyResizeObserver = new ResizeObserver(() => this.#syncLayoutToWidth());
+			this.#bodyResizeObserver.observe(this.#body);
+		}
+		this.#syncLayoutToWidth();
 	}
 
 	#disposeLiveMount(): void {
@@ -490,6 +493,7 @@ export class AppWorkbenchView {
 		this.#parked = false;
 		this.#door.resetRetryState();
 		this.#previewKey = "";
+		this.#syncLayoutToWidth();
 		if (this.#surface) this.update(this.#surface);
 	}
 
@@ -508,6 +512,8 @@ export class AppWorkbenchView {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		this.deactivate();
+		this.#bodyResizeObserver?.disconnect();
+		this.#bodyResizeObserver = undefined;
 		this.#door.dispose();
 		this.#disposeLiveMount();
 		for (const view of this.#sentImages.values()) view.dispose();
@@ -528,6 +534,7 @@ export class AppWorkbenchView {
 			this.#combining = false;
 			this.#explicitCombineActive = false;
 			this.#lastTrackAutoSyncKey = "";
+			this.#lastInitialTrackSyncKey = "";
 			this.#combineSelected.clear();
 			this.#selectedMockupId = null;
 			this.#selectedPlanId = null;
@@ -538,7 +545,6 @@ export class AppWorkbenchView {
 			this.#headKey = "";
 			this.#progressKey = "";
 			this.#threadKey = "";
-			this.#panelKey = "";
 			this.#previewKey = "";
 			this.#mockupPaneKey = "";
 			this.#planPaneKey = "";
@@ -555,15 +561,17 @@ export class AppWorkbenchView {
 		const selected = selectedId ? this.#findSession(workspace, selectedId) : undefined;
 		if (selected) store.ensureSessionImages(selected);
 
-		this.#drawBar(surface, selected);
+		this.#syncLayoutToWidth(false);
+		this.#drawBar(surface, workspace, selected);
 		this.#drawBanner(surface);
 		this.#drawTracks(surface, workspace, selected?.id ?? null);
 		this.#drawThread(surface, workspace, selected);
 		this.#drawPanel(surface, workspace, selected);
 		if (this.#panelOpen && this.#panelTab === "preview" && workspace && selected) {
 			const preview = workspace.previewState;
-			if (preview.previewScope === "track" && preview.selectedSessionId === selected.id) {
-				const expectedIds = expectedTrackPreviewChangeIds(selected);
+			const expectedIds = expectedTrackPreviewChangeIds(selected);
+			const trackMatches = preview.previewScope === "track" && preview.selectedSessionId === selected.id;
+			if (trackMatches) {
 				if (sameIdSet(expectedIds, preview.primary.toggledChangeIds)) {
 					this.#lastTrackAutoSyncKey = "";
 				} else {
@@ -572,6 +580,12 @@ export class AppWorkbenchView {
 						this.#lastTrackAutoSyncKey = syncKey;
 						this.#syncPreviewToSelection(surface, selected.id);
 					}
+				}
+			} else if (!this.#explicitCombineActive && preview.previewScope !== "explicit" && expectedIds.length > 0) {
+				const initialKey = `${surface.id}:${selected.id}`;
+				if (initialKey !== this.#lastInitialTrackSyncKey) {
+					this.#lastInitialTrackSyncKey = initialKey;
+					this.#syncPreviewToSelection(surface, selected.id);
 				}
 			}
 		}
@@ -651,7 +665,7 @@ export class AppWorkbenchView {
 				const scale = uiScale();
 				const move = (moveEvent: PointerEvent) => {
 					const delta = (startX - moveEvent.clientX) / scale;
-					this.#panelWidth = Math.max(PANEL_MIN_WIDTH, Math.min(panelCap(), Math.round(startWidth + delta)));
+					this.#panelWidth = Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), Math.round(startWidth + delta)));
 					this.#applyPanelWidth();
 				};
 				const up = () => {
@@ -675,7 +689,7 @@ export class AppWorkbenchView {
 				if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
 				event.preventDefault();
 				const step = event.key === "ArrowLeft" ? 24 : -24;
-				this.#panelWidth = Math.max(PANEL_MIN_WIDTH, Math.min(panelCap(), this.#panelWidth + step));
+				this.#panelWidth = Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), this.#panelWidth + step));
 				this.#applyPanelWidth();
 			},
 			{ signal },
@@ -691,8 +705,65 @@ export class AppWorkbenchView {
 		);
 	}
 
+	#bodyWidth(): number {
+		const raw = this.#body.clientWidth;
+		return raw > 0 ? raw / uiScale() : 0;
+	}
+
+	#isStackedLayout(): boolean {
+		if (typeof getComputedStyle === "function") {
+			const direction = getComputedStyle(this.#body).flexDirection;
+			if (direction === "column" || direction === "column-reverse") return true;
+			if (direction === "row" || direction === "row-reverse") return false;
+		}
+		return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches;
+	}
+
+	#isTightRowLayout(): boolean {
+		if (this.#isStackedLayout()) return false;
+		const width = this.#bodyWidth();
+		return width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+	}
+
+	#panelCap(): number {
+		const width = this.#bodyWidth();
+		if (width > 0) {
+			const reservedTracks = this.#tracksOpen ? TRACKS_WIDTH : 0;
+			const available = Math.floor(width - reservedTracks - THREAD_MIN_WIDTH);
+			return Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, available));
+		}
+		const scale = uiScale();
+		return Math.max(
+			PANEL_MIN_WIDTH,
+			Math.min(PANEL_MAX_WIDTH, Math.floor((window.innerWidth * PANEL_MAX_SHARE) / scale)),
+		);
+	}
+
+	#syncLayoutToWidth(redrawBar = true): void {
+		const width = this.#bodyWidth();
+		const prevTracksOpen = this.#tracksOpen;
+		if (width > 0 && !this.#tracksUserPinned) {
+			if (this.#isStackedLayout()) {
+				this.#tracksOpen = true;
+			} else {
+				const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+				if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
+				else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
+			}
+		}
+		this.#tracksRail.hidden = !this.#tracksOpen;
+		this.#applyPanelWidth();
+		if (redrawBar && prevTracksOpen !== this.#tracksOpen && this.#surface && !this.#parked && !this.#deactivated) {
+			const workspace = this.#host.store.workspace(this.#surface.id);
+			const selectedId = this.#host.store.selectedTrackOf(this.#surface.id);
+			const selected = selectedId ? this.#findSession(workspace, selectedId) : undefined;
+			this.#barKey = "";
+			this.#drawBar(this.#surface, workspace, selected);
+		}
+	}
+
 	#applyPanelWidth(): void {
-		this.#panel.style.width = `${Math.max(PANEL_MIN_WIDTH, Math.min(panelCap(), this.#panelWidth))}px`;
+		this.#panel.style.width = `${Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), this.#panelWidth))}px`;
 	}
 
 	#arm(key: string): boolean {
@@ -719,18 +790,18 @@ export class AppWorkbenchView {
 		this.#armedKey = null;
 	}
 
-	#drawBar(surface: SurfaceSummary, selected?: SurfaceSession): void {
+	#drawBar(surface: SurfaceSummary, workspace?: SurfaceWorkspace, selected?: SurfaceSession): void {
 		const store = this.#host.store;
 		const look = store.lookOf(surface);
-		const served = this.#host.isSiteLive?.(surface);
-		const siteLive = this.#host.isSiteLive ? served === true : true;
-		const addressShown = Boolean(surface.liveUrl && siteLive && look.kind !== "mobile_app");
+		const addressShown = Boolean(surface.liveUrl && look.kind !== "mobile_app");
 		const hosting = addressShown ? this.#host.siteHosting?.(surface) : undefined;
 		const addressKey = this.#address.sync(addressShown, hosting, surface.liveUrl);
 		const artifacts = selected?.artifacts ?? [];
 		const mockupCount = artifacts.filter(isMockupArtifact).length;
 		const planCount = artifacts.filter(isPlanArtifact).length;
 		const changeCount = selected ? sessionOpenChanges(selected).length : 0;
+		const activeTrackCount = workspace?.activeSessions.length ?? surface.activeSessionCount;
+		const canManage = this.#host.managesSites?.() === true;
 		const canPublish = Boolean(surface.hasUnpublishedChanges || !surface.liveUrl);
 		const publishing = surface.publishStatus === "publishing" || Boolean(store.state.busy[`publish:${surface.id}`]);
 		const key = JSON.stringify([
@@ -745,6 +816,9 @@ export class AppWorkbenchView {
 			surface.publishStatus ?? "idle",
 			publishing,
 			addressKey,
+			this.#tracksOpen,
+			activeTrackCount,
+			canManage,
 			this.#panelOpen,
 			this.#panelTab,
 			mockupCount,
@@ -761,14 +835,42 @@ export class AppWorkbenchView {
 				? `${surface.repositoryKey} · ${surface.repositorySubpath}`
 				: surface.repositoryKey
 			: null;
+		const repoChip = repoText
+			? canManage && addressShown
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "workbench-repo-chip",
+							title: t("Code source: {repo}", { repo: repoText }),
+							"data-act": "open-source",
+						},
+						icon("code"),
+						h("span", null, repoText),
+					)
+				: h("span", { class: "workbench-repo-chip", title: repoText }, icon("code"), h("span", null, repoText))
+			: null;
 
 		replace(
 			this.#barLeft,
+			h(
+				"button",
+				{
+					type: "button",
+					class: `workbench-tracks-toggle${this.#tracksOpen ? " is-active" : ""}`,
+					title: this.#tracksOpen ? t("Hide tracks") : t("Show tracks"),
+					"aria-label": this.#tracksOpen ? t("Hide tracks") : t("Show tracks"),
+					"aria-pressed": String(this.#tracksOpen),
+					"data-act": "toggle-tracks",
+				},
+				icon("navigation"),
+				!this.#tracksOpen && activeTrackCount > 0
+					? h("span", { class: "workbench-count-badge" }, String(activeTrackCount))
+					: null,
+			),
 			h("h1", { class: "workbench-title" }, surface.title),
 			addrBtn,
-			repoText
-				? h("span", { class: "workbench-repo-chip", title: repoText }, icon("code"), h("span", null, repoText))
-				: null,
+			repoChip,
 			canPublish
 				? h(
 						"button",
@@ -794,12 +896,13 @@ export class AppWorkbenchView {
 				{
 					type: "button",
 					class: `workbench-tab-btn${active ? " is-active" : ""}`,
+					title: label,
 					"aria-pressed": String(active),
 					"data-act": "panel-tab",
 					"data-tab": tab,
 				},
 				icon(glyph),
-				h("span", null, label),
+				h("span", { class: "workbench-tab-label" }, label),
 				count > 0 ? h("span", { class: "workbench-count-badge" }, String(count)) : null,
 			);
 		};
@@ -814,6 +917,7 @@ export class AppWorkbenchView {
 				tabButton("plans", t("Plans"), "file", planCount),
 				tabButton("changes", t("Changes"), "list", changeCount),
 			),
+			h("span", { class: "workbench-bar-divider", "aria-hidden": "true" }),
 			this.#options.onFullPreview
 				? h(
 						"button",
@@ -1138,6 +1242,13 @@ export class AppWorkbenchView {
 		const previewBusy = Boolean(store.state.busy[`track-preview:${surface.id}`]);
 		const isHistory = selected.state === "completed" || selected.state === "discarded";
 		const prUrl = safeExternalUrl(selected.externalPr?.url);
+		const showingThisTrackPreview = Boolean(
+			this.#panelOpen &&
+				this.#panelTab === "preview" &&
+				workspace?.previewState.previewScope === "track" &&
+				workspace.previewState.selectedSessionId === selected.id &&
+				this.#previewMatchesSelection(workspace.previewState, selected),
+		);
 		const headKey = JSON.stringify([
 			selected.id,
 			selected.title,
@@ -1148,6 +1259,7 @@ export class AppWorkbenchView {
 			selected.externalPr?.number ?? null,
 			running,
 			shippable,
+			showingThisTrackPreview,
 			stopBusy,
 			shipBusy,
 			discardBusy,
@@ -1223,7 +1335,7 @@ export class AppWorkbenchView {
 								h("span", null, t("Retry")),
 							)
 						: null,
-					!isHistory && sessionOpenChanges(selected).length > 0
+					!isHistory && sessionOpenChanges(selected).length > 0 && !showingThisTrackPreview
 						? h(
 								"button",
 								{
@@ -1244,6 +1356,7 @@ export class AppWorkbenchView {
 									type: "button",
 									class: `btn btn-small${shipArmed ? " is-confirming" : ""}`,
 									disabled: shipBusy,
+									title: t("Merge this track into Base without publishing live yet"),
 									"data-act": "ship-track",
 									"data-session": selected.id,
 								},
@@ -1257,6 +1370,7 @@ export class AppWorkbenchView {
 									type: "button",
 									class: `btn btn-small btn-primary${shipPublishArmed ? " is-confirming" : ""}`,
 									disabled: shipBusy,
+									title: t("Merge this track into Base and publish live"),
 									"data-act": "ship-publish-track",
 									"data-session": selected.id,
 								},
@@ -1608,6 +1722,11 @@ export class AppWorkbenchView {
 		const grouped = groupSessionChanges(session.changes);
 		const running = isRunningSession(session);
 		const store = this.#host.store;
+		const singleShippableChange =
+			grouped.length === 1 &&
+			grouped[0]?.kind === "change" &&
+			sessionOpenChanges(session).length === 1 &&
+			canShipSession(session);
 		return h(
 			"section",
 			{ class: "workbench-inline-changes" },
@@ -1682,7 +1801,7 @@ export class AppWorkbenchView {
 						ch.summary ? h("p", { class: "workbench-change-summary" }, ch.summary) : null,
 						stats ? h("span", { class: "workbench-change-stats" }, stats) : null,
 					),
-					open && !running
+					open && !running && !singleShippableChange
 						? h(
 								"div",
 								{ class: "workbench-change-actions" },
@@ -1733,7 +1852,6 @@ export class AppWorkbenchView {
 		const artifacts = selected?.artifacts ?? [];
 		const mockups = artifacts.filter(isMockupArtifact);
 		const plans = artifacts.filter(isPlanArtifact);
-		const changes = selected?.changes ?? [];
 
 		if (this.#selectedMockupId && !mockups.some((item) => item.id === this.#selectedMockupId)) {
 			this.#selectedMockupId = null;
@@ -1749,53 +1867,6 @@ export class AppWorkbenchView {
 		this.#mockupsPane.hidden = this.#panelTab !== "mockups";
 		this.#plansPane.hidden = this.#panelTab !== "plans";
 		this.#changesPane.hidden = this.#panelTab !== "changes";
-
-		const store = this.#host.store;
-		const headKey = JSON.stringify([
-			this.#panelTab,
-			mockups.length,
-			plans.length,
-			changes.filter(isOpenChange).length,
-		]);
-		if (headKey !== this.#panelKey) {
-			this.#panelKey = headKey;
-			const tabBtn = (tab: WorkbenchPanelTab, label: string, count = 0) =>
-				h(
-					"button",
-					{
-						type: "button",
-						class: `workbench-panel-tab${this.#panelTab === tab ? " is-active" : ""}`,
-						"aria-selected": String(this.#panelTab === tab),
-						role: "tab",
-						"data-act": "panel-tab",
-						"data-tab": tab,
-					},
-					h("span", null, label),
-					count > 0 ? h("span", { class: "workbench-count-badge" }, String(count)) : null,
-				);
-			replace(
-				this.#panelHead,
-				h(
-					"div",
-					{ class: "workbench-panel-tabs", role: "tablist" },
-					tabBtn("preview", t("Preview")),
-					tabBtn("mockups", t("Mockups"), mockups.length),
-					tabBtn("plans", t("Plans"), plans.length),
-					tabBtn("changes", t("Changes"), changes.filter(isOpenChange).length),
-				),
-				h(
-					"button",
-					{
-						type: "button",
-						class: "workbench-icon-btn",
-						title: t("Close side panel"),
-						"aria-label": t("Close side panel"),
-						"data-act": "close-panel",
-					},
-					icon("close"),
-				),
-			);
-		}
 
 		if (this.#panelTab === "preview") {
 			this.#drawPreviewPane(surface, workspace, selected);
@@ -1813,7 +1884,6 @@ export class AppWorkbenchView {
 		if (this.#panelTab === "changes") {
 			this.#drawChangesPane(selected);
 		}
-		void store;
 	}
 
 	#drawPreviewPane(
@@ -1834,6 +1904,8 @@ export class AppWorkbenchView {
 		const showDoor = Boolean(primary && primary.status !== "live_baseline" && previewMatches);
 		const scopeLabel = this.#previewScopeLabel(preview, workspace, selected, previewMatches);
 		const liveHref = safeExternalUrl(surface.liveUrl);
+		const pendingTrackChanges = selected ? expectedTrackPreviewChangeIds(selected).length : 0;
+		const syncingPreview = Boolean(store.state.busy[`track-preview:${surface.id}`]);
 		const previewKey = JSON.stringify([
 			surface.id,
 			selected?.id ?? null,
@@ -1842,6 +1914,7 @@ export class AppWorkbenchView {
 			liveHref,
 			showDoor,
 			previewMatches,
+			pendingTrackChanges,
 			primary?.previewId ?? null,
 			primary?.status ?? "none",
 			primary?.activeRoute ?? "/",
@@ -1850,7 +1923,7 @@ export class AppWorkbenchView {
 			primary?.errorDetail ?? null,
 			primary?.fixing ?? false,
 			primary?.kept?.previewId ?? null,
-			Boolean(store.state.busy[`track-preview:${surface.id}`]),
+			syncingPreview,
 		]);
 		if (previewKey === this.#previewKey) {
 			if (!showDoor) {
@@ -1930,23 +2003,54 @@ export class AppWorkbenchView {
 			const mounted = this.#drawLiveMount(surface);
 			this.#previewEmpty.hidden = mounted;
 			if (!mounted) {
-				replace(
-					this.#previewEmpty,
-					h("p", null, t("No preview changes on this track yet. Ask for a change or inspect Mockups and Plans.")),
-					liveHref
-						? h(
-								"a",
-								{
-									class: "btn btn-small",
-									href: liveHref,
-									target: "_blank",
-									rel: "noopener noreferrer",
-								},
-								icon("external"),
-								h("span", null, t("Open live app")),
-							)
-						: null,
-				);
+				if (pendingTrackChanges > 0 && selected) {
+					replace(
+						this.#previewEmpty,
+						syncingPreview ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
+						h(
+							"p",
+							null,
+							syncingPreview
+								? t("Loading track preview…")
+								: t("This track has staged changes ready to preview."),
+						),
+						!syncingPreview
+							? h(
+									"button",
+									{
+										type: "button",
+										class: "btn btn-small btn-primary",
+										"data-act": "preview-track",
+										"data-session": selected.id,
+									},
+									icon("globe"),
+									h("span", null, t("Preview track")),
+								)
+							: null,
+					);
+				} else {
+					replace(
+						this.#previewEmpty,
+						h(
+							"p",
+							null,
+							t("No preview changes on this track yet. Ask for a change or inspect Mockups and Plans."),
+						),
+						liveHref
+							? h(
+									"a",
+									{
+										class: "btn btn-small",
+										href: liveHref,
+										target: "_blank",
+										rel: "noopener noreferrer",
+									},
+									icon("external"),
+									h("span", null, t("Open live app")),
+								)
+							: null,
+					);
+				}
 			}
 		}
 	}
@@ -2487,20 +2591,33 @@ export class AppWorkbenchView {
 			case "address":
 				this.#address.toggle(event.detail === 0);
 				return;
+			case "open-source":
+				this.#address.openSource(event.detail === 0);
+				return;
 			case "open-publish":
 				openPublishSheet(store, surface);
 				return;
 			case "full-preview":
 				this.#options.onFullPreview?.();
 				return;
-			case "toggle-panel":
+			case "toggle-tracks": {
+				this.#tracksOpen = !this.#tracksOpen;
+				this.#tracksUserPinned = true;
+				if (this.#tracksOpen && this.#panelOpen && this.#isTightRowLayout()) {
+					this.#panelOpen = false;
+				}
+				this.update(surface);
+				return;
+			}
+			case "toggle-panel": {
 				this.#panelOpen = !this.#panelOpen;
+				if (this.#panelOpen && this.#tracksOpen && this.#isTightRowLayout()) {
+					this.#tracksOpen = false;
+					this.#tracksUserPinned = false;
+				}
 				this.update(surface);
 				return;
-			case "close-panel":
-				this.#panelOpen = false;
-				this.update(surface);
-				return;
+			}
 			case "panel-tab": {
 				const tab = target.dataset.tab as WorkbenchPanelTab | undefined;
 				if (!tab) return;
@@ -2509,6 +2626,10 @@ export class AppWorkbenchView {
 				} else {
 					this.#panelOpen = true;
 					this.#panelTab = tab;
+					if (this.#tracksOpen && this.#isTightRowLayout()) {
+						this.#tracksOpen = false;
+						this.#tracksUserPinned = false;
+					}
 				}
 				this.update(surface);
 				return;
@@ -2517,6 +2638,7 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, null);
@@ -2530,6 +2652,7 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, sessionId);
@@ -2559,6 +2682,10 @@ export class AppWorkbenchView {
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
 				this.#explicitCombineActive = true;
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
+					this.#tracksOpen = false;
+					this.#tracksUserPinned = false;
+				}
 				await store.combineTracks(surface.id, ids, false);
 				this.update(surface);
 				return;
@@ -2582,9 +2709,14 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
+					this.#tracksOpen = false;
+					this.#tracksUserPinned = false;
+				}
 				store.selectTrack(surface.id, sessionId);
 				await store.selectTrackPreview(surface.id, {
 					sessionId,
@@ -2602,6 +2734,7 @@ export class AppWorkbenchView {
 			}
 			case "refresh-preview":
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				await store.retryPreview(surface.id, { keepExplicitCombine: this.#explicitCombineActive });
 				return;
 			case "stop-turn": {
@@ -2644,6 +2777,7 @@ export class AppWorkbenchView {
 				if (ok) {
 					this.#explicitCombineActive = false;
 					this.#lastTrackAutoSyncKey = "";
+					this.#lastInitialTrackSyncKey = "";
 					const nextActive = store.workspace(surface.id)?.activeSessions[0]?.id ?? null;
 					store.selectTrack(surface.id, nextActive);
 					this.#syncPreviewToSelection(surface, nextActive);
@@ -2669,6 +2803,10 @@ export class AppWorkbenchView {
 				} else {
 					this.#panelTab = "plans";
 					this.#selectedPlanId = artifactId;
+				}
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
+					this.#tracksOpen = false;
+					this.#tracksUserPinned = false;
 				}
 				const session = store.session(store.selectedTrackOf(surface.id) ?? "");
 				const meta = session?.artifacts?.find((item) => item.id === artifactId);

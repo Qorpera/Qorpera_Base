@@ -740,4 +740,146 @@ describe("AppWorkbenchView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("renders a single tab strip, toggles the tracks rail, opens code source from the repo chip, and auto-loads ready track previews", async () => {
+		const webApp = appSummary();
+		const trackA = session(["staged"], { id: SESSION, surfaceId: webApp.id, title: "3D Canvas Studio" });
+		const trackB = session(["staged"], {
+			id: SESSION_2,
+			surfaceId: webApp.id,
+			title: "Guided Vibe Flow",
+			changes: [
+				change(CHANGES[1], 1, "staged", { sessionId: SESSION_2, surfaceId: webApp.id, title: "Guided flow" }),
+			],
+		});
+		let currentPreview: SurfacePreviewCompositionState = {
+			surfaceId: webApp.id,
+			mode: "single",
+			selectedSessionId: null,
+			previewScope: "track",
+			primary: {
+				previewId: null,
+				status: "live_baseline",
+				doorActionUrl: null,
+				memberPass: null,
+				activeRoute: "/",
+				toggledChangeIds: [],
+				conflictReport: null,
+				errorDetail: null,
+			},
+			compareFrames: [],
+		};
+		const selectSurfaceTrackPreview = vi.fn(
+			async (_surfaceId: string, opts?: { sessionId?: string | null; activeRoute?: string }) => {
+				currentPreview = {
+					surfaceId: webApp.id,
+					mode: "single",
+					selectedSessionId: opts?.sessionId ?? null,
+					previewScope: "track",
+					primary: {
+						previewId: PREVIEW_IDS[0],
+						status: "ready",
+						doorActionUrl: "https://stifteren-web-app--p0.qorpera.site/__qorpera/member",
+						memberPass: VALID_PASS,
+						activeRoute: opts?.activeRoute ?? "/",
+						toggledChangeIds: [CHANGES[0]],
+						conflictReport: null,
+						errorDetail: null,
+					},
+					compareFrames: [],
+				};
+				return currentPreview;
+			},
+		);
+		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [webApp]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([trackA, trackB], { surface: webApp, previewState: currentPreview }),
+			),
+			selectSurfaceTrackPreview,
+			listCompanyCodeRepositories: vi.fn(async () => []),
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				isSiteLive: () => false,
+				siteHosting: () => ({ siteId: HOSTED_SITE, client: hosting.client }),
+				managesSites: () => true,
+			},
+			"web-app",
+		);
+		document.body.append(view.el);
+		const unsub = store.store.subscribe(() => view.update());
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		expect(view.el.querySelector(".workbench-panel-head")).toBeNull();
+		expect(view.el.querySelectorAll('.workbench-tab-group [data-act="panel-tab"]').length).toBe(4);
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledTimes(1);
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledWith(SURFACE, { sessionId: SESSION, activeRoute: "/" });
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Isolated track preview");
+		expect(view.el.querySelector(".workbench-bar-left > .surface-pill-address")).not.toBeNull();
+		expect(view.el.querySelector('.workbench-inline-changes [data-act="approve-change"]')).toBeNull();
+
+		currentPreview = {
+			...currentPreview,
+			selectedSessionId: SESSION_2,
+			previewScope: "track",
+			primary: {
+				...currentPreview.primary,
+				previewId: PREVIEW_IDS[1],
+				toggledChangeIds: [CHANGES[1]],
+			},
+		};
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector('.workbench-preview-empty [data-act="preview-track"]')).not.toBeNull();
+
+		const tracksRail = view.el.querySelector<HTMLElement>(".workbench-tracks")!;
+		expect(tracksRail.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(true);
+		expect(view.el.querySelector(".workbench-tracks-toggle .workbench-count-badge")?.textContent).toBe("2");
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+
+		const body = view.el.querySelector<HTMLElement>(".workbench-body")!;
+		const panel = view.el.querySelector<HTMLElement>(".workbench-panel")!;
+		Object.defineProperty(body, "clientWidth", { configurable: true, value: 1000 });
+		view.update();
+		expect(Number.parseInt(panel.style.width, 10)).toBeLessThanOrEqual(1000 - 236 - 380);
+
+		body.style.flexDirection = "column";
+		Object.defineProperty(body, "clientWidth", { configurable: true, value: 420 });
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(true);
+		expect(panel.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(false);
+
+		view.el.querySelector<HTMLButtonElement>('.workbench-repo-chip[data-act="open-source"]')!.click();
+		await flush();
+		expect(view.el.querySelector('.surface-address-page[data-page="source"]')).not.toBeNull();
+
+		unsub();
+		view.dispose();
+		store.dispose();
+	});
 });
