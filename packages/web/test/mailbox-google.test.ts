@@ -310,7 +310,7 @@ describe("Mail at Google under Addresses", () => {
 		];
 		for (const [code, message, expected, hidesOffer] of rpcCases) {
 			let now = 1_000_000;
-			vi.spyOn(Date, "now").mockImplementation(() => now);
+			const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
 			const { main, controller, google } = await mailbox(() => {}, "owner", {
 				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
 				connectExisting: async () => {
@@ -332,7 +332,7 @@ describe("Mail at Google under Addresses", () => {
 			}
 			for (const dispose of cleanup.splice(0).reverse()) dispose();
 			document.body.replaceChildren();
-			vi.restoreAllMocks();
+			nowSpy.mockRestore();
 		}
 	});
 });
