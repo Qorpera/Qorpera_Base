@@ -15,6 +15,7 @@ const MAX_CATEGORIES = 120;
 const MAX_POINTS = 240;
 const MAX_SERIES = 16;
 const NUMBER_TEXT = /^-?\d+(?:\.\d+)?$/;
+const CODE_TEXT = /^0\d/;
 const DAY_TEXT = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/;
 const MONTH_TEXT = /^(\d{4})-(\d{2})$/;
 
@@ -79,10 +80,13 @@ export function lastRecord(answer: CloudMemberDataAnswer): Record<string, unknow
 	return answerRecords(answer).at(-1);
 }
 
-export function figureText(value: unknown): string | undefined {
+export function figureText(value: unknown, grouping = true): string | undefined {
+	if (typeof value === "string" && CODE_TEXT.test(value.trim())) return value;
 	const number = answerNumber(value);
 	if (number !== null) {
-		return new Intl.NumberFormat(presentationLocale(), { maximumFractionDigits: 2 }).format(number);
+		return new Intl.NumberFormat(presentationLocale(), { maximumFractionDigits: 2, useGrouping: grouping }).format(
+			number,
+		);
 	}
 	if (typeof value === "string") return value.trim() === "" ? undefined : value;
 	if (typeof value === "boolean") return String(value);
@@ -297,6 +301,10 @@ export class SurfaceAsks {
 		const asked = askQuestion(source);
 		const key = asked ? askKey(asked) : `!${source.ask}`;
 		const known = this.#entries.get(key);
+		if (known?.started && known.source && known.state === UNAVAILABLE) {
+			known.started = false;
+			this.#set(known, LOADING);
+		}
 		if (known) return known;
 		if (parent !== undefined) {
 			for (const [other, entry] of this.#entries) {

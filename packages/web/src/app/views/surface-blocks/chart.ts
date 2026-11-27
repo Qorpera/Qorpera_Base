@@ -45,18 +45,26 @@ interface ChartPaint {
 	readonly paints: ChartEngine.SurfaceChartPaints | undefined;
 }
 
+interface DrawnChart {
+	readonly show: (chart: ChartPaint) => void;
+}
+
+type FollowChart = (show: (chart: ChartPaint) => void, signal: AbortSignal) => void;
+
 function mountChartInto(
 	host: HTMLElement,
 	chart: ChartPaint,
 	signal: AbortSignal,
 	fallback: { readonly width: number; readonly height: number },
-): void {
+): DrawnChart {
+	let latest = chart;
+	let mounted: ChartEngine.SurfaceChartMount | undefined;
 	loadChartEngine().then(
 		(lib) => {
 			if (signal.aborted) return;
 			host.classList.remove("is-loading");
-			lib.mountSurfaceChart(host, signal, chart.doc, fallback, chart.paints);
-			host.dataset.chart = chart.doc.kind;
+			mounted = lib.mountSurfaceChart(host, signal, latest.doc, fallback, latest.paints);
+			host.dataset.chart = latest.doc.kind;
 		},
 		() => {
 			if (signal.aborted) return;
@@ -64,6 +72,14 @@ function mountChartInto(
 			host.replaceChildren(h("p", { class: "studio-chart-note" }, t("The chart couldn't load.")));
 		},
 	);
+	return {
+		show: (next) => {
+			latest = next;
+			if (!mounted || signal.aborted) return;
+			mounted.repaint(next.doc, next.paints);
+			host.dataset.chart = next.doc.kind;
+		},
+	};
 }
 
 function isJob(value: string): boolean {
@@ -129,6 +145,7 @@ function openWide(
 	chart: ChartPaint,
 	chartSignal: AbortSignal,
 	caption: string | undefined,
+	follow?: FollowChart,
 ): void {
 	fullscreen.openContent(
 		heading,
@@ -143,7 +160,8 @@ function openWide(
 				role: "img",
 				"aria-label": heading,
 			});
-			mountChartInto(wideHost, chart, dialogLife.signal, { width: 960, height: 540 });
+			const wide = mountChartInto(wideHost, chart, dialogLife.signal, { width: 960, height: 540 });
+			follow?.(wide.show, dialogLife.signal);
 			return h(
 				"div",
 				{ class: "studio-chart-wide" },
@@ -211,33 +229,48 @@ function liveChart(
 		caption ? h("p", { class: "studio-chart-caption" }, caption) : null,
 	);
 	let life: AbortController | undefined;
+	let drawn: DrawnChart | undefined;
 	let expand: HTMLElement | undefined;
 	let current: SurfaceAskChart | null = null;
 	let earlier: SurfaceAskChart | null = null;
 	let following: string | undefined;
+	let shown: ChartPaint | undefined;
+	const wide = new Set<(chart: ChartPaint) => void>();
+	const follow: FollowChart = (show, signal) => {
+		wide.add(show);
+		signal.addEventListener("abort", () => wide.delete(show), { once: true });
+	};
 	const clear = () => {
 		life?.abort();
 		life = undefined;
+		drawn = undefined;
 		expand?.remove();
 		expand = undefined;
 	};
 	const mount = () => {
 		if (!current) return;
-		clear();
 		const compared = earlier && current.days ? t("Previous {count} days", { count: current.days.count }) : undefined;
 		const doc = compared ? withPrevious(current, earlier, compared) : current.doc;
 		const chart: ChartPaint = {
 			doc,
 			paints: chartPaints(block, ctx, doc, current.keys, doc === current.doc ? undefined : compared),
 		};
-		const drawn = new AbortController();
-		life = drawn;
-		chartSignal.addEventListener("abort", () => drawn.abort(), { once: true, signal: drawn.signal });
 		section.dataset.chartKind = doc.kind;
+		shown = chart;
+		for (const show of wide) show(chart);
+		if (drawn && life) {
+			drawn.show(chart);
+			return;
+		}
+		const lives = new AbortController();
+		life = lives;
+		chartSignal.addEventListener("abort", () => lives.abort(), { once: true, signal: lives.signal });
 		const host = chartHost(heading, height);
 		body.replaceChildren(h("figure", { class: "studio-chart-frame" }, host));
-		mountChartInto(host, chart, drawn.signal, { width: 720, height });
-		expand = expandButton(heading, () => openWide(fullscreen, heading, chart, drawn.signal, caption));
+		drawn = mountChartInto(host, chart, lives.signal, { width: 720, height });
+		expand = expandButton(heading, () => {
+			if (shown) openWide(fullscreen, heading, shown, chartSignal, caption, follow);
+		});
 		head.append(expand);
 	};
 	const compare = (shaped: SurfaceAskChart) => {
@@ -261,9 +294,10 @@ function liveChart(
 			if (!life) body.replaceChildren(h("figure", { class: "studio-chart-frame" }, chartHost(heading, height)));
 			return;
 		}
-		clear();
 		section.removeAttribute("title");
-		current = null;
+		const shaped = state.state === "answered" ? answerChart(state.answer, source) : null;
+		current = shaped;
+		if (!shaped) clear();
 		if (state.state === "refused") {
 			body.replaceChildren(homeLocked());
 			return;
@@ -272,12 +306,10 @@ function liveChart(
 			body.replaceChildren(homeUnknown());
 			return;
 		}
-		const shaped = answerChart(state.answer, source);
 		if (!shaped) {
 			body.replaceChildren(homeEmpty(t("No chart data yet")));
 			return;
 		}
-		current = shaped;
 		const age = answerAge(state.answer);
 		if (age) section.title = age;
 		mount();

@@ -786,20 +786,30 @@ function buildSurfaceChartOption(
 	}
 }
 
+export interface SurfaceChartMount extends ChartMount<SurfaceChartDocument> {
+	readonly repaint: (doc: SurfaceChartDocument, paints: SurfaceChartPaints | undefined) => void;
+}
+
 export function mountSurfaceChart(
 	container: HTMLElement,
 	signal: AbortSignal,
 	initial: SurfaceChartDocument,
 	fallback: ChartSize = DEFAULT_SIZE,
 	paints?: SurfaceChartPaints,
-): ChartMount<SurfaceChartDocument> {
+): SurfaceChartMount {
 	const host = createChartHost(container, signal, fallback);
 	let data = initial;
-	const paint = (theme: ChartTheme) => buildSurfaceChartOption(data, theme, container, paints);
+	let colours = paints;
+	const paint = (theme: ChartTheme) => buildSurfaceChartOption(data, theme, container, colours);
 	host.paint(paint);
 	return {
 		update: (next) => {
 			data = next;
+			host.paint(paint);
+		},
+		repaint: (next, nextPaints) => {
+			data = next;
+			colours = nextPaints;
 			host.paint(paint);
 		},
 		disposed: host.disposed,

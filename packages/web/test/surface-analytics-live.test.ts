@@ -223,6 +223,10 @@ describe("live asks: pure helpers", () => {
 		expect(figureText(0)).toBe("0");
 		expect(figureText("DKK")).toBe("DKK");
 		expect(figureText(null)).toBeUndefined();
+		expect(figureText("0800")).toBe("0800");
+		expect(figureText("10042", false)).toBe("10042");
+		expect(figureText(2026, false)).toBe("2026");
+		expect(figureText("1234.567", false)).toBe("1234.57");
 	});
 
 	it("turns an answer into a chart: dates in order, one series per y, digit strings as numbers", () => {
@@ -340,6 +344,36 @@ describe("live asks: the page's cache", () => {
 		expect(asks.handle({ ask: "shop/orders", pick: "n" }).state.state).toBe("unavailable");
 		life.abort();
 	});
+
+	it("asks again on the next plan after a first call failed, and tells the earlier followers", async () => {
+		const life = new AbortController();
+		let calls = 0;
+		const numbers = new FakeLive(async () => {
+			calls += 1;
+			if (calls === 1) throw new Error("did not answer (502)");
+			return NUMBERS["orders-now"]!;
+		});
+		const asks = new SurfaceAsks({ numbers }, life.signal);
+		const seen: SurfaceAskState["state"][] = [];
+		asks
+			.handle({ ask: "qorpera/orders-now", pick: "to_pack" })
+			.follow((state) => seen.push(state.state), life.signal);
+		await settle();
+		expect(seen).toEqual(["loading", "unavailable"]);
+		const again = asks.handle({ ask: "qorpera/orders-now", pick: "to_pack" });
+		expect(again.state.state).toBe("loading");
+		again.follow(() => undefined, life.signal);
+		await settle();
+		expect(seen).toEqual(["loading", "unavailable", "loading", "answered"]);
+		expect(asks.handle({ ask: "qorpera/orders-now", pick: "to_pack" }).state.state).toBe("answered");
+		expect(calls).toBe(3);
+
+		const locked = new SurfaceAsks({ numbers: numbersLive(["money-balance"]) }, life.signal);
+		locked.handle({ ask: "qorpera/money-balance", pick: "balance" }).follow(() => undefined, life.signal);
+		await settle();
+		expect(locked.handle({ ask: "qorpera/money-balance", pick: "balance" }).state.state).toBe("refused");
+		life.abort();
+	});
 });
 
 const NOW_LAYOUT = {
@@ -418,6 +452,44 @@ describe("live asks on the page", () => {
 		life.abort();
 	});
 
+	it("draws a pushed answer into the same chart, also while it is shown large", async () => {
+		const life = new AbortController();
+		const numbers = numbersLive();
+		const root = mount(planOf(layoutView({ numbers }, life.signal), NOW_LAYOUT));
+		await settle();
+		const host = root.querySelector<HTMLElement>(".studio-chart-host")!;
+		await chartOption(host);
+		root.querySelector<HTMLButtonElement>('[data-block="chart"] [data-act="studio-expand"]')!.click();
+		const wide = await vi.waitFor(
+			() => {
+				const found = document.querySelector<HTMLElement>(".studio-chart-host.is-fullscreen");
+				expect(found && getInstanceByDom(found)).toBeTruthy();
+				return found!;
+			},
+			{ timeout: 5_000, interval: 10 },
+		);
+		const days = numbers.watches.find((watch) => watch.asked.question === "orders-days")!;
+		days.push(
+			days.id,
+			answer(
+				["day", "orders"],
+				[
+					["2026-11-25", 7],
+					["2026-11-26", 13],
+				],
+				"e2",
+			),
+		);
+		const values = (option: Awaited<ReturnType<typeof chartOption>>) =>
+			option.series[0]?.data?.map((point) => (point as { value?: unknown }).value ?? point);
+		expect(root.querySelector(".studio-chart-host")).toBe(host);
+		expect(host.classList.contains("is-loading")).toBe(false);
+		expect(values(await chartOption(host))).toEqual([7, 13]);
+		expect(getInstanceByDom(wide)).toBeTruthy();
+		expect(values(await chartOption(wide))).toEqual([7, 13]);
+		life.abort();
+	});
+
 	it("locks a chart the member may not read and shows ? where nothing can be asked", async () => {
 		const life = new AbortController();
 		const plan = planOf(layoutView({ numbers: numbersLive(["money-balance"]) }, life.signal), NOW_LAYOUT, {
@@ -482,6 +554,7 @@ describe("live asks on the page", () => {
 						[
 							["/", "1200"],
 							["/shop", 300],
+							["/order/0042", "0042"],
 						],
 					)
 				: answer(["visits", "orders"], [[10, 2]]),
@@ -517,9 +590,11 @@ describe("live asks on the page", () => {
 		]);
 		expect([...root.querySelectorAll(".studio-table td")].map((cell) => cell.textContent)).toEqual([
 			"/",
-			(1200).toLocaleString("en"),
+			"1200",
 			"/shop",
 			"300",
+			"/order/0042",
+			"0042",
 		]);
 		life.abort();
 	});

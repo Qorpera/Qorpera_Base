@@ -327,7 +327,7 @@ function liveTable(
 			return;
 		}
 		const rows = answerRecords(state.answer).map((row) =>
-			Object.fromEntries(Object.entries(row).map(([key, value]) => [key, figureText(value) ?? value])),
+			Object.fromEntries(Object.entries(row).map(([key, value]) => [key, figureText(value, false) ?? value])),
 		);
 		if (rows.length === 0) {
 			body.replaceChildren(paleTable(columns));
