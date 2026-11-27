@@ -27,7 +27,22 @@ const MAIL_ATTACHMENTS = 10;
 const MAIL_RECIPIENTS = 10;
 const MAIL_SUBJECT_CHARACTERS = 200;
 const MAIL_TEXT_CHARACTERS = 20_000;
-const FIND_KEYS = new Set(["mailbox", "to", "from", "subject", "since", "before", "waitSeconds"]);
+const FIND_KEYS = new Set(["mailbox", "to", "from", "subject", "since", "before", "view", "limit", "waitSeconds"]);
+const FIND_VIEWS = new Set(["inbox", "starred", "trash", "archived", "all"]);
+const THREAD_ID = /^[A-Za-z0-9_-]{43}$/;
+const MANAGE_MAIL_ACTIONS = new Set([
+	"trash",
+	"restore",
+	"archive",
+	"unarchive",
+	"star",
+	"unstar",
+	"unsubscribe",
+	"block_sender",
+	"unblock_sender",
+	"list_blocked",
+]);
+const THREAD_BULK_ACTIONS = new Set(["trash", "restore", "archive", "unarchive", "star", "unstar"]);
 /** An instant with its offset, as the database reads it. */
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:?\d{2})$/;
 const FIND_WAIT_SECONDS = 120;
@@ -154,10 +169,18 @@ export const CLOUD_SEND_MAIL_TOOL_DESCRIPTION = [
 ].join("\n");
 
 export const CLOUD_FIND_MAIL_TOOL_DESCRIPTION = [
-	"Find email that arrived at your company's mailboxes in the last days, such as the confirmation a website sends when you sign the company up.",
-	"Filters: mailbox (its address as list_hooks shows it); to, the address it was delivered to (a +tag address such as acme+stripe@… reaches acme@… and is found by its full address); from and subject, parts of them in any case; since, an instant with its offset (the last 24 hours by default, never more than 7 days back); before, an instant with its offset, to page back.",
+	"Find email that arrived at your company's mailboxes (both Qorpera addresses and brought-in Google mail), such as verification messages or newsletters to clean up.",
+	"Filters: mailbox (its address as list_hooks shows it); to, the address it was delivered to (including +tag addresses); from and subject, case-insensitive substrings; view ('inbox', 'starred', 'trash', 'archived', or 'all'; omitting view excludes Trash); limit (1 to 50, default 10, or 25 when view is set); since, an instant with its offset (last 24 hours by default, or last 365 days when view is set, up to 10 years back); before, an instant with its offset, to page back.",
 	`waitSeconds (up to ${FIND_WAIT_SECONDS}) waits for a matching email to arrive before answering: give since as the moment you acted, so earlier mail does not count.`,
-	"The answer lists up to 10 emails, newest first, each with its deliveryId, mailbox, deliveredTo, from, subject, the sender's authentication (spf, dkim and dmarc verdicts) and receivedAt. more says there may be others: pass nextBefore as before for the next older ones. Read one whole with read_event.",
+	"The answer lists matching emails, newest first, each with deliveryId, threadId, mailbox, deliveredTo, from, subject, authentication, receivedAt, and when present starred, archived, trashed, and parsed unsubscribe info (oneClickUrl, mailto, webUrls). more says there may be others: pass nextBefore as before for the next older page. Read one whole with read_event and act on it with manage_mail.",
+].join("\n");
+
+export const CLOUD_MANAGE_MAIL_TOOL_DESCRIPTION = [
+	"Manage email in your company's Mailbox (including brought-in Google mail, syncing changes back to Gmail automatically): move conversations to Trash or restore them, archive or move back to Inbox, star (favorite) or unstar, unsubscribe from newsletters, and block or unblock senders.",
+	"- trash, restore, archive, unarchive, star, unstar: pass threadIds (from find_mail) and/or deliveryIds (up to 50 at once). Moving mail to Trash is reversible; permanent deletion is not offered.",
+	"- unsubscribe: pass threadId or deliveryId of a newsletter/mailing-list email. Uses RFC 8058 one-click POST or mailto automatically when the email's List-Unsubscribe header supports it. If it returns status 'browser_required' with urls, open the unsubscribe page in a browser on your company/coding machine to complete unsubscribing (report any CAPTCHA or login gate to the member).",
+	"- block_sender / unblock_sender: pass sender (an exact email address like news@example.com or a domain like @example.com). Blocking auto-trashes future mail from that sender, suppresses routine wakes, creates a Gmail Trash filter on brought-in Google mailboxes, and optionally trashes existing matching threads (trashExisting defaults to true).",
+	"- list_blocked: list currently blocked sender addresses and domains.",
 ].join("\n");
 
 export const CLOUD_MANAGE_HOOK_TOOL_DESCRIPTION = [
@@ -501,6 +524,8 @@ export function cloudEventTools(
 				to: { type: "string", minLength: 3, maxLength: 320 },
 				from: { type: "string", minLength: 1, maxLength: 320 },
 				subject: { type: "string", minLength: 1, maxLength: MAIL_SUBJECT_CHARACTERS },
+				view: { type: "string", enum: ["inbox", "starred", "trash", "archived", "all"] },
+				limit: { type: "integer", minimum: 1, maximum: 50 },
 				since: { type: "string", format: "date-time" },
 				before: { type: "string", format: "date-time" },
 				waitSeconds: { type: "integer", minimum: 0, maximum: FIND_WAIT_SECONDS },
@@ -518,7 +543,7 @@ export function cloudEventTools(
 				return trimmed;
 			};
 			if (Object.keys(a).some((key) => !FIND_KEYS.has(key))) throw new Error("Invalid mail search");
-			const request: Record<string, string> = {};
+			const request: Record<string, string | number> = {};
 			for (const [key, least, most] of [
 				["mailbox", 3, 320],
 				["to", 3, 320],
@@ -527,6 +552,15 @@ export function cloudEventTools(
 			] as const) {
 				const field = text(key, least, most);
 				if (field !== undefined) request[key] = field;
+			}
+			if (a.view !== undefined) {
+				if (typeof a.view !== "string" || !FIND_VIEWS.has(a.view)) throw new Error("Invalid mail search");
+				request.view = a.view;
+			}
+			if (a.limit !== undefined) {
+				if (!Number.isSafeInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 50)
+					throw new Error("Invalid mail search");
+				request.limit = a.limit as number;
 			}
 			for (const key of ["since", "before"] as const) {
 				const instant = a[key];
@@ -546,7 +580,7 @@ export function cloudEventTools(
 		},
 		async execute(value, context) {
 			assertContext(context);
-			const { request, waitSeconds } = value as { request: Record<string, string>; waitSeconds: number };
+			const { request, waitSeconds } = value as { request: Record<string, string | number>; waitSeconds: number };
 			// With waitSeconds, look again every few seconds until a match arrives or the time is up.
 			const deadline = Date.now() + waitSeconds * 1000;
 			for (;;) {
@@ -562,7 +596,7 @@ export function cloudEventTools(
 					r.schema !== "qorpera.agent-mail-search/v1" ||
 					r.runId !== admitted.runId ||
 					!Array.isArray(r.mails) ||
-					r.mails.length > 10 ||
+					r.mails.length > 50 ||
 					typeof r.more !== "boolean"
 				)
 					throw new Error("Mail search differs");
@@ -638,5 +672,146 @@ export function cloudEventTools(
 			};
 		},
 	};
-	return [listHooks, readEvent, sendMail, findMail, ...(manageHook ? [manageHook] : [])];
+	const manageMail: CloudNativeTool = {
+		name: "manage_mail" satisfies CloudRuntimeToolOperation,
+		source: "runtime",
+		description: CLOUD_MANAGE_MAIL_TOOL_DESCRIPTION,
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["action"],
+			properties: {
+				action: {
+					type: "string",
+					enum: [
+						"trash",
+						"restore",
+						"archive",
+						"unarchive",
+						"star",
+						"unstar",
+						"unsubscribe",
+						"block_sender",
+						"unblock_sender",
+						"list_blocked",
+					],
+				},
+				threadIds: {
+					type: "array",
+					items: { type: "string", pattern: THREAD_ID.source },
+					minItems: 1,
+					maxItems: 50,
+				},
+				deliveryIds: {
+					type: "array",
+					items: { type: "string", pattern: UUID.source },
+					minItems: 1,
+					maxItems: 50,
+				},
+				threadId: { type: "string", pattern: THREAD_ID.source },
+				deliveryId: { type: "string", pattern: UUID.source },
+				sender: { type: "string", minLength: 3, maxLength: 320 },
+				trashExisting: { type: "boolean" },
+			},
+		},
+		parseArguments(value) {
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new CloudToolArgumentRefusal("manage_mail takes an object with action");
+			const a = value as Record<string, unknown>;
+			if (typeof a.action !== "string" || !MANAGE_MAIL_ACTIONS.has(a.action))
+				throw new CloudToolArgumentRefusal("action is not a valid manage_mail action");
+			const action = a.action;
+			if (THREAD_BULK_ACTIONS.has(action)) {
+				if (Object.keys(a).some((k) => k !== "action" && k !== "threadIds" && k !== "deliveryIds"))
+					throw new CloudToolArgumentRefusal(`${action} accepts only threadIds and deliveryIds`);
+				const request: Record<string, JsonValue> = { action };
+				let count = 0;
+				if (a.threadIds !== undefined) {
+					if (
+						!Array.isArray(a.threadIds) ||
+						a.threadIds.length === 0 ||
+						a.threadIds.length > 50 ||
+						a.threadIds.some((id) => typeof id !== "string" || !THREAD_ID.test(id))
+					)
+						throw new CloudToolArgumentRefusal("threadIds must be 1 to 50 valid thread ids");
+					request.threadIds = [...new Set(a.threadIds as string[])];
+					count += (request.threadIds as string[]).length;
+				}
+				if (a.deliveryIds !== undefined) {
+					if (
+						!Array.isArray(a.deliveryIds) ||
+						a.deliveryIds.length === 0 ||
+						a.deliveryIds.length > 50 ||
+						a.deliveryIds.some((id) => typeof id !== "string" || !UUID.test(id))
+					)
+						throw new CloudToolArgumentRefusal("deliveryIds must be 1 to 50 valid delivery ids");
+					request.deliveryIds = [...new Set((a.deliveryIds as string[]).map((id) => id.toLowerCase()))];
+					count += (request.deliveryIds as string[]).length;
+				}
+				if (count === 0 || count > 50)
+					throw new CloudToolArgumentRefusal("Provide between 1 and 50 threadIds or deliveryIds");
+				return request;
+			}
+			if (action === "unsubscribe") {
+				if (Object.keys(a).some((k) => k !== "action" && k !== "threadId" && k !== "deliveryId"))
+					throw new CloudToolArgumentRefusal("unsubscribe accepts only threadId and deliveryId");
+				const request: Record<string, JsonValue> = { action };
+				if (a.threadId !== undefined) {
+					if (typeof a.threadId !== "string" || !THREAD_ID.test(a.threadId))
+						throw new CloudToolArgumentRefusal("threadId is invalid");
+					request.threadId = a.threadId;
+				}
+				if (a.deliveryId !== undefined) {
+					if (typeof a.deliveryId !== "string" || !UUID.test(a.deliveryId))
+						throw new CloudToolArgumentRefusal("deliveryId is invalid");
+					request.deliveryId = a.deliveryId.toLowerCase();
+				}
+				if (request.threadId === undefined && request.deliveryId === undefined)
+					throw new CloudToolArgumentRefusal("unsubscribe requires threadId or deliveryId");
+				return request;
+			}
+			if (action === "block_sender" || action === "unblock_sender") {
+				const allowed = action === "block_sender" ? ["action", "sender", "trashExisting"] : ["action", "sender"];
+				if (Object.keys(a).some((k) => !allowed.includes(k)))
+					throw new CloudToolArgumentRefusal(`${action} accepts only ${allowed.join(", ")}`);
+				if (
+					typeof a.sender !== "string" ||
+					a.sender.trim().length < 3 ||
+					a.sender.trim().length > 320 ||
+					/\p{Cc}/u.test(a.sender)
+				)
+					throw new CloudToolArgumentRefusal("sender must be a valid email address or @domain");
+				if (action === "block_sender" && a.trashExisting !== undefined && typeof a.trashExisting !== "boolean")
+					throw new CloudToolArgumentRefusal("trashExisting must be a boolean");
+				const result: Record<string, JsonValue> = {
+					action,
+					sender: a.sender.trim(),
+				};
+				if (action === "block_sender" && typeof a.trashExisting === "boolean") {
+					result.trashExisting = a.trashExisting;
+				}
+				return result;
+			}
+			if (Object.keys(a).some((k) => k !== "action"))
+				throw new CloudToolArgumentRefusal("list_blocked takes no additional parameters");
+			return { action };
+		},
+		async execute(value, context) {
+			assertContext(context);
+			const result = await cloudToolRequest(
+				(requestSignal) =>
+					control.call(
+						"qorpera_manage_agent_mail",
+						{ p_binding: admitted, p_call_id: context.callId, p_request: value },
+						requestSignal,
+					),
+				context.signal,
+			);
+			const r = result as Record<string, unknown> | null;
+			if (!r || typeof r !== "object" || r.schema !== "qorpera.agent-mail-action/v1" || r.runId !== admitted.runId)
+				throw new Error("Mail action receipt differs");
+			return { kind: "text", value: cloudToolJsonText(r) };
+		},
+	};
+	return [listHooks, readEvent, sendMail, findMail, manageMail, ...(manageHook ? [manageHook] : [])];
 }

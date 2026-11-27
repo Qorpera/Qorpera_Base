@@ -679,7 +679,7 @@ describe("agent event tools", () => {
 		for (const [callId, answer] of [
 			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
 			["s12", { schema: "qorpera.agent-mail/v1" }],
-			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s13", { mails: Array.from({ length: 51 }, () => mail) }],
 			["s14", { more: "no" }],
 		] as const) {
 			const other = await fixture((_method, _args, runId) =>
@@ -1152,6 +1152,75 @@ describe("agent event tools", () => {
 				expect(() => cloudEventTools(f.binding, f.run.identity, { call: f.call }, theirs)).toThrow(
 					"Event binding differs",
 				);
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+	});
+
+	describe("manage_mail", () => {
+		const threadId = "A".repeat(43);
+		const deliveryId = "73100000-0000-4000-8000-0000000000aa";
+
+		it("forwards trash, star, unsubscribe, block_sender, and list_blocked to qorpera_manage_agent_mail", async () => {
+			const calls: unknown[] = [];
+			const f = await fixture((method, args, runId) => {
+				expect(method).toBe("qorpera_manage_agent_mail");
+				calls.push(args.p_request);
+				return {
+					schema: "qorpera.agent-mail-action/v1",
+					runId,
+					action: (args.p_request as Record<string, unknown>).action,
+					updatedCount: 1,
+				};
+			});
+			try {
+				const trashed = await f.boundary.invoke("m1", "qorpera", "manage_mail", {
+					action: "trash",
+					threadIds: [threadId],
+				});
+				expect(trashed.success).toBe(true);
+				const unsub = await f.boundary.invoke("m2", "qorpera", "manage_mail", {
+					action: "unsubscribe",
+					deliveryId,
+				});
+				expect(unsub.success).toBe(true);
+				const blocked = await f.boundary.invoke("m3", "qorpera", "manage_mail", {
+					action: "block_sender",
+					sender: "promo@example.org",
+					trashExisting: true,
+				});
+				expect(blocked.success).toBe(true);
+				const listed = await f.boundary.invoke("m4", "qorpera", "manage_mail", {
+					action: "list_blocked",
+				});
+				expect(listed.success).toBe(true);
+				expect(calls).toEqual([
+					{ action: "trash", threadIds: [threadId] },
+					{ action: "unsubscribe", deliveryId },
+					{ action: "block_sender", sender: "promo@example.org", trashExisting: true },
+					{ action: "list_blocked" },
+				]);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("refuses invalid manage_mail arguments without calling the cloud", async () => {
+			const f = await fixture();
+			try {
+				for (const [id, args] of [
+					["b1", { action: "delete" }],
+					["b2", { action: "trash" }],
+					["b3", { action: "star", threadIds: ["too-short"] }],
+					["b4", { action: "unsubscribe" }],
+					["b5", { action: "block_sender", sender: "x" }],
+					["b6", { action: "list_blocked", sender: "a@b.co" }],
+				] as const) {
+					const result = await f.boundary.invoke(id, "qorpera", "manage_mail", args);
+					expect(result.success, id).toBe(false);
+				}
 				expect(f.call).not.toHaveBeenCalled();
 			} finally {
 				f.run.close();

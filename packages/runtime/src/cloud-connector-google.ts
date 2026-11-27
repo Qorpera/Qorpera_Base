@@ -21,6 +21,7 @@ import {
 	providerRefusal,
 } from "./cloud-connector-http.ts";
 import type { CloudSecretConnectorAdapter } from "./cloud-secret-broker.ts";
+import { normalizeBlockedSender, parseListUnsubscribeHeaders } from "./mail-unsubscribe.ts";
 
 /**
  * Compiled Google adapters for Gmail and Google Drive. The sealed credential is
@@ -124,7 +125,7 @@ async function google(
 			if (missingScope)
 				throw new ConnectorRequestError(
 					"authorization_required",
-					"Reconnect this Google account to grant the permissions needed for this operation, including Gmail draft access.",
+					"Reconnect this Google account to grant the permissions needed for this operation, including Gmail manage, filter, and draft access.",
 				);
 		}
 		throw providerRefusal(response, "Google");
@@ -189,6 +190,14 @@ function mailBody(payload: Record<string, unknown>): MailBody {
 
 function messageSummary(message: Record<string, unknown>): Record<string, JsonValue> {
 	const payload = jsonRecord(message.payload);
+	const labels = jsonArray(message.labelIds)
+		.map((label) => jsonString(label, 64))
+		.filter((label): label is string => label !== null)
+		.slice(0, 20);
+	const unsubscribe = parseListUnsubscribeHeaders(
+		header(payload, "List-Unsubscribe"),
+		header(payload, "List-Unsubscribe-Post"),
+	);
 	return {
 		message_id: jsonString(message.id, 64),
 		thread_id: jsonString(message.threadId, 64),
@@ -197,12 +206,114 @@ function messageSummary(message: Record<string, unknown>): Record<string, JsonVa
 		cc: header(payload, "Cc"),
 		subject: header(payload, "Subject"),
 		date: header(payload, "Date"),
-		labels: jsonArray(message.labelIds)
-			.map((label) => jsonString(label, 64))
-			.filter((label): label is string => label !== null)
-			.slice(0, 20),
+		labels,
+		is_starred: labels.includes("STARRED"),
 		snippet: jsonString(message.snippet, 300),
+		...(unsubscribe
+			? {
+					unsubscribe: {
+						...(unsubscribe.oneClickUrl ? { one_click_url: unsubscribe.oneClickUrl } : {}),
+						...(unsubscribe.mailto
+							? {
+									mailto: {
+										to: unsubscribe.mailto.to,
+										...(unsubscribe.mailto.subject ? { subject: unsubscribe.mailto.subject } : {}),
+										...(unsubscribe.mailto.body ? { body: unsubscribe.mailto.body } : {}),
+									},
+								}
+							: {}),
+						...(unsubscribe.webUrls ? { web_urls: [...unsubscribe.webUrls] } : {}),
+					},
+				}
+			: {}),
 	};
+}
+
+const GMAIL_SUMMARY_HEADERS = [
+	"From",
+	"To",
+	"Cc",
+	"Subject",
+	"Date",
+	"List-Unsubscribe",
+	"List-Unsubscribe-Post",
+] as const;
+
+async function runBoundedGmailCalls<T>(
+	items: readonly string[],
+	context: ConnectorOperationContext,
+	work: (item: string, scopedContext: ConnectorOperationContext) => Promise<T>,
+): Promise<T[]> {
+	const results = new Array<T>(items.length);
+	if (items.length === 0) return results;
+	const itemScopes = new Map<number, AbortController>();
+	const onAbort = () => {
+		for (const itemScope of itemScopes.values()) itemScope.abort(context.signal.reason);
+	};
+	if (context.signal.aborted) context.signal.throwIfAborted();
+	context.signal.addEventListener("abort", onAbort, { once: true });
+	let nextIndex = 0;
+	let failedIndex = Number.POSITIVE_INFINITY;
+	let firstError: unknown;
+	try {
+		const workers = Math.min(GMAIL_METADATA_CONCURRENCY, items.length);
+		await Promise.all(
+			Array.from({ length: workers }, async () => {
+				while (!context.signal.aborted) {
+					const index = nextIndex;
+					nextIndex += 1;
+					if (index >= items.length || index >= failedIndex) return;
+					const itemScope = new AbortController();
+					itemScopes.set(index, itemScope);
+					const scopedContext: ConnectorOperationContext = { ...context, signal: itemScope.signal };
+					try {
+						results[index] = await work(items[index] as string, scopedContext);
+					} catch (error) {
+						if (index < failedIndex && !itemScope.signal.aborted) {
+							failedIndex = index;
+							firstError = error;
+							for (const [otherIndex, otherScope] of itemScopes) {
+								if (otherIndex > index) otherScope.abort();
+							}
+						}
+						return;
+					} finally {
+						itemScopes.delete(index);
+					}
+				}
+			}),
+		);
+	} finally {
+		context.signal.removeEventListener("abort", onAbort);
+	}
+	context.signal.throwIfAborted();
+	if (failedIndex < Number.POSITIVE_INFINITY) throw firstError;
+	return results;
+}
+
+const GMAIL_BATCH_MODIFY_ACTIONS: Readonly<
+	Record<string, { readonly addLabelIds?: readonly string[]; readonly removeLabelIds?: readonly string[] }>
+> = {
+	archive: { removeLabelIds: ["INBOX"] },
+	move_to_inbox: { addLabelIds: ["INBOX"], removeLabelIds: ["TRASH", "SPAM"] },
+	star: { addLabelIds: ["STARRED"] },
+	unstar: { removeLabelIds: ["STARRED"] },
+	mark_read: { removeLabelIds: ["UNREAD"] },
+	mark_unread: { addLabelIds: ["UNREAD"] },
+	spam: { addLabelIds: ["SPAM"], removeLabelIds: ["INBOX"] },
+};
+
+const GMAIL_LABEL_ID = /^[A-Za-z0-9_/-]{1,64}$/;
+
+function filterMatchesBlockedSender(
+	criteriaFrom: string | null,
+	normalized: { sender: string; matchKind: "address" | "domain" },
+): boolean {
+	if (!criteriaFrom) return false;
+	const value = criteriaFrom.trim().toLowerCase();
+	if (value === normalized.sender) return true;
+	if (normalized.matchKind === "domain" && value === normalized.sender.slice(1)) return true;
+	return false;
 }
 
 function addressList(value: JsonValue | undefined, label: string): string[] {
@@ -383,65 +494,24 @@ export function createGmailConnectorAdapters(options: {
 					const id = jsonString(jsonRecord(item).id, 64);
 					if (id && GOOGLE_ID.test(id)) ids.push(id);
 				}
-				const fetched = new Array<JsonValue>(ids.length);
-				if (ids.length > 0) {
-					const itemScopes = new Map<number, AbortController>();
-					const onAbort = () => {
-						for (const itemScope of itemScopes.values()) itemScope.abort(context.signal.reason);
-					};
-					if (context.signal.aborted) context.signal.throwIfAborted();
-					context.signal.addEventListener("abort", onAbort, { once: true });
-					let nextIndex = 0;
-					let failedIndex = Number.POSITIVE_INFINITY;
-					let firstError: unknown;
-					try {
-						const workers = Math.min(GMAIL_METADATA_CONCURRENCY, ids.length);
-						await Promise.all(
-							Array.from({ length: workers }, async () => {
-								while (!context.signal.aborted) {
-									const index = nextIndex;
-									nextIndex += 1;
-									if (index >= ids.length || index >= failedIndex) return;
-									const itemScope = new AbortController();
-									itemScopes.set(index, itemScope);
-									const scopedContext: ConnectorOperationContext = { ...context, signal: itemScope.signal };
-									try {
-										const message = jsonRecord(
-											(
-												await google(scopedContext, `${messages}/${ids[index]}`, {
-													query: {
-														format: "metadata",
-														metadataHeaders: ["From", "To", "Cc", "Subject", "Date"],
-													},
-												})
-											).json,
-										);
-										fetched[index] = messageSummary(message);
-									} catch (error) {
-										if (index < failedIndex && !itemScope.signal.aborted) {
-											failedIndex = index;
-											firstError = error;
-											for (const [otherIndex, otherScope] of itemScopes) {
-												if (otherIndex > index) otherScope.abort();
-											}
-										}
-										return;
-									} finally {
-										itemScopes.delete(index);
-									}
-								}
-							}),
-						);
-					} finally {
-						context.signal.removeEventListener("abort", onAbort);
-					}
-					context.signal.throwIfAborted();
-					if (failedIndex < Number.POSITIVE_INFINITY) throw firstError;
-				}
+				const fetched = await runBoundedGmailCalls(ids, context, async (id, scopedContext) => {
+					const message = jsonRecord(
+						(
+							await google(scopedContext, `${messages}/${id}`, {
+								query: {
+									format: "metadata",
+									metadataHeaders: GMAIL_SUMMARY_HEADERS,
+								},
+							})
+						).json,
+					);
+					return messageSummary(message);
+				});
 				const fitted = fitItems(fetched, LIST_BYTES);
 				const results = fitted.items;
 				return {
 					messages: results,
+					next_page_token: jsonString(listing.nextPageToken, 256),
 					estimated_total: jsonInteger(listing.resultSizeEstimate),
 					more: typeof listing.nextPageToken === "string" || fitted.omitted > 0,
 					...(fitted.omitted > 0 ? { messages_omitted: fitted.omitted } : {}),
@@ -548,6 +618,170 @@ export function createGmailConnectorAdapters(options: {
 					thread_id: jsonString(sent.threadId, 64),
 					recipients: to.length + cc.length,
 				};
+			},
+			async list_messages(args, context) {
+				const limit = jsonInteger(args.limit) ?? 25;
+				const labelIds = jsonArray(args.label_ids).map((item) => {
+					const value = typeof item === "string" ? item.trim() : "";
+					if (!GMAIL_LABEL_ID.test(value))
+						throw new ConnectorRequestError("invalid_request", "One of the Gmail label ids is not valid.");
+					return value;
+				});
+				const pageToken = jsonString(args.page_token, 256) ?? undefined;
+				const listing = jsonRecord(
+					(
+						await google(context, messages, {
+							query: {
+								q: jsonString(args.query, 512) ?? undefined,
+								...(labelIds.length > 0 ? { labelIds } : {}),
+								...(args.include_spam_trash === true ? { includeSpamTrash: "true" } : {}),
+								...(pageToken ? { pageToken } : {}),
+								maxResults: String(limit),
+							},
+						})
+					).json,
+				);
+				const ids: string[] = [];
+				for (const item of jsonArray(listing.messages).slice(0, limit)) {
+					const id = jsonString(jsonRecord(item).id, 64);
+					if (id && GOOGLE_ID.test(id)) ids.push(id);
+				}
+				const fetched = await runBoundedGmailCalls(ids, context, async (id, scopedContext) => {
+					const message = jsonRecord(
+						(
+							await google(scopedContext, `${messages}/${id}`, {
+								query: {
+									format: "metadata",
+									metadataHeaders: GMAIL_SUMMARY_HEADERS,
+								},
+							})
+						).json,
+					);
+					return messageSummary(message);
+				});
+				const fitted = fitItems(fetched, LIST_BYTES);
+				return {
+					messages: fitted.items,
+					next_page_token: jsonString(listing.nextPageToken, 256),
+					estimated_total: jsonInteger(listing.resultSizeEstimate),
+					more: typeof listing.nextPageToken === "string" || fitted.omitted > 0,
+					...(fitted.omitted > 0 ? { messages_omitted: fitted.omitted } : {}),
+				};
+			},
+			async update_messages(args, context) {
+				const rawIds = jsonArray(args.message_ids).map((item) => googleId(item as JsonValue, "message id"));
+				const ids = [...new Set(rawIds)];
+				if (ids.length === 0)
+					throw new ConnectorRequestError("invalid_request", "At least one Gmail message id is required.");
+				const action = String(args.action);
+				if (action === "trash" || action === "untrash") {
+					await runBoundedGmailCalls(ids, context, async (id, scopedContext) => {
+						await google(scopedContext, `${messages}/${id}/${action}`, { method: "POST" });
+					});
+				} else {
+					const labels = GMAIL_BATCH_MODIFY_ACTIONS[action];
+					if (!labels) throw new ConnectorRequestError("invalid_request", "Unsupported Gmail message action.");
+					await google(context, `${messages}/batchModify`, {
+						method: "POST",
+						contentType: "application/json",
+						body: JSON.stringify({
+							ids,
+							...(labels.addLabelIds ? { addLabelIds: labels.addLabelIds } : {}),
+							...(labels.removeLabelIds ? { removeLabelIds: labels.removeLabelIds } : {}),
+						}),
+					});
+				}
+				return {
+					action,
+					updated_count: ids.length,
+					message_ids: ids,
+				};
+			},
+			async block_sender(args, context) {
+				const normalized = normalizeBlockedSender(String(args.sender ?? ""));
+				if (!normalized) {
+					throw new ConnectorRequestError(
+						"invalid_request",
+						"The sender must be a valid email address or domain (such as news@example.com or @example.com).",
+					);
+				}
+				const filtersPath = "/gmail/v1/users/me/settings/filters";
+				const existingResponse = jsonRecord((await google(context, filtersPath)).json);
+				const existingFilters = jsonArray(existingResponse.filter).map((item) => jsonRecord(item));
+				const matchingFilters = existingFilters.filter((filter) => {
+					const criteria = jsonRecord(filter.criteria);
+					const action = jsonRecord(filter.action);
+					const addsTrash = jsonArray(action.addLabelIds).includes("TRASH");
+					return addsTrash && filterMatchesBlockedSender(jsonString(criteria.from, 320), normalized);
+				});
+				if (args.unblock === true) {
+					let removed = 0;
+					for (const filter of matchingFilters) {
+						const filterId = jsonString(filter.id, 128);
+						if (!filterId || !GOOGLE_ID.test(filterId)) continue;
+						await google(context, `${filtersPath}/${filterId}`, { method: "DELETE" });
+						removed += 1;
+					}
+					const result: Record<string, JsonValue> = {
+						sender: normalized.sender,
+						blocked: false,
+						filter_id: null,
+						filters_removed: removed,
+						trashed_count: 0,
+						more_existing: false,
+					};
+					return result;
+				}
+				let filterId: string | null = null;
+				let filterCreated = false;
+				if (matchingFilters.length > 0) {
+					filterId = jsonString(matchingFilters[0]?.id, 128);
+				} else {
+					const created = jsonRecord(
+						(
+							await google(context, filtersPath, {
+								method: "POST",
+								contentType: "application/json",
+								body: JSON.stringify({
+									criteria: { from: normalized.sender },
+									action: { addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] },
+								}),
+							})
+						).json,
+					);
+					filterId = jsonString(created.id, 128);
+					filterCreated = true;
+				}
+				let trashedCount = 0;
+				let moreExisting = false;
+				if (args.trash_existing !== false) {
+					const listing = jsonRecord(
+						(
+							await google(context, messages, {
+								query: { q: `from:${normalized.sender} -in:trash`, maxResults: "50" },
+							})
+						).json,
+					);
+					const existingIds: string[] = [];
+					for (const item of jsonArray(listing.messages).slice(0, 50)) {
+						const id = jsonString(jsonRecord(item).id, 64);
+						if (id && GOOGLE_ID.test(id)) existingIds.push(id);
+					}
+					await runBoundedGmailCalls(existingIds, context, async (id, scopedContext) => {
+						await google(scopedContext, `${messages}/${id}/trash`, { method: "POST" });
+					});
+					trashedCount = existingIds.length;
+					moreExisting = typeof listing.nextPageToken === "string";
+				}
+				const result: Record<string, JsonValue> = {
+					sender: normalized.sender,
+					blocked: true,
+					filter_id: filterId,
+					filter_created: filterCreated,
+					trashed_count: trashedCount,
+					more_existing: moreExisting,
+				};
+				return result;
 			},
 		},
 	});

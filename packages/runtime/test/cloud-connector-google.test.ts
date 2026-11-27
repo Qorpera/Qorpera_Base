@@ -104,7 +104,15 @@ it("exchanges the refresh token per call and searches then summarises messages",
 		},
 		[`GET ${GMAIL}/gmail/v1/users/me/messages/m1`]: (url) => {
 			expect(url.searchParams.get("format")).toBe("metadata");
-			expect(url.searchParams.getAll("metadataHeaders")).toEqual(["From", "To", "Cc", "Subject", "Date"]);
+			expect(url.searchParams.getAll("metadataHeaders")).toEqual([
+				"From",
+				"To",
+				"Cc",
+				"Subject",
+				"Date",
+				"List-Unsubscribe",
+				"List-Unsubscribe-Post",
+			]);
 			return Response.json(message("m1", "Offer", "Hello"));
 		},
 		[`GET ${GMAIL}/gmail/v1/users/me/messages/m2`]: () => Response.json(message("m2", "Re: Offer", "Hi")),
@@ -669,4 +677,152 @@ it("fetches Gmail search_messages metadata with bounded concurrency in order, pr
 	expect(failed).toMatchObject({ status: "failed", reason: "authorization_required" });
 	expect(siblingAborted).toContain("m4");
 	expect(siblingAborted).toContain("m2");
+});
+
+it("lists Gmail messages with pagination, label filters, star flag, and parsed unsubscribe headers", async () => {
+	const promo = {
+		...message("m9", "Newsletter", "Unsubscribe here"),
+		labelIds: ["INBOX", "STARRED"],
+		payload: {
+			...message("m9", "Newsletter", "Unsubscribe here").payload,
+			headers: [
+				...message("m9", "Newsletter", "Unsubscribe here").payload.headers,
+				{
+					name: "List-Unsubscribe",
+					value: "<https://news.example.com/one-click>, <mailto:leave@news.example.com?subject=Bye>",
+				},
+				{ name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
+			],
+		},
+	};
+	const { fetchImplementation } = google({
+		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: (url) => {
+			expect(url.searchParams.getAll("labelIds")).toEqual(["INBOX"]);
+			expect(url.searchParams.get("pageToken")).toBe("tok-1");
+			expect(url.searchParams.get("includeSpamTrash")).toBe("true");
+			return Response.json({ messages: [{ id: "m9" }], nextPageToken: "tok-2", resultSizeEstimate: 42 });
+		},
+		[`GET ${GMAIL}/gmail/v1/users/me/messages/m9`]: () => Response.json(promo),
+	});
+	const result = await gmail("list_messages", fetchImplementation).execute(
+		input({ label_ids: ["INBOX"], page_token: "tok-1", include_spam_trash: true, limit: 10 }, GMAIL),
+	);
+	expect(result).toMatchObject({
+		status: "completed",
+		result: {
+			next_page_token: "tok-2",
+			more: true,
+			messages: [
+				{
+					message_id: "m9",
+					is_starred: true,
+					unsubscribe: {
+						one_click_url: "https://news.example.com/one-click",
+						mailto: { to: "leave@news.example.com", subject: "Bye" },
+						web_urls: ["https://news.example.com/one-click"],
+					},
+				},
+			],
+		},
+	});
+});
+
+it("updates Gmail messages via trash/untrash and batchModify", async () => {
+	const trashed: string[] = [];
+	const batchCalls: unknown[] = [];
+	const { fetchImplementation } = google({
+		[`POST ${GMAIL}/gmail/v1/users/me/messages/m1/trash`]: () => {
+			trashed.push("m1");
+			return Response.json({ id: "m1", labelIds: ["TRASH"] });
+		},
+		[`POST ${GMAIL}/gmail/v1/users/me/messages/m2/trash`]: () => {
+			trashed.push("m2");
+			return Response.json({ id: "m2", labelIds: ["TRASH"] });
+		},
+		[`POST ${GMAIL}/gmail/v1/users/me/messages/batchModify`]: (_url, init) => {
+			batchCalls.push(JSON.parse(String(init?.body)));
+			return new Response(null, { status: 204 });
+		},
+	});
+	const trashOutcome = await gmail("update_messages", fetchImplementation).execute(
+		input({ message_ids: ["m1", "m2", "m1"], action: "trash" }, GMAIL),
+	);
+	expect(trashOutcome).toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "completed",
+		result: { action: "trash", updated_count: 2, message_ids: ["m1", "m2"] },
+	});
+	expect(trashed.sort()).toEqual(["m1", "m2"]);
+
+	const starOutcome = await gmail("update_messages", fetchImplementation).execute(
+		input({ message_ids: ["m1"], action: "star" }, GMAIL),
+	);
+	expect(starOutcome).toMatchObject({ status: "completed", result: { action: "star", updated_count: 1 } });
+	expect(batchCalls).toEqual([{ ids: ["m1"], addLabelIds: ["STARRED"] }]);
+});
+
+it("blocks and unblocks Gmail senders via Trash filters and trashes existing mail", async () => {
+	const createdFilters: unknown[] = [];
+	const deletedFilters: string[] = [];
+	const trashed: string[] = [];
+	let existingFilters: unknown[] = [];
+	const { fetchImplementation } = google({
+		[`GET ${GMAIL}/gmail/v1/users/me/settings/filters`]: () => Response.json({ filter: existingFilters }),
+		[`POST ${GMAIL}/gmail/v1/users/me/settings/filters`]: (_url, init) => {
+			const payload = JSON.parse(String(init?.body));
+			createdFilters.push(payload);
+			const created = { id: "flt1", ...payload };
+			existingFilters = [created];
+			return Response.json(created);
+		},
+		[`DELETE ${GMAIL}/gmail/v1/users/me/settings/filters/flt1`]: () => {
+			deletedFilters.push("flt1");
+			existingFilters = [];
+			return new Response(null, { status: 204 });
+		},
+		[`GET ${GMAIL}/gmail/v1/users/me/messages`]: (url) => {
+			expect(url.searchParams.get("q")).toBe("from:@spam.example.org -in:trash");
+			return Response.json({ messages: [{ id: "m5" }] });
+		},
+		[`POST ${GMAIL}/gmail/v1/users/me/messages/m5/trash`]: () => {
+			trashed.push("m5");
+			return Response.json({ id: "m5" });
+		},
+	});
+	const blocked = await gmail("block_sender", fetchImplementation).execute(
+		input({ sender: "spam.example.org" }, GMAIL),
+	);
+	expect(blocked).toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "completed",
+		result: {
+			sender: "@spam.example.org",
+			blocked: true,
+			filter_id: "flt1",
+			filter_created: true,
+			trashed_count: 1,
+			more_existing: false,
+		},
+	});
+	expect(createdFilters).toEqual([
+		{ criteria: { from: "@spam.example.org" }, action: { addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] } },
+	]);
+	expect(trashed).toEqual(["m5"]);
+
+	const unblocked = await gmail("block_sender", fetchImplementation).execute(
+		input({ sender: "@spam.example.org", unblock: true }, GMAIL),
+	);
+	expect(unblocked).toEqual({
+		schema: "qorpera.connector-result/v1",
+		status: "completed",
+		result: {
+			sender: "@spam.example.org",
+			blocked: false,
+			filter_id: null,
+			filters_removed: 1,
+			trashed_count: 0,
+			more_existing: false,
+		},
+	});
+	expect(deletedFilters).toEqual(["flt1"]);
 });

@@ -220,6 +220,7 @@ import {
 	composeCloudAgentSkills,
 	unavailableCloudAgentSkills,
 } from "./cloud-skill-tools.ts";
+import { buildInboxOpsMailTools, type SurfaceInboxMailToolsPort } from "./cloud-surface-coding-tools.ts";
 import {
 	parseNativeSurfaceSessionImages,
 	readSurfaceMemberImage,
@@ -672,6 +673,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 							...(companyInterfaces ? { companyInterfaces } : {}),
 						}
 					: undefined;
+				let inboxMail: SurfaceInboxMailToolsPort | undefined;
+				if (surfaceSession?.surfaceSlug === "inbox") {
+					const gmailDescriptors = this.#secretBroker
+						? await describeCloudSecretTools(this.#paths, binding, signal)
+								.then((list) => list.filter((descriptor) => descriptor.connectorId === "gmail"))
+								.catch(() => [])
+						: [];
+					inboxMail = {
+						binding,
+						control: this.#paths,
+						...(this.#secretBroker ? { secretBroker: this.#secretBroker, gmailDescriptors } : {}),
+					};
+				}
 				if (this.#coding.supportsFolderWrites) getFolder();
 				const codingFolderSearch = this.#folderSearch
 					? new CloudFolderSearch({
@@ -714,6 +728,7 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 						...(companyInterfaces ? { companyInterfaces } : {}),
 						...(codingFolderSearch ? { folderSearch: codingFolderSearch } : {}),
 						...(this.#companyData ? { companyData: this.#companyData } : {}),
+						...(inboxMail ? { inboxMail } : {}),
 						...(surfaceSession ? { surfaceSession } : {}),
 						...(attachCodingVoice ? { voice: attachCodingVoice } : {}),
 						...(codingPictureLane?.channel
@@ -3068,6 +3083,19 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			: undefined;
 		const narratePort = this.#studioNarratePort(binding, folderClient, signal, geminiSession?.apiKey, studioVoice);
 		const companyInterfaces = await companyInterfacesRequest;
+		let surfaceInboxMail: SurfaceInboxMailToolsPort | undefined;
+		if (surfaceSlug === "inbox") {
+			const gmailDescriptors = this.#secretBroker
+				? await describeCloudSecretTools(this.#paths, binding, signal)
+						.then((list) => list.filter((descriptor) => descriptor.connectorId === "gmail"))
+						.catch(() => [])
+				: [];
+			surfaceInboxMail = {
+				binding,
+				control: this.#paths,
+				...(this.#secretBroker ? { secretBroker: this.#secretBroker, gmailDescriptors } : {}),
+			};
+		}
 
 		let turnResult: Awaited<ReturnType<typeof runSurfaceSessionTurn>>;
 		try {
@@ -3146,7 +3174,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 									door: this.#companyData,
 									apply: false,
 								}).filter((tool) => readOnlyDataNames.has(tool.name));
-								return [...turnReq.tools, ...folderTools, ...searchTools, ...dataTools];
+								const inboxTools = surfaceInboxMail
+									? buildInboxOpsMailTools({ inboxMail: surfaceInboxMail, identity: runIdentity, operations })
+									: [];
+								return [...turnReq.tools, ...inboxTools, ...folderTools, ...searchTools, ...dataTools];
 							},
 						}),
 					executeCodeRepoTurn: async () => {

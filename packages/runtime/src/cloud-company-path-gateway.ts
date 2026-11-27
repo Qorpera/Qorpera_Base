@@ -143,6 +143,7 @@ export type CloudCompanyPathRpc =
 	// Company mail (M2b): an agent's email from a mailbox, queued for the platform's sender; finding received mail.
 	| "qorpera_send_agent_mail"
 	| "qorpera_find_agent_mail"
+	| "qorpera_manage_agent_mail"
 	// Company accounts (A1-4): the company's accounts and mailboxes, and the id of the agent's todo by key.
 	| "qorpera_find_company_accounts"
 	// Summary trees (M1b-3): zoom, and the platform read of the tree blocks a zoom result or a view showed. The primary

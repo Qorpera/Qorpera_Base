@@ -116,9 +116,12 @@ test("SQL: strings and data bodies are not comments; function bodies are read", 
 				'-- @fixture 924_folder_runtime_base.test.sql until "-- The checks start here"',
 				"select 1;",
 				"-- @fixture without its file",
+				"-- BEGIN GENERATED CONNECTOR CATALOG (scripts/generate-cloud-connector-catalog.mjs)",
+				"-- Catalog version 1: 24 operations.",
+				"-- END GENERATED CONNECTOR CATALOG",
 			].join("\n"),
 		),
-		[null, "plain"],
+		[null, "plain", null, null, null],
 	);
 });
 

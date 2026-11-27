@@ -19,7 +19,7 @@ const DIRECTIVES = {
 	script:
 		/^(?:biome-ignore\b|@ts-(?:expect-error|ignore|nocheck|check)\b|eslint-(?:disable|enable)\b|prettier-ignore\b|(?:v8|c8|istanbul) ignore\b|@(?:vitest|jest)-environment\b|[@#]__(?:PURE|NO_SIDE_EFFECTS)__|@vite-ignore\b|webpack[A-Z]\w*:|[#@] ?sourceMappingURL=|@(?:license|preserve)\b|<(?:reference|amd-module|amd-dependency)\b)/,
 	shell: /^shellcheck /,
-	sql: /^@fixture [0-9a-z_.-]+\.test\.sql until "[^"\n]+"$/,
+	sql: /^(?:@fixture [0-9a-z_.-]+\.test\.sql until "[^"\n]+"|BEGIN GENERATED CONNECTOR CATALOG \(scripts\/generate-cloud-connector-catalog\.mjs\)|END GENERATED CONNECTOR CATALOG|Catalog version \d+: \d+ operations\.)$/,
 	python: /^(?:type:|noqa\b|pragma:|pylint:|mypy:|ruff:|fmt:|-\*- )/,
 };
 const MARKERS = { rust: [MARKER, "SAFETY:"] };

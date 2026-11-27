@@ -22,10 +22,12 @@ export const GMAIL_LIST_PAGE = 100;
 export const GMAIL_PASS_MESSAGES = 200;
 export const GMAIL_PASS_BUDGET_MS = 20_000;
 export const GMAIL_SENDS_PER_PASS = 10;
+export const GMAIL_ACTIONS_PER_PASS = 20;
 export const GMAIL_SIGN_IN_AGAIN = "Google asked you to sign in again.";
 const GMAIL_FULL_MAX_BYTES = 16 * 1024 * 1024;
 const GMAIL_IMPORT_QUERY = "-in:sent -in:draft -in:chats";
 const SKIPPED_LABELS = new Set(["SENT", "DRAFT", "SPAM", "TRASH", "CHAT"]);
+const KEPT_GMAIL_LABELS = new Set(["INBOX", "STARRED", "TRASH", "SPAM", "SENT", "UNREAD"]);
 const DATABASE_DEADLINE_MS = 10_000;
 const PASS_EVERY_MS = 60_000;
 const GOOGLE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -79,8 +81,16 @@ export interface GmailProfile {
 	readonly messagesTotal: number | null;
 }
 
+export interface GmailThreadLabelChange {
+	readonly gmailThreadId: string;
+	readonly starred?: boolean;
+	readonly trashed?: boolean;
+	readonly archived?: boolean;
+}
+
 export interface GmailHistoryPage {
 	readonly added: readonly GmailListedMessage[];
+	readonly labelChanges: readonly GmailThreadLabelChange[];
 	readonly historyId: string;
 	readonly next: string | null;
 }
@@ -130,7 +140,10 @@ export class GmailMailboxApi {
 			const reasons = jsonArray(error.errors).map((item) => jsonRecord(item).reason);
 			if (reasons.some((reason) => reason === "rateLimitExceeded" || reason === "userRateLimitExceeded"))
 				throw new ConnectorRequestError("rate_limited", "Gmail asked us to wait.");
-			if (reasons.includes("insufficientPermissions")) throw new GmailSignInRefused();
+			const missingScope =
+				reasons.includes("insufficientPermissions") ||
+				jsonArray(error.details).some((item) => jsonRecord(item).reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+			if (missingScope) throw new GmailSignInRefused();
 		}
 		if (response.status < 200 || response.status >= 300) throw refusalOf(providerRefusal(response, "Gmail"));
 		return jsonRecord(parseJsonResponse(response));
@@ -178,7 +191,7 @@ export class GmailMailboxApi {
 			page = await this.#call("/gmail/v1/users/me/history", signal, {
 				query: {
 					startHistoryId,
-					historyTypes: "messageAdded",
+					historyTypes: ["messageAdded", "labelAdded", "labelRemoved"],
 					maxResults: String(GMAIL_LIST_PAGE),
 					...(pageToken === null ? {} : { pageToken }),
 				},
@@ -190,16 +203,49 @@ export class GmailMailboxApi {
 		const historyId = typeof page.historyId === "string" && HISTORY_ID.test(page.historyId) ? page.historyId : "";
 		if (!historyId) throw new GmailMailboxError("Gmail's change list has no mark");
 		const added: GmailListedMessage[] = [];
-		for (const record of jsonArray(page.history))
-			for (const item of jsonArray(jsonRecord(record).messagesAdded)) {
+		const changesByThread = new Map<string, { starred?: boolean; trashed?: boolean; archived?: boolean }>();
+		const noteThreadLabel = (gmailThreadId: unknown, labelIds: readonly unknown[], addedLabel: boolean) => {
+			if (typeof gmailThreadId !== "string" || !GOOGLE_ID.test(gmailThreadId)) return;
+			const current = changesByThread.get(gmailThreadId) ?? {};
+			let touched = false;
+			for (const raw of labelIds) {
+				if (raw === "STARRED") {
+					current.starred = addedLabel;
+					touched = true;
+				} else if (raw === "TRASH") {
+					current.trashed = addedLabel;
+					touched = true;
+				} else if (raw === "INBOX") {
+					current.archived = !addedLabel;
+					touched = true;
+				}
+			}
+			if (touched) changesByThread.set(gmailThreadId, current);
+		};
+		for (const record of jsonArray(page.history)) {
+			const entry = jsonRecord(record);
+			for (const item of jsonArray(entry.messagesAdded)) {
 				const message = jsonRecord(jsonRecord(item).message);
 				const labels = jsonArray(message.labelIds);
 				if (labels.some((label) => typeof label === "string" && SKIPPED_LABELS.has(label))) continue;
 				added.push(...listed([message]));
 			}
+			for (const item of jsonArray(entry.labelsAdded)) {
+				const change = jsonRecord(item);
+				noteThreadLabel(jsonRecord(change.message).threadId, jsonArray(change.labelIds), true);
+			}
+			for (const item of jsonArray(entry.labelsRemoved)) {
+				const change = jsonRecord(item);
+				noteThreadLabel(jsonRecord(change.message).threadId, jsonArray(change.labelIds), false);
+			}
+		}
+		const labelChanges: GmailThreadLabelChange[] = [...changesByThread.entries()].map(([gmailThreadId, delta]) => ({
+			gmailThreadId,
+			...delta,
+		}));
 		const next =
 			typeof page.nextPageToken === "string" && PAGE_TOKEN.test(page.nextPageToken) ? page.nextPageToken : null;
-		return { added, historyId, next };
+		return { added, labelChanges, historyId, next };
 	}
 
 	async message(id: string, signal: AbortSignal): Promise<Json | null> {
@@ -309,6 +355,79 @@ export class GmailMailboxApi {
 		});
 		const value = headers(jsonRecord(message.payload)).get("message-id");
 		return value && /^<[^<>\s]{1,996}>$/.test(value.trim()) ? value.trim() : null;
+	}
+
+	async trashThread(id: string, signal: AbortSignal): Promise<void> {
+		try {
+			await this.#call(`/gmail/v1/users/me/threads/${id}/trash`, signal, { method: "POST" });
+		} catch (error) {
+			if (!(error instanceof ConnectorRequestError && error.reason === "not_found")) throw error;
+		}
+	}
+
+	async untrashThread(id: string, signal: AbortSignal): Promise<void> {
+		try {
+			await this.#call(`/gmail/v1/users/me/threads/${id}/untrash`, signal, { method: "POST" });
+		} catch (error) {
+			if (!(error instanceof ConnectorRequestError && error.reason === "not_found")) throw error;
+		}
+	}
+
+	async modifyThread(
+		id: string,
+		body: { readonly addLabelIds?: readonly string[]; readonly removeLabelIds?: readonly string[] },
+		signal: AbortSignal,
+	): Promise<void> {
+		try {
+			await this.#call(`/gmail/v1/users/me/threads/${id}/modify`, signal, {
+				method: "POST",
+				body: JSON.stringify(body),
+			});
+		} catch (error) {
+			if (!(error instanceof ConnectorRequestError && error.reason === "not_found")) throw error;
+		}
+	}
+
+	async blockSenderFilter(sender: string, signal: AbortSignal): Promise<void> {
+		const normalized = sender.trim().toLowerCase();
+		const listedFilters = await this.#call("/gmail/v1/users/me/settings/filters", signal);
+		const alreadyBlocked = jsonArray(listedFilters.filter).some((item) => {
+			const filter = jsonRecord(item);
+			const from = jsonString(jsonRecord(filter.criteria).from, 320)?.trim().toLowerCase();
+			const addsTrash = jsonArray(jsonRecord(filter.action).addLabelIds).includes("TRASH");
+			return addsTrash && (from === normalized || (normalized.startsWith("@") && from === normalized.slice(1)));
+		});
+		if (alreadyBlocked) return;
+		await this.#call("/gmail/v1/users/me/settings/filters", signal, {
+			method: "POST",
+			body: JSON.stringify({
+				criteria: { from: normalized },
+				action: { addLabelIds: ["TRASH"], removeLabelIds: ["INBOX"] },
+			}),
+		});
+	}
+
+	async unblockSenderFilter(sender: string, signal: AbortSignal): Promise<void> {
+		const normalized = sender.trim().toLowerCase();
+		const listedFilters = await this.#call("/gmail/v1/users/me/settings/filters", signal);
+		for (const item of jsonArray(listedFilters.filter)) {
+			const filter = jsonRecord(item);
+			const filterId = jsonString(filter.id, 128);
+			const from = jsonString(jsonRecord(filter.criteria).from, 320)?.trim().toLowerCase();
+			const addsTrash = jsonArray(jsonRecord(filter.action).addLabelIds).includes("TRASH");
+			if (
+				filterId &&
+				GOOGLE_ID.test(filterId) &&
+				addsTrash &&
+				(from === normalized || (normalized.startsWith("@") && from === normalized.slice(1)))
+			) {
+				try {
+					await this.#call(`/gmail/v1/users/me/settings/filters/${filterId}`, signal, { method: "DELETE" });
+				} catch (error) {
+					if (!(error instanceof ConnectorRequestError && error.reason === "not_found")) throw error;
+				}
+			}
+		}
 	}
 }
 
@@ -515,6 +634,11 @@ export function gmailMailMessage(
 		autoSubmitted: header("auto-submitted"),
 		precedence: header("precedence"),
 		listId: header("list-id"),
+		listUnsubscribe: text(named.get("list-unsubscribe"), 4096),
+		listUnsubscribePost: text(named.get("list-unsubscribe-post"), 256),
+		gmailLabels: jsonArray(message.labelIds).filter(
+			(label): label is string => typeof label === "string" && KEPT_GMAIL_LABELS.has(label),
+		),
 		automated: automated(header),
 		authentication: {
 			spf: authenticationResult(results, "spf"),
@@ -628,6 +752,16 @@ export interface GmailMailboxAuthority {
 	): Promise<unknown>;
 	failGoogleMailSend(
 		input: { mailId: string; lease: string; error: string; retryable: boolean; refused: boolean },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	applyGoogleMailLabelChanges?(
+		input: GmailMailboxLease & { changes: readonly GmailThreadLabelChange[] },
+		signal: AbortSignal,
+	): Promise<unknown>;
+	claimGoogleMailActions?(limit: number, signal: AbortSignal): Promise<unknown>;
+	completeGoogleMailAction?(input: { actionId: string; lease: string }, signal: AbortSignal): Promise<unknown>;
+	failGoogleMailAction?(
+		input: { actionId: string; lease: string; error: string; retryable: boolean; refused: boolean },
 		signal: AbortSignal,
 	): Promise<unknown>;
 }
@@ -800,6 +934,74 @@ function parseSends(value: unknown): SendClaim[] {
 	});
 }
 
+interface ActionClaim extends SealedSignIn {
+	readonly actionId: string;
+	readonly lease: string;
+	readonly mailboxId: string;
+	readonly address: string;
+	readonly action:
+		| "trash"
+		| "untrash"
+		| "archive"
+		| "unarchive"
+		| "star"
+		| "unstar"
+		| "block_sender"
+		| "unblock_sender";
+	readonly gmailThreadIds: readonly string[];
+	readonly sender: string | null;
+}
+
+const VALID_MAIL_ACTIONS = new Set([
+	"trash",
+	"untrash",
+	"archive",
+	"unarchive",
+	"star",
+	"unstar",
+	"block_sender",
+	"unblock_sender",
+]);
+
+function parseActions(value: unknown): ActionClaim[] {
+	const input = jsonRecord(value);
+	if (
+		input.schema !== "qorpera.google-mail-actions/v1" ||
+		!Array.isArray(input.actions) ||
+		input.actions.length > GMAIL_ACTIONS_PER_PASS
+	)
+		throw new GmailMailboxError("the Google mail actions are not readable");
+	return input.actions.map((item) => {
+		const row = jsonRecord(item);
+		const threadIds = Array.isArray(row.gmailThreadIds)
+			? row.gmailThreadIds.filter((id): id is string => typeof id === "string" && GOOGLE_ID.test(id))
+			: null;
+		if (
+			![row.actionId, row.leaseId, row.mailboxId].every((id) => typeof id === "string" && UUID.test(id)) ||
+			typeof row.address !== "string" ||
+			!MAILBOX_ADDRESS.test(row.address) ||
+			typeof row.action !== "string" ||
+			!VALID_MAIL_ACTIONS.has(row.action) ||
+			!threadIds ||
+			threadIds.length > 50 ||
+			(row.sender !== null &&
+				row.sender !== undefined &&
+				(typeof row.sender !== "string" || row.sender.length > 254))
+		)
+			throw new GmailMailboxError("a Google mail action is not readable");
+		return {
+			...sealed(row, row.companyId, row.environmentId),
+			actionId: row.actionId as string,
+			lease: row.leaseId as string,
+			mailboxId: row.mailboxId as string,
+			address: row.address as string,
+			action: row.action as ActionClaim["action"],
+			gmailThreadIds: threadIds,
+			sender: typeof row.sender === "string" ? row.sender : null,
+		};
+	});
+}
+
 function broughtIn(value: unknown): { outcome: string } {
 	const input = jsonRecord(value);
 	if (input.schema !== "qorpera.google-mail-brought-in/v1" || typeof input.outcome !== "string")
@@ -887,6 +1089,7 @@ export class CloudGmailMailboxes {
 			await this.#read(claim, signal, spent, tally);
 		}
 		await this.#send(signal, tally);
+		await this.#syncActions(signal, tally);
 		return tally;
 	}
 
@@ -1089,6 +1292,12 @@ export class CloudGmailMailboxes {
 				if (outcome !== "accepted" && outcome !== "duplicate" && outcome !== "gone")
 					throw new GmailMailboxError("the mail door did not take the message");
 			}
+			if (page.labelChanges.length > 0 && this.#authority.applyGoogleMailLabelChanges) {
+				await this.#authority.applyGoogleMailLabelChanges(
+					{ mailboxId: claim.mailboxId, lease: claim.lease, changes: page.labelChanges },
+					database(),
+				);
+			}
 			if (page.next === null) return { outcome: "current", historyId: page.historyId, pageToken: null, total: null };
 			pageToken = page.next;
 		}
@@ -1232,6 +1441,75 @@ export class CloudGmailMailboxes {
 			if (error instanceof ConnectorRequestError && error.reason === "invalid_request")
 				await api.deleteDraft(draft.id, signal).catch(() => undefined);
 			throw error;
+		}
+	}
+
+	async #syncActions(signal: AbortSignal, tally: { refused: number; failed: number }): Promise<void> {
+		if (
+			!this.#authority.claimGoogleMailActions ||
+			!this.#authority.completeGoogleMailAction ||
+			!this.#authority.failGoogleMailAction
+		)
+			return;
+		const actions = parseActions(
+			await this.#authority.claimGoogleMailActions(GMAIL_ACTIONS_PER_PASS, AbortSignal.any([signal, database()])),
+		);
+		for (const claimed of actions) {
+			const fail = (error: string, retryable: boolean, refused: boolean) =>
+				this.#authority.failGoogleMailAction!(
+					{ actionId: claimed.actionId, lease: claimed.lease, error, retryable, refused },
+					database(),
+				);
+			try {
+				await this.#withApi(claimed, signal, async (api) => {
+					switch (claimed.action) {
+						case "trash":
+							for (const threadId of claimed.gmailThreadIds) await api.trashThread(threadId, signal);
+							break;
+						case "untrash":
+							for (const threadId of claimed.gmailThreadIds) await api.untrashThread(threadId, signal);
+							break;
+						case "archive":
+							for (const threadId of claimed.gmailThreadIds)
+								await api.modifyThread(threadId, { removeLabelIds: ["INBOX"] }, signal);
+							break;
+						case "unarchive":
+							for (const threadId of claimed.gmailThreadIds)
+								await api.modifyThread(threadId, { addLabelIds: ["INBOX"], removeLabelIds: ["TRASH"] }, signal);
+							break;
+						case "star":
+							for (const threadId of claimed.gmailThreadIds)
+								await api.modifyThread(threadId, { addLabelIds: ["STARRED"] }, signal);
+							break;
+						case "unstar":
+							for (const threadId of claimed.gmailThreadIds)
+								await api.modifyThread(threadId, { removeLabelIds: ["STARRED"] }, signal);
+							break;
+						case "block_sender":
+							if (claimed.sender) await api.blockSenderFilter(claimed.sender, signal);
+							break;
+						case "unblock_sender":
+							if (claimed.sender) await api.unblockSenderFilter(claimed.sender, signal);
+							break;
+					}
+				});
+			} catch (error) {
+				if (error instanceof GmailSignInRefused) {
+					tally.refused += 1;
+					await fail(GMAIL_SIGN_IN_AGAIN, true, true);
+				} else if (error instanceof ConnectorRequestError && error.reason === "invalid_request") {
+					tally.failed += 1;
+					await fail("Gmail refused the change", false, false);
+				} else {
+					tally.failed += 1;
+					await fail(failurePhrase(error, signal), true, false);
+				}
+				continue;
+			}
+			await this.#authority.completeGoogleMailAction(
+				{ actionId: claimed.actionId, lease: claimed.lease },
+				database(),
+			);
 		}
 	}
 }

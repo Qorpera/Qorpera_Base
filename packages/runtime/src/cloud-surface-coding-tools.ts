@@ -6,14 +6,21 @@ import {
 	SURFACE_LAYOUT_PATH,
 } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
+import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
 import { type CloudCompanyDataDoor, cloudDataTools } from "./cloud-data-tools.ts";
+import { cloudEventTools } from "./cloud-event-tools.ts";
 import { cloudFolderFileTools } from "./cloud-folder-file-tools.ts";
 import { type CloudFolderSearch, cloudFolderSearchTool } from "./cloud-folder-search-tool.ts";
-import type { CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
+import type { CloudNativeToolBinding, CloudNativeToolIdentity } from "./cloud-native-tool-authority.ts";
 import type { CloudNativeTool } from "./cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "./cloud-native-tool-operations.ts";
 import type { CloudPictureChannel } from "./cloud-picture-channel.ts";
 import { SURFACE_STARTER_SKILLS } from "./cloud-platform-skills.ts";
+import {
+	type CloudNativeConnectorToolDescriptor,
+	type CloudSecretOperationClient,
+	cloudSecretTools,
+} from "./cloud-secret-tools.ts";
 import { type CloudStudioSkillReader, cloudStudioSkill } from "./cloud-skill-tools.ts";
 import { recordStudioChatGptVoiceClips, type StudioChatGptVoiceMachine } from "./cloud-studio-voice-recorder.ts";
 import { createStageSurfaceArtifactTool } from "./cloud-surface-artifact-tool.ts";
@@ -67,8 +74,52 @@ const STUDIO_FOLDER_TOOLS: ReadonlySet<string> = new Set([
 ]);
 const OPS_FOLDER_TOOLS: ReadonlySet<string> = new Set(["company_read", "company_list"]);
 const READ_ONLY_DATA_TOOLS: ReadonlySet<string> = new Set(["data_describe", "data_query"]);
+const INBOX_OPS_MAIL_TOOLS: ReadonlySet<string> = new Set(["list_hooks", "find_mail", "read_event", "manage_mail"]);
+const INBOX_OPS_GMAIL_TOOLS: ReadonlySet<string> = new Set([
+	"gmail_get_profile",
+	"gmail_search_messages",
+	"gmail_list_messages",
+	"gmail_read_message",
+	"gmail_read_thread",
+	"gmail_update_messages",
+	"gmail_block_sender",
+	"gmail_create_draft",
+	"gmail_update_draft",
+	"gmail_delete_draft",
+]);
 const NEW_DISK_SURFACE_NOTE =
 	"machine.newDisk is true: your machine got a new disk since your previous turn started. Only /company was kept, so home and cache folders and anything installed outside /company start fresh.";
+
+export interface SurfaceInboxMailToolsPort {
+	readonly binding: CloudNativeToolBinding;
+	readonly control: CloudCompanyPathControl;
+	readonly secretBroker?: CloudSecretOperationClient;
+	readonly gmailDescriptors?: readonly CloudNativeConnectorToolDescriptor[];
+}
+
+export function buildInboxOpsMailTools(options: {
+	readonly inboxMail: SurfaceInboxMailToolsPort;
+	readonly identity: CloudNativeToolIdentity;
+	readonly operations: CloudNativeToolOperations;
+}): CloudNativeTool[] {
+	const mailTools = cloudEventTools(options.inboxMail.binding, options.identity, options.inboxMail.control).filter(
+		(tool) => INBOX_OPS_MAIL_TOOLS.has(tool.name),
+	);
+	const gmailDescriptors = (options.inboxMail.gmailDescriptors ?? []).filter((descriptor) =>
+		INBOX_OPS_GMAIL_TOOLS.has(descriptor.toolName),
+	);
+	const gmailTools =
+		options.inboxMail.secretBroker && gmailDescriptors.length > 0
+			? cloudSecretTools({
+					descriptors: gmailDescriptors,
+					binding: options.inboxMail.binding,
+					control: options.inboxMail.control,
+					operations: options.operations,
+					broker: options.inboxMail.secretBroker,
+				})
+			: [];
+	return [...mailTools, ...gmailTools];
+}
 
 export function isCodingWorkspaceKind(value: unknown): value is CodingWorkspaceKind {
 	return value === "git_repo" || value === "surface_folder" || value === "surface_ops";
@@ -128,13 +179,24 @@ export async function prepareSurfaceCodingWorkspace(options: {
 	readonly folder?: CloudCompanyFolderClient;
 	readonly folderSearch?: CloudFolderSearch;
 	readonly companyData?: CloudCompanyDataDoor;
+	readonly inboxMail?: SurfaceInboxMailToolsPort;
 	readonly pictures?: CloudPictureChannel;
 	readonly isClaudeTurn: boolean;
 	readonly newDisk: boolean;
 	readonly signal: AbortSignal;
 }): Promise<PreparedSurfaceCodingWorkspace> {
-	const { workspaceKind, surfaceSession, folder, folderSearch, companyData, pictures, isClaudeTurn, newDisk, signal } =
-		options;
+	const {
+		workspaceKind,
+		surfaceSession,
+		folder,
+		folderSearch,
+		companyData,
+		inboxMail,
+		pictures,
+		isClaudeTurn,
+		newDisk,
+		signal,
+	} = options;
 	const isInternalReconciliation = surfaceSession.isInternalReconciliation === true;
 	const sessionOpenChanges = surfaceSession.sessionOpenChanges ?? [];
 	const previewBaseChanges = surfaceSession.previewBaseChanges ?? [];
@@ -157,22 +219,28 @@ export async function prepareSurfaceCodingWorkspace(options: {
 			}),
 			finishToolName,
 		);
+		const isInboxSurface = surfaceSession.surfaceSlug === "inbox" && inboxMail !== undefined;
 		const codexInstructions = [
 			baseInstructions,
 			"This session runs on a coding machine where the entire company folder (every active Interface listed under Company Interfaces) is mounted read-only at /company and /tmp is writable for scripts and analysis.",
-			"Never try to mutate published Company Files under /company directly; inspect them read-only via company_search, company_read, company_list, data_describe, data_query, or shell commands under /company, and stage every proposed action via stage_surface_ops_action.",
+			isInboxSurface
+				? "Never try to mutate published Company Files under /company directly; inspect them read-only via company_search, company_read, company_list, data_describe, data_query, or shell commands under /company. Perform reversible inbox cleanup directly via find_mail, read_event, manage_mail, and gmail_* tools (and use headless Chromium or Playwright via coding_run_command for web-only unsubscribe pages), and use stage_surface_ops_action for outbound emails to people or actions needing approval."
+				: "Never try to mutate published Company Files under /company directly; inspect them read-only via company_search, company_read, company_list, data_describe, data_query, or shell commands under /company, and stage every proposed action via stage_surface_ops_action.",
 			"Every turn MUST end with coding_finish (omitting headSha), or coding_ask strictly on a genuine hard blocker you cannot resolve (it escalates to the Co-Founder); never end with plain text alone.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join(" ");
 		const claudeSystemNote = [
 			baseInstructions,
 			"Your native tools (Bash, Read, Grep, Glob) run on the coding machine with the entire company folder (every active Interface listed under Company Interfaces) mounted read-only at /company and /tmp writable for scripts and analysis.",
-			"Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action, inspect company files via Read or mcp__qorpera__company_search/company_read/company_list, and query company databases read-only via mcp__qorpera__data_describe/data_query.",
+			isInboxSurface
+				? "Never try to mutate /company directly from Bash, Edit, or Write. Perform reversible inbox cleanup directly through mcp__qorpera__find_mail, mcp__qorpera__read_event, mcp__qorpera__manage_mail, and mcp__qorpera__gmail_* tools (and use headless Chromium or Playwright in Bash for web-only unsubscribe pages), and stage outbound emails to people through mcp__qorpera__stage_surface_ops_action."
+				: "Never try to mutate /company directly from Bash, Edit, or Write; stage every proposed action through mcp__qorpera__stage_surface_ops_action, inspect company files via Read or mcp__qorpera__company_search/company_read/company_list, and query company databases read-only via mcp__qorpera__data_describe/data_query.",
 			"Every turn MUST end with mcp__qorpera__coding_finish (with operationKey and summary), or mcp__qorpera__coding_ask strictly on a genuine hard blocker you cannot resolve (it escalates to the Co-Founder); ending with plain text alone fails the turn.",
 			...(newDisk ? [NEW_DISK_SURFACE_NOTE] : []),
 		].join("\n");
-		const turnCorrection =
-			"Your turn ended without coding_finish or coding_ask. Make sure any proposed action is staged with stage_surface_ops_action, then call coding_finish with a concise founder-facing summary (or coding_ask strictly if hard-blocked; it escalates to the Co-Founder). This is the last turn of this run.";
+		const turnCorrection = isInboxSurface
+			? "Your turn ended without coding_finish or coding_ask. Finish your inbox actions or stage any approval-needed action, then call coding_finish with a clear summary of what was cleaned, unsubscribed, starred, or blocked (or coding_ask strictly if hard-blocked). This is the last turn of this run."
+			: "Your turn ended without coding_finish or coding_ask. Make sure any proposed action is staged with stage_surface_ops_action, then call coding_finish with a concise founder-facing summary (or coding_ask strictly if hard-blocked; it escalates to the Co-Founder). This is the last turn of this run.";
 		return {
 			instructions: codexInstructions,
 			claudeSystemNote,
@@ -194,6 +262,8 @@ export async function prepareSurfaceCodingWorkspace(options: {
 								READ_ONLY_DATA_TOOLS.has(tool.name),
 							)
 						: [];
+				const mailAndGmailTools =
+					isInboxSurface && inboxMail ? buildInboxOpsMailTools({ inboxMail, identity, operations }) : [];
 				const viewAttachmentTool =
 					surfaceSession.viewAttachment && attachments.length > 0
 						? [createCodingViewAttachmentTool(attachments, surfaceSession.viewAttachment)]
@@ -204,6 +274,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 						{ stageSurfaceOpsAction },
 						{ openChanges: sessionOpenChanges, replyChangeId, isInternalReconciliation },
 					),
+					...mailAndGmailTools,
 					...viewAttachmentTool,
 					...readOnlyFolderTools,
 					...searchTools,

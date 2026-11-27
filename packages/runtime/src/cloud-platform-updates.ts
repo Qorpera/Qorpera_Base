@@ -566,6 +566,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Unconnected numbers say so; one chart a tab",
 		text: "A platform number whose source the company has not connected (card payments, a published site, the bank) now answers data_query with words starting Not connected: that say what would connect it; a connected source with nothing happening still answers real zeros. Never read or write that as zero: on an Analytics page keep its block bound (it fills itself once connected) and tell the member what to connect. A Studio page preview reports such a number as not connected. Every Analytics tab now has one big chart and at most four figures, month charts start at the first month with data, and an estimate is drawn dashed and called one.",
 	},
+	{
+		id: "mailbox-email-actions",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Inbox cleanup: trash, star, unsubscribe and block senders",
+		text: "Agents and Inbox sessions can now manage email like Gmail without permanent deletion. Use find_mail (with view filters and up to 50 results) and manage_mail to move conversations to Trash or restore them, archive, star or unstar, block or unblock senders (auto-trashing future mail and skipping routine wakes), and unsubscribe via one-click POST or mailto; brought-in Google mailboxes sync two-way with Gmail. Connected Gmail accounts also gain list, batch update (trash, archive, star, read/unread, spam), and reversible sender-block filter actions. For web-only newsletter links, open the URL in a company or coding machine browser instead of asking the member.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

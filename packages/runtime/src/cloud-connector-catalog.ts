@@ -310,6 +310,8 @@ const GMAIL: CloudConnectorDefinition = {
 		provider: "google",
 		scopes: [
 			"https://www.googleapis.com/auth/gmail.readonly",
+			"https://www.googleapis.com/auth/gmail.modify",
+			"https://www.googleapis.com/auth/gmail.settings.basic",
 			"https://www.googleapis.com/auth/gmail.send",
 			"https://www.googleapis.com/auth/gmail.compose",
 			GOOGLE_EMAIL_SCOPE,
@@ -501,6 +503,121 @@ const GMAIL: CloudConnectorDefinition = {
 			},
 			recipe:
 				"GET /gmail/v1/users/me/messages/{reply_to_message_id}?format=metadata (when replying); POST /gmail/v1/users/me/messages/send",
+		},
+		{
+			id: "list_messages",
+			version: 1,
+			toolName: "gmail_list_messages",
+			effect: "read",
+			description:
+				"List or search Gmail messages with pagination and optional label filters (such as INBOX, STARRED, TRASH, SPAM, or UNREAD). Returns sender, recipients, subject, date, labels, is_starred, parsed unsubscribe options, snippet, and next_page_token.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					query: {
+						type: "string",
+						description: "Optional Gmail search query.",
+						maxLength: 512,
+					},
+					label_ids: {
+						type: "array",
+						description: "Optional Gmail label ids to require, such as ['INBOX'], ['STARRED'], or ['TRASH'].",
+						items: { type: "string", minLength: 1, maxLength: 64 },
+						maxItems: 10,
+					},
+					include_spam_trash: {
+						type: "boolean",
+						description: "Include messages in Spam and Trash (default false).",
+					},
+					page_token: {
+						type: "string",
+						description: "next_page_token from an earlier gmail_list_messages call.",
+						minLength: 1,
+						maxLength: 256,
+					},
+					limit: {
+						type: "integer",
+						description: "Maximum messages to return per page (default 25, max 50).",
+						minimum: 1,
+						maximum: 50,
+					},
+				},
+				additionalProperties: false,
+			},
+			recipe:
+				"GET /gmail/v1/users/me/messages?q=<query>&labelIds=<label_ids>&includeSpamTrash=<bool>&pageToken=<page_token>&maxResults=<limit>; GET /gmail/v1/users/me/messages/{id}?format=metadata",
+		},
+		{
+			id: "update_messages",
+			version: 1,
+			toolName: "gmail_update_messages",
+			effect: "write",
+			description:
+				"Perform reversible inbox actions on up to 50 Gmail messages at once: trash, untrash, archive (remove from Inbox), move_to_inbox, star, unstar, mark_read, mark_unread, or spam. Messages moved to Trash stay recoverable in Gmail Trash for 30 days (permanent deletion is not offered). Requires reconnecting older Gmail connections to grant modify access.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					message_ids: {
+						type: "array",
+						description: "Gmail message ids to update (1 to 50).",
+						items: { type: "string", minLength: 1, maxLength: 64 },
+						minItems: 1,
+						maxItems: 50,
+					},
+					action: {
+						type: "string",
+						description: "Reversible action to apply to all listed messages.",
+						enum: [
+							"trash",
+							"untrash",
+							"archive",
+							"move_to_inbox",
+							"star",
+							"unstar",
+							"mark_read",
+							"mark_unread",
+							"spam",
+						],
+					},
+				},
+				required: ["message_ids", "action"],
+				additionalProperties: false,
+			},
+			recipe:
+				"POST /gmail/v1/users/me/messages/{id}/trash or /untrash (for trash/untrash); POST /gmail/v1/users/me/messages/batchModify (for archive/move_to_inbox/star/unstar/mark_read/mark_unread/spam)",
+		},
+		{
+			id: "block_sender",
+			version: 1,
+			toolName: "gmail_block_sender",
+			effect: "write",
+			description:
+				"Block or unblock an email sender (exact email address or @domain) in Gmail by creating or removing a filter that automatically sends future messages from that sender to Trash and removes them from Inbox. Optionally moves up to 50 existing messages from that sender to Trash (default true). Requires reconnecting older Gmail connections to grant Gmail settings and modify access.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					sender: {
+						type: "string",
+						description: "Email address (news@example.com) or domain (@example.com) to block or unblock.",
+						minLength: 3,
+						maxLength: 254,
+					},
+					unblock: {
+						type: "boolean",
+						description:
+							"When true, removes matching Gmail block filters for this sender instead of blocking (default false).",
+					},
+					trash_existing: {
+						type: "boolean",
+						description:
+							"When blocking, also move up to 50 existing non-trashed messages from this sender to Trash (default true).",
+					},
+				},
+				required: ["sender"],
+				additionalProperties: false,
+			},
+			recipe:
+				"GET /gmail/v1/users/me/settings/filters; POST or DELETE /gmail/v1/users/me/settings/filters; GET /gmail/v1/users/me/messages?q=from:<sender> and POST /gmail/v1/users/me/messages/{id}/trash (when trash_existing is not false)",
 		},
 	],
 };
