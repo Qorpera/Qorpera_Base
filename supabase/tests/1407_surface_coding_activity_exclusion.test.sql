@@ -411,6 +411,88 @@ begin
 	delete from public.qorpera_run_operation_receipts where run_id = v_code_wake.run_id;
 
 	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs
+	set status = 'leased', finished_at = null,
+		lease_token_sha256 = repeat('f', 64), lease_expires_at = clock_timestamp() + interval '2 minutes',
+		last_error = null
+	where id = (v_binding ->> 'jobId')::uuid;
+	set local session_replication_role = origin;
+	perform pg_temp.scae_flush_hints();
+	perform pg_temp.scae_clear_hints();
+	update public.qorpera_runner_jobs
+	set status = 'failed', finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null,
+		last_error = '[code=RUN_COMPLETION_REFUSED] surface run completion refused'
+	where id = (v_binding ->> 'jobId')::uuid;
+	perform pg_temp.scae_flush_hints();
+	perform pg_temp.scae_assert(
+		pg_temp.scae_activity_hints(v_company) > 0,
+		'failed surface coding run with RUN_COMPLETION_REFUSED still emits activity hint for recovery'
+	);
+
+	v_activity := pg_temp.scae_activity(v_owner, v_env);
+	perform pg_temp.scae_assert(
+		exists (
+			select 1 from jsonb_array_elements(coalesce(v_activity, '[]'::jsonb)) item
+			where (item ->> 'run_id')::uuid = v_code_wake.run_id
+				and item ->> 'activity' = 'needs_attention'
+				and coalesce((item ->> 'superseded')::boolean, false) = false
+		),
+		'failed surface coding run with RUN_COMPLETION_REFUSED still surfaces for recovery: ' || coalesce(v_activity::text, 'null')
+	);
+
+	set local session_replication_role = replica;
+	update public.qorpera_runner_jobs
+	set status = 'completed', result = '{}'::jsonb
+	where id = v_first_job;
+	update public.qorpera_runner_jobs
+	set status = 'leased', finished_at = null, last_error = null,
+		lease_token_sha256 = repeat('f', 64), lease_expires_at = clock_timestamp() + interval '2 minutes'
+	where id = (v_binding ->> 'jobId')::uuid;
+	update public.qorpera_wake_occurrences
+	set status = 'materialized', finished_at = null
+	where id = v_code_wake.id;
+	insert into public.qorpera_company_proposals(
+		profile_id, environment_id, client_proposal_id, proposal_snapshot_id,
+		execution_kind, execution_id, execution_claimant_id, trail_end_sequence,
+		reason, title, created_by_user_id
+	)
+	values (
+		v_company, v_env, extensions.gen_random_uuid(), extensions.gen_random_uuid(),
+		'run', v_code_wake.run_id, extensions.gen_random_uuid(), 0,
+		'recovery', 'Surface proposal check', v_owner
+	);
+	set local session_replication_role = origin;
+	perform pg_temp.scae_flush_hints();
+	perform pg_temp.scae_clear_hints();
+	update public.qorpera_runner_jobs
+	set status = 'completed', result = '{}'::jsonb, finished_at = clock_timestamp(),
+		lease_token_sha256 = null, lease_expires_at = null
+	where id = (v_binding ->> 'jobId')::uuid;
+	perform pg_temp.scae_flush_hints();
+	perform pg_temp.scae_assert(
+		pg_temp.scae_activity_hints(v_company) > 0,
+		'completed surface coding run with open proposal still emits activity hint'
+	);
+
+	v_activity := pg_temp.scae_activity(v_owner, v_env);
+	perform pg_temp.scae_assert(
+		jsonb_array_length(coalesce(v_activity, '[]'::jsonb)) = 1
+		and (v_activity -> 0 ->> 'run_id')::uuid = v_code_wake.run_id
+		and v_activity -> 0 ->> 'job_status' = 'completed'
+		and v_activity -> 0 ->> 'activity' = 'needs_attention'
+		and coalesce((v_activity -> 0 ->> 'superseded')::boolean, false) = false,
+		'completed surface coding run with open proposal still surfaces for decision: ' || coalesce(v_activity::text, 'null')
+	);
+
+	set local session_replication_role = replica;
+	delete from public.qorpera_company_proposals where execution_kind = 'run' and execution_id = v_code_wake.run_id;
+	update public.qorpera_runner_jobs
+	set status = 'failed', result = null
+	where id = v_first_job;
+	set local session_replication_role = origin;
+
+	set local session_replication_role = replica;
 	update public.qorpera_runtime_workers
 	set state = 'failed',
 		result = jsonb_build_object('outcome', 'failed', 'summary', 'Simulated failure', 'needs', null, 'outputs', '[]'::jsonb, 'runId', null, 'sequence', sequence),
