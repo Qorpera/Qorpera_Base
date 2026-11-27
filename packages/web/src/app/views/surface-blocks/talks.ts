@@ -129,6 +129,7 @@ interface Playing {
 	turn: number;
 	timer: ReturnType<typeof setTimeout> | undefined;
 	audio: HTMLAudioElement | null;
+	audioAt: number;
 }
 
 const TALK_FILE_RE = new RegExp(`(?:^|/)${SURFACE_TALK_FILE.replace(".", "\\.")}$`, "i");
@@ -233,6 +234,7 @@ function footBar(footing: Readonly<Record<SurfaceTalkFooting, number>>): HTMLEle
 class TalksView {
 	readonly el = h("section", { class: "tks", "data-block": "talks" });
 	readonly #options: SurfaceTalksOptions;
+	readonly #life = new AbortController();
 	#shown: TalksShown | undefined;
 	#place: TalksPlace = { page: "shelf" };
 	#playing: Playing | null = null;
@@ -240,9 +242,11 @@ class TalksView {
 
 	constructor(options: SurfaceTalksOptions) {
 		this.#options = options;
-		this.el.addEventListener("click", (event) => this.#click(event), { signal: options.signal });
-		window.addEventListener("keydown", (event) => this.#key(event), { signal: options.signal });
-		options.signal.addEventListener("abort", () => this.#stop(), { once: true });
+		const { signal } = this.#life;
+		this.el.addEventListener("click", (event) => this.#click(event), { signal });
+		window.addEventListener("keydown", (event) => this.#key(event), { signal });
+		if (options.signal.aborted) this.dispose();
+		else options.signal.addEventListener("abort", () => this.dispose(), { once: true, signal });
 	}
 
 	show(shown: TalksShown): void {
@@ -265,6 +269,11 @@ class TalksView {
 	deactivate(): void {
 		this.#stop();
 		this.el.replaceChildren();
+	}
+
+	dispose(): void {
+		this.deactivate();
+		this.#life.abort();
 	}
 
 	#picture(shown: TalksShown, item: TalkItem, picture: SurfaceTalkPicture): HTMLElement {
@@ -302,7 +311,8 @@ class TalksView {
 
 	#key(event: KeyboardEvent): void {
 		const playing = this.#playing;
-		if (!playing || !this.el.isConnected || event.metaKey || event.ctrlKey || event.altKey) return;
+		if (!playing || !this.el.isConnected || event.defaultPrevented) return;
+		if (event.metaKey || event.ctrlKey || event.altKey) return;
 		const target = event.target as Element | null;
 		if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
 		const box = playing.stage.getBoundingClientRect();
@@ -663,6 +673,7 @@ class TalksView {
 			turn: 0,
 			timer: undefined,
 			audio: null,
+			audioAt: -1,
 		};
 		this.#voiceUi();
 		this.#set(0, false);
@@ -905,6 +916,7 @@ class TalksView {
 					if (mine()) this.#arm(playing, GAP_SECONDS * 1000);
 				};
 				audio.src = url;
+				playing.audioAt = at;
 				audio.play().catch(() => {
 					if (mine()) this.#arm(playing, reading);
 				});
@@ -946,7 +958,8 @@ class TalksView {
 			playing.paused = false;
 			playing.main.classList.remove("is-paused");
 			const audio = playing.audio;
-			if (audio && this.#useVoice(playing) && audio.src && !audio.ended && audio.currentTime > 0) {
+			const held = playing.audioAt === playing.index;
+			if (audio && held && this.#useVoice(playing) && audio.src && !audio.ended && audio.currentTime > 0) {
 				const turn = playing.turn;
 				audio.onended = () => {
 					if (this.#playing === playing && playing.turn === turn && playing.on && !playing.paused)
@@ -1012,6 +1025,7 @@ class TalksView {
 		this.#clear(playing);
 		this.#hush(playing);
 		playing.audio?.removeAttribute("src");
+		playing.audioAt = -1;
 		for (const url of playing.urls.values())
 			url.then(
 				(value) => URL.revokeObjectURL(value),
@@ -1115,7 +1129,7 @@ export class SurfaceTalks {
 	keep(keys: ReadonlySet<string>): void {
 		for (const [key, view] of this.#views) {
 			if (keys.has(key)) continue;
-			view.deactivate();
+			view.dispose();
 			this.#views.delete(key);
 		}
 	}

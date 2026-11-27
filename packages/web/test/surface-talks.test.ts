@@ -466,7 +466,7 @@ describe("The Talks tab's player", () => {
 		const page = await open(pageFiles({ [FOUND]: found() }));
 		page.press(card(FOUND));
 		const key = (name: string, target: EventTarget = window) =>
-			target.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }));
+			target.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
 		key("ArrowRight");
 		expect(page.find(".tks-art .tkp-nrow")).not.toBeNull();
 		key("ArrowLeft");
@@ -481,6 +481,11 @@ describe("The Talks tab's player", () => {
 		key(" ", box);
 		expect(page.find(".tks-art .tkp-title")).not.toBeNull();
 		expect(page.texts(".tks-btn.is-main")).toEqual(["▶ Play"]);
+		const resizer = document.createElement("div");
+		resizer.addEventListener("keydown", (event) => event.preventDefault());
+		document.body.append(resizer);
+		key("ArrowRight", resizer);
+		expect(page.find(".tks-art .tkp-title")).not.toBeNull();
 	});
 
 	it("opens the post a picture rests on, in the Research tab", async () => {
@@ -530,7 +535,14 @@ describe("A talk's voice", () => {
 	async function voiced() {
 		FakeAudio.made = [];
 		vi.stubGlobal("Audio", FakeAudio);
-		Object.assign(URL, { createObjectURL: vi.fn(() => "blob:clip"), revokeObjectURL: vi.fn() });
+		let urls = 0;
+		Object.assign(URL, {
+			createObjectURL: vi.fn(() => {
+				urls += 1;
+				return `blob:clip-${urls}`;
+			}),
+			revokeObjectURL: vi.fn(),
+		});
 		const talk = exists();
 		const lines = (talk.chapters as { pictures: { say: string }[] }[]).flatMap((chapter) =>
 			chapter.pictures.map((picture) => picture.say),
@@ -597,7 +609,7 @@ describe("A talk's voice", () => {
 		expect(page.readBinary).toHaveBeenCalledTimes(1);
 		const audio = FakeAudio.made[0] as FakeAudio;
 		expect(audio.paused).toBe(false);
-		expect(audio.src).toBe("blob:clip");
+		expect(audio.src).toBe("blob:clip-1");
 
 		await vi.advanceTimersByTimeAsync(9000);
 		expect(page.texts(".tks-art .tkp-title")).toEqual(["Mended the same evening"]);
@@ -615,6 +627,37 @@ describe("A talk's voice", () => {
 		await vi.advanceTimersByTimeAsync(200);
 		expect(page.texts(".tks-art .tkp-btitle")).toEqual(["A fault today means"]);
 		expect(page.readBinary).toHaveBeenCalledTimes(2);
+	});
+
+	it("never resumes the picture before's clip when a pause comes while the next clip still loads", async () => {
+		vi.useFakeTimers();
+		const page = await voiced();
+		page.press(".tks-card");
+		page.press(".tks-btn.is-main");
+		await vi.advanceTimersByTimeAsync(0);
+		const audio = FakeAudio.made[0] as FakeAudio;
+		let arrive: (bytes: Uint8Array<ArrayBuffer>) => void = () => undefined;
+		page.readBinary.mockImplementationOnce(
+			() =>
+				new Promise<Uint8Array<ArrayBuffer>>((resolve) => {
+					arrive = resolve;
+				}),
+		);
+		page.press(step(1));
+		expect(page.texts(".tks-art .tkp-btitle")).toEqual(["A fault today means"]);
+		page.press(".tks-btn.is-main");
+		arrive(new Uint8Array([5, 6, 7, 8]));
+		await vi.advanceTimersByTimeAsync(0);
+		expect(audio.paused).toBe(true);
+		expect(audio.src).toBe("blob:clip-1");
+
+		page.press(".tks-btn.is-main");
+		await vi.advanceTimersByTimeAsync(0);
+		expect(audio.paused).toBe(false);
+		expect(audio.src).toBe("blob:clip-2");
+		audio.finish();
+		await vi.advanceTimersByTimeAsync(1300);
+		expect(page.texts(".tks-btn.is-main")).toEqual(["▶ Play again"]);
 	});
 
 	it("switches to captions only, and stops the sound when the founder leaves the tab", async () => {
