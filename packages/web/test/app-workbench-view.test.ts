@@ -102,11 +102,7 @@ function planArtifact(overrides: Partial<SurfaceSessionArtifact> = {}): SurfaceS
 }
 
 describe("AppWorkbenchView", () => {
-	const {
-		showModal: originalShowModal,
-		show: originalShow,
-		close: originalClose,
-	} = HTMLDialogElement.prototype;
+	const { showModal: originalShowModal, show: originalShow, close: originalClose } = HTMLDialogElement.prototype;
 
 	beforeEach(() => {
 		HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
