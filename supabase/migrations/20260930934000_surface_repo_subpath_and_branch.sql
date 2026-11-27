@@ -22,7 +22,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_native_list_company_interfaces(jsonb)') is null
 		or to_regprocedure('public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)') is null
 		or to_regprocedure('public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)') is null
-		or to_regprocedure('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)') is null then
+		or to_regprocedure('public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)') is null
+		or to_regprocedure('public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)') is null then
 		raise exception '20260930934000 requires earlier surface and code repository migrations first';
 	end if;
 end $$;
@@ -102,11 +103,38 @@ language sql immutable set search_path = '' as $$
 	)
 $$;
 
+create function public.qorpera_surface_assert_no_active_coding_sessions(
+	p_profile_id uuid,
+	p_repository_key text
+)
+returns void
+language plpgsql set search_path = '' as $$
+declare
+	v_repo_key text := lower(nullif(btrim(coalesce(p_repository_key, '')), ''));
+begin
+	if p_profile_id is null or v_repo_key is null or left(v_repo_key, 9) = 'surfaces/' then
+		return;
+	end if;
+	perform pg_advisory_xact_lock(hashtextextended(p_profile_id::text || ':surface-repo:' || v_repo_key, 0));
+	if exists (
+		select 1
+		from public.qorpera_coding_sessions cs
+		where cs.profile_id = p_profile_id
+			and cs.surface_session_id is null
+			and cs.phase in ('queued', 'preparing', 'running', 'awaiting_input', 'input_ready', 'publishing')
+			and cs.repository ->> 'host' = 'qorpera'
+			and lower(coalesce(cs.repository ->> 'owner', '')) || '/' || lower(coalesce(cs.repository ->> 'name', '')) = v_repo_key
+	) then
+		raise exception 'Wait for active coding sessions on this repository to finish before binding the whole repository' using errcode = '55000';
+	end if;
+end $$;
+
 revoke all on function
 	public.qorpera_surface_repository_key_valid(text),
 	public.qorpera_surface_normalize_subpath(text),
 	public.qorpera_surface_repository_subpath_valid(text),
-	public.qorpera_surface_default_branch_valid(text)
+	public.qorpera_surface_default_branch_valid(text),
+	public.qorpera_surface_assert_no_active_coding_sessions(uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 alter table public.qorpera_surfaces
@@ -125,7 +153,8 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_native_list_company_interfaces(jsonb)'::regprocedure,
 		'public.qorpera_native_surface_read_session_turn(uuid,uuid,uuid)'::regprocedure,
 		'public.qorpera_surface_claim_pending_jobs_for_lane(integer,text)'::regprocedure,
-		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure
+		'public.qorpera_company_state_worker_rules(uuid,uuid,jsonb,uuid,text,jsonb,jsonb)'::regprocedure,
+		'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure
 	]);
 
 create function pg_temp.srsb_apply(p_def text, p_label text, p_pairs text[])
@@ -240,7 +269,95 @@ $new$						select 1 from public.qorpera_surfaces surf
 						where surf.profile_id = p_profile_id
 							and surf.source_kind = 'code_repo'
 							and surf.status <> 'archived'
-							and surf.repository_subpath is null$new$
+							and surf.repository_subpath is null$new$,
+$old$			elsif v_worker.species = 'coding' and v_worker.owner_user_id is distinct from (p_actor ->> 'requesterUserId')::uuid then
+				v_problem := 'This coding session runs for another member';$old$,
+$new$			elsif v_worker.species = 'coding' and v_worker.owner_user_id is distinct from (p_actor ->> 'requesterUserId')::uuid then
+				v_problem := 'This coding session runs for another member';
+			elsif v_worker.species = 'coding' and exists (
+				select 1
+				from public.qorpera_coding_sessions cs
+				where cs.worker_id = v_worker.id
+					and cs.repository ->> 'host' = 'qorpera'
+					and (
+						lower(coalesce(cs.repository ->> 'owner', '')) = 'surfaces'
+						or exists (
+							select 1 from public.qorpera_surfaces surf
+							where surf.profile_id = p_profile_id
+								and surf.source_kind = 'code_repo'
+								and surf.status <> 'archived'
+								and surf.repository_subpath is null
+								and lower(coalesce(surf.repository_key, '')) =
+									lower(coalesce(cs.repository ->> 'owner', '')) || '/' || lower(coalesce(cs.repository ->> 'name', ''))
+						)
+					)
+			) then
+				v_problem := 'This repository is managed as an Interface. Use start_surface_session instead of manage_worker so changes go through Preview and approval.';$new$
+	]
+);
+
+select pg_temp.srsb_patch(
+	'public.qorpera_company_state_index_worker(uuid,uuid,uuid,text,uuid,jsonb)'::regprocedure,
+	array[
+$old$			insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, session_id, harness, model, repository, branch, claimed_paths)$old$,
+$new$			if p_parse -> 'repository' ->> 'host' = 'qorpera' then
+				perform pg_advisory_xact_lock(
+					hashtextextended(
+						p_profile_id::text || ':surface-repo:'
+							|| lower(coalesce(p_parse -> 'repository' ->> 'owner', '')) || '/'
+							|| lower(coalesce(p_parse -> 'repository' ->> 'name', '')),
+						0
+					)
+				);
+				if lower(coalesce(p_parse -> 'repository' ->> 'owner', '')) = 'surfaces'
+					or exists (
+						select 1 from public.qorpera_surfaces surf
+						where surf.profile_id = p_profile_id
+							and surf.source_kind = 'code_repo'
+							and surf.status <> 'archived'
+							and surf.repository_subpath is null
+							and lower(coalesce(surf.repository_key, '')) =
+								lower(coalesce(p_parse -> 'repository' ->> 'owner', '')) || '/'
+								|| lower(coalesce(p_parse -> 'repository' ->> 'name', ''))
+					) then
+					raise exception 'This repository is managed as an Interface. Use start_surface_session instead of manage_worker so changes go through Preview and approval.' using errcode = '55000';
+				end if;
+			end if;
+			insert into public.qorpera_coding_sessions(worker_id, profile_id, environment_id, session_id, harness, model, repository, branch, claimed_paths)$new$,
+$old$		if v_worker.species = 'coding' then
+			perform public.qorpera_coding_session_queue(v_worker, 'followup', v_commit.run_id, p_parse ->> 'followUp'); end if;$old$,
+$new$		if v_worker.species = 'coding' then
+			perform pg_advisory_xact_lock(
+				hashtextextended(
+					p_profile_id::text || ':surface-repo:'
+						|| lower(coalesce(cs.repository ->> 'owner', '')) || '/'
+						|| lower(coalesce(cs.repository ->> 'name', '')),
+					0
+				)
+			)
+			from public.qorpera_coding_sessions cs
+			where cs.worker_id = v_worker.id and cs.repository ->> 'host' = 'qorpera';
+			if exists (
+				select 1
+				from public.qorpera_coding_sessions cs
+				where cs.worker_id = v_worker.id
+					and cs.repository ->> 'host' = 'qorpera'
+					and (
+						lower(coalesce(cs.repository ->> 'owner', '')) = 'surfaces'
+						or exists (
+							select 1 from public.qorpera_surfaces surf
+							where surf.profile_id = p_profile_id
+								and surf.source_kind = 'code_repo'
+								and surf.status <> 'archived'
+								and surf.repository_subpath is null
+								and lower(coalesce(surf.repository_key, '')) =
+									lower(coalesce(cs.repository ->> 'owner', '')) || '/' || lower(coalesce(cs.repository ->> 'name', ''))
+						)
+					)
+			) then
+				raise exception 'This repository is managed as an Interface. Use start_surface_session instead of manage_worker so changes go through Preview and approval.' using errcode = '55000';
+			end if;
+			perform public.qorpera_coding_session_queue(v_worker, 'followup', v_commit.run_id, p_parse ->> 'followUp'); end if;$new$
 	]
 );
 
@@ -334,6 +451,9 @@ begin
 		and coalesce(public.qorpera_member_role(p_company_id)::text, '') not in ('owner', 'admin') then
 		raise exception 'Only founders and admins can bind an existing code repository' using errcode = '42501';
 	end if;
+	if p_archetype = 'live_build' and v_repo_subpath is null then
+		perform public.qorpera_surface_assert_no_active_coding_sessions(p_company_id, v_repo_key);
+	end if;
 
 	select coalesce(max(sort_order), 0) + 10 into v_sort_order
 	from public.qorpera_surfaces
@@ -402,6 +522,9 @@ begin
 		end if;
 		if not public.qorpera_surface_default_branch_valid(v_default_branch) then
 			raise exception 'Invalid defaultBranch' using errcode = '22023';
+		end if;
+		if v_repo_subpath is null then
+			perform public.qorpera_surface_assert_no_active_coding_sessions(p_company_id, v_repo_key);
 		end if;
 	else
 		v_repo_subpath := null;
@@ -590,16 +713,8 @@ begin
 		raise exception 'Approve or discard open changes before switching repositories' using errcode = '55000';
 	end if;
 
-	if v_repo_subpath is null and exists (
-		select 1
-		from public.qorpera_coding_sessions cs
-		where cs.profile_id = v_surface.profile_id
-			and cs.surface_session_id is null
-			and cs.phase in ('queued', 'preparing', 'running', 'awaiting_input', 'input_ready', 'publishing')
-			and cs.repository ->> 'host' = 'qorpera'
-			and lower(coalesce(cs.repository ->> 'owner', '')) || '/' || lower(coalesce(cs.repository ->> 'name', '')) = v_repo_key
-	) then
-		raise exception 'Wait for active coding sessions on this repository to finish before binding the whole repository' using errcode = '55000';
+	if v_repo_subpath is null then
+		perform public.qorpera_surface_assert_no_active_coding_sessions(v_surface.profile_id, v_repo_key);
 	end if;
 
 	update public.qorpera_surfaces
@@ -674,6 +789,7 @@ begin
 			|| 'public.qorpera_surface_normalize_subpath(text), '
 			|| 'public.qorpera_surface_repository_subpath_valid(text), '
 			|| 'public.qorpera_surface_default_branch_valid(text), '
+			|| 'public.qorpera_surface_assert_no_active_coding_sessions(uuid, text), '
 			|| 'public.qorpera_propose_surface(uuid, text, text, text, text, text, text, text, text, text, text, text, text, boolean, boolean, text, text) to %I',
 			v_owner
 		);

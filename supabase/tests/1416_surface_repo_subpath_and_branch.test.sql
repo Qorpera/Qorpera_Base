@@ -554,15 +554,98 @@ begin
 		get stacked diagnostics v_errcode = returned_sqlstate;
 		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 for active coding session on whole-repo bind, got ' || v_errcode);
 	end;
+	begin
+		perform public.qorpera_create_surface(
+			v_profile, 'Dedicated Create Refused', 'dedicated-create-refused', 'live_build', 'website', 'globe',
+			null, null, null, false, 'qorpera/dedicated_repo', null, 'main'
+		);
+		perform pg_temp.srsb_assert(false, 'whole-repo create_surface must refuse while manage_worker coding session is active on that repo');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 for active coding session on whole-repo create, got ' || v_errcode);
+	end;
+	reset role;
+
+	perform pg_temp.as_service();
+	begin
+		perform public.qorpera_propose_surface(
+			v_profile, 'dedicated-propose-refused', 'Dedicated Propose Refused', 'products', 'live_build', 'code_repo',
+			null, 'qorpera/dedicated_repo', 'static_site', 'globe', 'Proposed dedicated site', 'website', null, false, false, null, 'main'
+		);
+		perform pg_temp.srsb_assert(false, 'whole-repo propose_surface must refuse while manage_worker coding session is active on that repo');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.srsb_assert(v_errcode = '55000', 'Expected 55000 for active coding session on whole-repo propose, got ' || v_errcode);
+	end;
 	reset role;
 
 	update public.qorpera_coding_sessions set phase = 'completed' where worker_id = v_worker_id;
+	update public.qorpera_runtime_workers
+	set state = 'succeeded', result = '{"outcome":"succeeded"}'::jsonb, reported_at = clock_timestamp()
+	where id = v_worker_id;
 
 	perform pg_temp.srsb_as(v_owner);
 	set local role authenticated;
 	v_bound := public.qorpera_bind_surface_repository(v_whole_surface_id, 'qorpera/dedicated_repo', null, 'main');
 	perform pg_temp.srsb_assert(v_bound ->> 'repositoryKey' = 'qorpera/dedicated_repo' and v_bound ->> 'repositorySubpath' is null, 'whole-repo bind must succeed after coding session completes');
 	reset role;
+
+	insert into public.qorpera_folder_entries(
+		environment_id, path, kind, version, commit_id, manifest_sha256, file_sha256, bytes, media_type, executable
+	)
+	select
+		e.environment_id,
+		v_agent_folder || '/todos/monorepo-todo/whole-repo-worker/brief.md',
+		'file',
+		e.version,
+		e.commit_id,
+		e.manifest_sha256,
+		e.file_sha256,
+		e.bytes,
+		e.media_type,
+		e.executable
+	from public.qorpera_folder_entries e
+	where e.environment_id = v_env_id and e.version = v_cofounder.folder_path_version
+	limit 1;
+
+	perform set_config(
+		'qorpera.folder_worker',
+		jsonb_build_object(
+			'action', 'followup',
+			'text', 'Push another commit directly to dedicated_repo'
+		)::text,
+		true
+	);
+	v_rule := public.qorpera_company_state_worker_rules(
+		v_env_id,
+		v_profile,
+		v_actor,
+		null,
+		v_agent_folder || '/todos/monorepo-todo/whole-repo-worker/brief.md',
+		jsonb_build_object(
+			'kind', 'worker-brief',
+			'id', v_worker_id::text,
+			'species', 'coding',
+			'harness', 'codex',
+			'access', 'read',
+			'revival', 'each',
+			'title', 'Active worker',
+			'goal', 'Write directly to dedicated repo',
+			'doneWhen', 'Done',
+			'context', null,
+			'sources', '[]'::jsonb,
+			'followUps', '1',
+			'followedUpAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'followUp', 'Push another commit directly to dedicated_repo',
+			'dispatchedAt', to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+			'repository', jsonb_build_object('host', 'qorpera', 'owner', 'qorpera', 'name', 'dedicated_repo', 'baseBranch', 'main')
+		) || public.qorpera_company_state_worker_standing('coding', 'read', 'each'),
+		'{}'::jsonb
+	);
+	perform pg_temp.srsb_assert(
+		v_rule ->> 'ok' = 'false' and position('start_surface_session' in coalesce(v_rule -> 'problems' -> 0 ->> 'message', '')) > 0,
+		'whole-repo Interface binding must also block followup on prior manage_worker coding session: ' || coalesce(v_rule::text, 'null')
+	);
 
 	perform set_config(
 		'qorpera.folder_worker',
