@@ -17,6 +17,7 @@ import {
 	cloudStudioFileReader,
 	openSurfaceLayoutOps,
 	runSurfaceSessionTurn,
+	STUDIO_NUMBERS_TAB_RULE,
 	type SurfaceSessionRunnerPorts,
 	type SurfaceSessionTurnInput,
 	surfaceStudioPageView,
@@ -177,6 +178,9 @@ describe("the page contract a Studio session is told", () => {
 			expect(text).toContain("Figures filled from an object show only values of at most 18 characters.");
 			expect(text).toContain("A company file is bound with a leading slash (/identity/tokens.json).");
 			expect(text).toContain(SURFACE_REPORT_FORMAT);
+			expect(text).toContain(SURFACE_ASK_FORMAT);
+			expect(text).toContain(SURFACE_COLORS_FORMAT);
+			expect(text).toContain(STUDIO_NUMBERS_TAB_RULE);
 			for (const word of OLD_SCHEMA_WORDS) expect(text).not.toContain(word);
 		}
 		expect(await instructionsFor(PRODUCT)).toContain('A stage_3d model file (default object.json) is {"model"');
@@ -185,7 +189,6 @@ describe("the page contract a Studio session is told", () => {
 		const analytics = await instructionsFor(ANALYTICS);
 		expect(analytics).toContain(SURFACE_ASK_FORMAT);
 		expect(analytics).toContain(SURFACE_COLORS_FORMAT);
-		expect(await instructionsFor(CUSTOM)).not.toContain(SURFACE_ASK_FORMAT);
 	});
 
 	it("shows an interface its own layout.json, and says when that file does not read", async () => {

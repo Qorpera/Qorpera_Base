@@ -12,6 +12,8 @@ import {
 	parseStudioTourDocument,
 	parseSurfaceLayout,
 	resolveTourSay,
+	SURFACE_ASK_FORMAT,
+	SURFACE_COLORS_FORMAT,
 	SURFACE_ECONOMICS_FORMAT,
 	SURFACE_HYPOTHESES_FORMAT,
 	SURFACE_LANDSCAPE_FORMAT,
@@ -50,6 +52,8 @@ describe("strategy starter and surface link parsing", () => {
 			SURFACE_HYPOTHESES_FORMAT,
 			SURFACE_LANDSCAPE_FORMAT,
 			SURFACE_REPORT_FORMAT,
+			SURFACE_ASK_FORMAT,
+			SURFACE_COLORS_FORMAT,
 		]);
 	});
 });
