@@ -159,6 +159,8 @@ begin
 		end if;
 	end if;
 
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-code-git-tokens:' || v_env.id::text || ':' || v_uid::text, 0));
+
 	select count(*) into v_active_count
 	from public.qorpera_code_git_tokens as tok
 	where tok.environment_id = v_env.id
@@ -415,9 +417,25 @@ begin
 	end if;
 
 	if v_after is not null and v_before is distinct from v_after then
+		if exists (
+			select 1 from public.qorpera_code_changes as ch
+			where ch.environment_id = v_repo.environment_id
+				and ch.owner = v_repo.owner
+				and ch.name = v_repo.name
+				and ch.main_after = v_after
+		) then
+			return jsonb_build_object('recorded', false, 'changeNumber', null, 'mainAfter', v_after);
+		end if;
 		if v_repo.last_main is not null
 			and v_before is not null
-			and v_repo.last_main is distinct from v_before then
+			and v_repo.last_main is distinct from v_before
+			and not exists (
+				select 1 from public.qorpera_code_changes as ch
+				where ch.environment_id = v_repo.environment_id
+					and ch.owner = v_repo.owner
+					and ch.name = v_repo.name
+					and ch.main_before = v_before
+			) then
 			perform public.qorpera_code_change_found(
 				v_repo.environment_id,
 				v_repo.owner,
@@ -453,11 +471,13 @@ begin
 				), 2000)
 			)
 		);
-		update public.qorpera_code_repositories
-		set main_sha = v_after
-		where environment_id = v_repo.environment_id
-			and owner = v_repo.owner
-			and name = v_repo.name;
+		if v_repo.last_main is null or v_before is null or v_repo.last_main = v_before then
+			update public.qorpera_code_repositories
+			set main_sha = v_after
+			where environment_id = v_repo.environment_id
+				and owner = v_repo.owner
+				and name = v_repo.name;
+		end if;
 	end if;
 
 	return jsonb_build_object(
@@ -483,12 +503,314 @@ alter table public.qorpera_surface_ops_action_receipts enable row level security
 revoke all on public.qorpera_surface_ops_action_receipts
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
+create function public.qorpera_queue_surface_ops_mail(
+	p_profile_id uuid,
+	p_environment_id uuid,
+	p_user_id uuid,
+	p_send_id uuid,
+	p_payload jsonb
+)
+returns jsonb
+language plpgsql security definer set search_path = '' set lock_timeout = '2s' as $$
+declare
+	c_address constant text := '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$';
+	v_settings public.qorpera_mail_settings%rowtype;
+	v_mail public.qorpera_company_mail_outbox%rowtype;
+	v_mailbox public.qorpera_company_mailboxes%rowtype;
+	v_hook public.qorpera_event_hooks%rowtype;
+	v_google public.qorpera_google_mailboxes%rowtype;
+	v_to_json jsonb;
+	v_cc_json jsonb;
+	v_to text[];
+	v_cc text[] := '{}';
+	v_subject text;
+	v_raw_body text;
+	v_body text;
+	v_from text;
+	v_member text;
+	v_company text;
+	v_from_name text;
+	v_now timestamptz := clock_timestamp();
+	v_recipients integer;
+	v_hour bigint;
+	v_day bigint;
+	v_next timestamptz;
+	v_mail_id uuid := extensions.gen_random_uuid();
+	v_thread text;
+begin
+	if p_user_id is null then
+		raise exception 'Outbound email action requires an approving company member' using errcode = '42501';
+	end if;
+	if not exists (
+		select 1 from public.qorpera_profile_members as m
+		where m.profile_id = p_profile_id
+			and m.user_id = p_user_id
+			and m.role in ('owner', 'admin', 'contributor')
+	) then
+		raise exception 'Only a member who can write in the company sends its email' using errcode = '42501';
+	end if;
+
+	if jsonb_typeof(p_payload -> 'to') = 'array' then
+		v_to_json := p_payload -> 'to';
+	elsif jsonb_typeof(p_payload -> 'to') = 'string' and btrim(p_payload ->> 'to') <> '' then
+		v_to_json := jsonb_build_array(p_payload ->> 'to');
+	else
+		raise exception 'Provide 1 to 10 valid recipient email addresses in to' using errcode = '22023';
+	end if;
+	if jsonb_typeof(p_payload -> 'cc') = 'array' then
+		v_cc_json := p_payload -> 'cc';
+	elsif p_payload -> 'cc' is null or jsonb_typeof(p_payload -> 'cc') = 'null' then
+		v_cc_json := '[]'::jsonb;
+	else
+		raise exception 'Provide up to 9 valid cc email addresses' using errcode = '22023';
+	end if;
+	if jsonb_array_length(v_to_json) not between 1 and 10
+		or jsonb_array_length(v_cc_json) > 9
+		or exists (
+			select 1 from jsonb_array_elements(v_to_json || v_cc_json) as item(value)
+			where jsonb_typeof(item.value) <> 'string'
+				or char_length(item.value #>> '{}') > 254
+				or lower(btrim(item.value #>> '{}')) !~ c_address
+		) then
+		raise exception 'Mail request is invalid' using errcode = '22023';
+	end if;
+
+	v_subject := btrim(coalesce(p_payload ->> 'subject', ''));
+	if char_length(v_subject) not between 1 and 200 or v_subject ~ '[[:cntrl:]]' then
+		raise exception 'Email subject must be 1 to 200 single-line characters' using errcode = '22023';
+	end if;
+	v_raw_body := rtrim(coalesce(p_payload ->> 'body', p_payload ->> 'text', ''), E' \t\r\n');
+	if char_length(v_raw_body) not between 1 and 20000 or btrim(v_raw_body, E' \t\r\n') = '' then
+		raise exception 'Email body must be 1 to 20000 characters' using errcode = '22023';
+	end if;
+
+	perform pg_advisory_xact_lock(hashtextextended('qorpera-company-mail:' || p_profile_id::text, 0));
+
+	select * into v_mail
+	from public.qorpera_company_mail_outbox
+	where profile_id = p_profile_id
+		and member_user_id = p_user_id
+		and member_send_id = p_send_id;
+	if found then
+		return jsonb_build_object(
+			'action', 'mail.send',
+			'outboxId', v_mail.id,
+			'thread', v_mail.thread,
+			'mailboxId', v_mail.mailbox_id,
+			'route', v_mail.route,
+			'recipientsTo', to_jsonb(v_mail.recipients_to)
+		);
+	end if;
+
+	select array_agg(address order by first) into v_to
+	from (
+		select lower(btrim(item.value #>> '{}')) as address, min(item.n) as first
+		from jsonb_array_elements(v_to_json) with ordinality as item(value, n)
+		group by 1
+	) as listed;
+	select coalesce(array_agg(address order by first), '{}') into v_cc
+	from (
+		select lower(btrim(item.value #>> '{}')) as address, min(item.n) as first
+		from jsonb_array_elements(v_cc_json) with ordinality as item(value, n)
+		group by 1
+	) as listed
+	where not address = any(v_to);
+	v_recipients := cardinality(v_to) + cardinality(v_cc);
+	if v_recipients > 10 then
+		raise exception 'Mail request is invalid' using errcode = '22023';
+	end if;
+
+	select settings.* into v_settings from public.qorpera_mail_settings as settings;
+	if not coalesce(v_settings.enabled and v_settings.sending, false) or v_settings.domain is null then
+		raise exception 'Sending company mail is switched off' using errcode = '0A000';
+	end if;
+
+	if coalesce(p_payload ->> 'mailboxId', '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+		select * into v_mailbox
+		from public.qorpera_company_mailboxes
+		where id = (p_payload ->> 'mailboxId')::uuid
+			and profile_id = p_profile_id
+			and environment_id = p_environment_id
+			and removed_at is null;
+		if not found then
+			raise exception 'No mailbox of this company has that address' using errcode = '42501';
+		end if;
+	elsif coalesce(btrim(p_payload ->> 'from'), '') <> '' then
+		v_from := lower(btrim(p_payload ->> 'from'));
+		if v_from like '%@%' and not exists (
+			select 1 from public.qorpera_google_mailboxes as google
+			where google.address = v_from and google.removed_at is null
+		) then
+			if v_from <> split_part(v_from, '@', 1) || '@' || v_settings.domain then
+				raise exception 'No mailbox of this company has that address' using errcode = '42501';
+			end if;
+			v_from := split_part(v_from, '@', 1);
+		end if;
+		select * into v_mailbox
+		from public.qorpera_company_mailboxes
+		where (local_part = v_from or id = (
+				select google.mailbox_id from public.qorpera_google_mailboxes as google
+				where google.address = v_from and google.removed_at is null
+			))
+			and removed_at is null
+			and profile_id = p_profile_id
+			and environment_id = p_environment_id;
+		if not found then
+			raise exception 'No mailbox of this company has that address' using errcode = '42501';
+		end if;
+	else
+		select * into v_mailbox
+		from public.qorpera_company_mailboxes
+		where profile_id = p_profile_id
+			and environment_id = p_environment_id
+			and removed_at is null
+		order by created_at asc, id asc
+		limit 1;
+		if not found then
+			raise exception 'No active company mailbox is connected for sending email' using errcode = '55000';
+		end if;
+	end if;
+
+	select * into strict v_hook from public.qorpera_event_hooks where id = v_mailbox.hook_id;
+	if v_hook.status <> 'active' then
+		raise exception 'The mailbox is paused; resume it to send from it' using errcode = '0A000';
+	end if;
+
+	select * into v_google
+	from public.qorpera_google_mailboxes
+	where mailbox_id = v_mailbox.id and removed_at is null;
+	if v_google.mailbox_id is not null and (v_google.paused or v_google.state <> 'live') then
+		raise exception 'The mailbox is paused; resume it to send from it' using errcode = '0A000';
+	end if;
+
+	if exists (
+		select 1 from public.qorpera_company_mailboxes as mailbox
+		where mailbox.profile_id = p_profile_id
+			and mailbox.removed_at is null
+			and (
+				exists (
+					select 1 from unnest(v_to || v_cc) as recipient
+					where recipient = substring(recipient from '^[^@]+') || '@' || v_settings.domain
+						and public.qorpera_mail_box_part(recipient) = mailbox.local_part
+				)
+				or exists (
+					select 1 from public.qorpera_google_mailboxes as google, unnest(v_to || v_cc) as recipient
+					where google.mailbox_id = mailbox.id
+						and google.removed_at is null
+						and public.qorpera_google_address_key(recipient) = public.qorpera_google_address_key(google.address)
+				)
+			)
+	) then
+		raise exception 'Email to your own company''s mailboxes is refused' using errcode = '42501';
+	end if;
+
+	if v_recipients > least(v_settings.company_hourly_recipients, v_settings.company_daily_recipients) then
+		raise exception 'The company''s email limits allow % recipients an hour and % a day, fewer than this email has',
+			v_settings.company_hourly_recipients, v_settings.company_daily_recipients using errcode = '54000';
+	end if;
+
+	select
+		coalesce(sum(cardinality(recipients_to) + cardinality(recipients_cc))
+			filter (where created_at > v_now - interval '1 hour'), 0),
+		coalesce(sum(cardinality(recipients_to) + cardinality(recipients_cc)), 0)
+	into v_hour, v_day
+	from public.qorpera_company_mail_outbox
+	where profile_id = p_profile_id
+		and created_at > v_now - interval '1 day'
+		and (status <> 'cancelled' or attempt_count > 0);
+	if v_hour + v_recipients > v_settings.company_hourly_recipients
+		or v_day + v_recipients > v_settings.company_daily_recipients then
+		select greatest(
+			case when v_hour + v_recipients > v_settings.company_hourly_recipients then (
+				select sent.created_at + interval '1 hour' from (
+					select created_at, id,
+						sum(cardinality(recipients_to) + cardinality(recipients_cc)) over (order by created_at desc, id desc) as newer
+					from public.qorpera_company_mail_outbox
+					where profile_id = p_profile_id
+						and created_at > v_now - interval '1 hour'
+						and (status <> 'cancelled' or attempt_count > 0)
+				) as sent
+				where sent.newer > v_settings.company_hourly_recipients - v_recipients
+				order by sent.created_at desc, sent.id desc
+				limit 1
+			) end,
+			case when v_day + v_recipients > v_settings.company_daily_recipients then (
+				select sent.created_at + interval '1 day' from (
+					select created_at, id,
+						sum(cardinality(recipients_to) + cardinality(recipients_cc)) over (order by created_at desc, id desc) as newer
+					from public.qorpera_company_mail_outbox
+					where profile_id = p_profile_id
+						and created_at > v_now - interval '1 day'
+						and (status <> 'cancelled' or attempt_count > 0)
+				) as sent
+				where sent.newer > v_settings.company_daily_recipients - v_recipients
+				order by sent.created_at desc, sent.id desc
+				limit 1
+			) end,
+			v_now
+		) into v_next;
+		raise exception 'The company has emailed the % recipients an hour and % a day its limits allow; this email can go after %',
+			v_settings.company_hourly_recipients, v_settings.company_daily_recipients,
+			to_char(date_trunc('second', v_next + interval '999999 microseconds') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+			using errcode = '54000';
+	end if;
+
+	v_member := public.qorpera_mail_display_name(
+		(select member.display_name from public.qorpera_profile_members as member
+			where member.profile_id = p_profile_id and member.user_id = p_user_id),
+		'A member'
+	);
+	if v_member like '%@%' then
+		v_member := 'A member';
+	end if;
+	v_company := coalesce(
+		nullif(public.qorpera_mail_header_safe_name((select profile.name from public.qorpera_profiles as profile where profile.id = p_profile_id)), ''),
+		'the company'
+	);
+	if public.qorpera_mail_name_reads_as_qorpera(v_member)
+		or public.qorpera_mail_name_reads_as_qorpera(v_company)
+		or public.qorpera_mail_name_reads_as_qorpera(v_mailbox.local_part) then
+		raise exception 'Email that would look like it comes from Qorpera is refused; change your name, the company''s or the mailbox''s'
+			using errcode = '42501';
+	end if;
+
+	v_from_name := v_member || coalesce(' at ' || public.qorpera_mail_company_short_name(v_company), '');
+	v_body := v_raw_body || E'\n\n' || format(
+		'Drafted by an AI agent and approved by %s for %s.',
+		v_member,
+		case when v_company = 'No name yet' then 'a new company' else v_company end
+	);
+	v_thread := public.qorpera_mail_thread_id(v_mailbox.id, 'mail:' || v_mail_id::text);
+
+	insert into public.qorpera_company_mail_outbox (
+		id, thread, profile_id, environment_id, mailbox_id, member_user_id,
+		member_send_id, from_name, recipients_to, recipients_cc, subject, body
+	) values (
+		v_mail_id, v_thread, p_profile_id, p_environment_id, v_mailbox.id, p_user_id,
+		p_send_id, v_from_name, v_to, v_cc, v_subject, v_body
+	)
+	returning * into v_mail;
+
+	perform public.qorpera_mail_thread_note(
+		v_thread, p_profile_id, p_environment_id, v_mailbox.id, 'sent',
+		v_mail.created_at, v_mail.subject, null, v_to[1], null, null, null
+	);
+
+	return jsonb_build_object(
+		'action', 'mail.send',
+		'outboxId', v_mail.id,
+		'thread', v_thread,
+		'mailboxId', v_mailbox.id,
+		'route', v_mail.route,
+		'recipientsTo', to_jsonb(v_to)
+	);
+end $$;
+
 create function public.qorpera_execute_surface_ops_action(
 	p_profile_id uuid,
 	p_job_id uuid,
 	p_change_id uuid,
-	p_action_kind text,
-	p_action_payload jsonb default '{}'::jsonb
+	p_lease_token uuid default null
 )
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -496,9 +818,10 @@ declare
 	v_job public.qorpera_surface_jobs%rowtype;
 	v_change public.qorpera_surface_changes%rowtype;
 	v_existing public.qorpera_surface_ops_action_receipts%rowtype;
+	v_approved_ids uuid[];
 	v_env_id uuid;
-	v_kind text := lower(btrim(coalesce(p_action_kind, '')));
-	v_payload jsonb := coalesce(p_action_payload, '{}'::jsonb);
+	v_kind text;
+	v_payload jsonb;
 	v_result jsonb;
 	v_mail_action text;
 	v_threads text[];
@@ -506,44 +829,51 @@ declare
 	v_trash_existing boolean;
 	v_thread_id text;
 	v_delivery_id uuid;
-	v_mailbox public.qorpera_company_mailboxes%rowtype;
-	v_route text := 'platform';
-	v_to text[];
-	v_cc text[] := '{}';
-	v_subject text;
-	v_body text;
-	v_mail_id uuid;
-	v_thread text;
-	v_member_name text;
-	v_company_name text;
-	v_from_name text;
 begin
 	if auth.role() is distinct from 'service_role' then
 		raise exception 'Surface ops action execution requires service_role' using errcode = '42501';
 	end if;
-	if p_profile_id is null or p_job_id is null or p_change_id is null
-		or v_kind = '' or char_length(v_kind) > 80
-		or jsonb_typeof(v_payload) <> 'object' then
+	if p_profile_id is null or p_job_id is null or p_change_id is null then
 		raise exception 'Surface ops action request is invalid' using errcode = '22023';
 	end if;
 
 	select * into v_job
 	from public.qorpera_surface_jobs
-	where id = p_job_id and profile_id = p_profile_id;
+	where id = p_job_id and profile_id = p_profile_id
+	for update;
 	if v_job.id is null then
 		raise exception 'Surface job not found' using errcode = 'P0002';
 	end if;
+	if v_job.kind <> 'land_change' then
+		raise exception 'Surface job is not a land_change job' using errcode = '22023';
+	end if;
 	if v_job.status <> 'running' then
 		raise exception 'Surface job is not running' using errcode = '55000';
+	end if;
+	if v_job.lease_token is not null and p_lease_token is distinct from v_job.lease_token then
+		raise exception 'Surface job lease mismatch' using errcode = '55000';
+	end if;
+
+	select coalesce(array_agg(x::uuid), '{}'::uuid[]) into v_approved_ids
+	from jsonb_array_elements_text(coalesce(v_job.payload -> 'changeIds', '[]'::jsonb)) as x;
+	if not (p_change_id = any(v_approved_ids)) then
+		raise exception 'Surface change is not approved on this job' using errcode = '42501';
 	end if;
 
 	select * into v_change
 	from public.qorpera_surface_changes
 	where id = p_change_id
 		and profile_id = p_profile_id
-		and surface_id = v_job.surface_id;
+		and surface_id = v_job.surface_id
+	for update;
 	if v_change.id is null then
 		raise exception 'Surface change not found for job' using errcode = 'P0002';
+	end if;
+	if v_change.kind <> 'ops_action' then
+		raise exception 'Surface change is not an ops_action' using errcode = '22023';
+	end if;
+	if v_change.status not in ('merging', 'staged') then
+		raise exception 'Surface ops change is not open for landing' using errcode = '55000';
 	end if;
 
 	select * into v_existing
@@ -556,6 +886,15 @@ begin
 			'actionKind', v_existing.action_kind,
 			'receipt', v_existing.result
 		);
+	end if;
+
+	if v_change.patch_manifest is null or jsonb_typeof(v_change.patch_manifest) <> 'object' then
+		raise exception 'Surface ops change has no valid patch_manifest' using errcode = '22023';
+	end if;
+	v_kind := lower(btrim(coalesce(v_change.patch_manifest ->> 'actionKind', '')));
+	v_payload := coalesce(v_change.patch_manifest -> 'actionPayload', '{}'::jsonb);
+	if v_kind = '' or char_length(v_kind) > 80 or jsonb_typeof(v_payload) <> 'object' then
+		raise exception 'Surface ops change manifest is invalid' using errcode = '22023';
 	end if;
 
 	select env.id into v_env_id
@@ -613,101 +952,8 @@ begin
 			null
 		);
 	elsif v_kind in ('mail.send', 'inbox.send_email', 'send_email', 'send_mail') then
-		if v_job.requested_by_user_id is null then
-			raise exception 'Outbound email action requires an approving company member' using errcode = '42501';
-		end if;
-		if jsonb_typeof(v_payload -> 'to') = 'array' then
-			select array_agg(lower(btrim(item))) into v_to
-			from jsonb_array_elements_text(v_payload -> 'to') as item
-			where btrim(item) <> '';
-		elsif jsonb_typeof(v_payload -> 'to') = 'string' and btrim(v_payload ->> 'to') <> '' then
-			v_to := array[lower(btrim(v_payload ->> 'to'))];
-		end if;
-		if v_to is null or cardinality(v_to) not between 1 and 10
-			or exists (
-				select 1 from unnest(v_to) as addr
-				where addr !~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
-			) then
-			raise exception 'Provide 1 to 10 valid recipient email addresses in to' using errcode = '22023';
-		end if;
-		if jsonb_typeof(v_payload -> 'cc') = 'array' then
-			select coalesce(array_agg(lower(btrim(item))), '{}') into v_cc
-			from jsonb_array_elements_text(v_payload -> 'cc') as item
-			where btrim(item) <> '';
-			if cardinality(v_cc) > 9 or exists (
-				select 1 from unnest(v_cc) as addr
-				where addr !~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
-			) then
-				raise exception 'Provide up to 9 valid cc email addresses' using errcode = '22023';
-			end if;
-		end if;
-		v_subject := btrim(coalesce(v_payload ->> 'subject', ''));
-		if char_length(v_subject) not between 1 and 200 or v_subject ~ '[[:cntrl:]]' then
-			raise exception 'Email subject must be 1 to 200 single-line characters' using errcode = '22023';
-		end if;
-		v_body := rtrim(coalesce(v_payload ->> 'body', v_payload ->> 'text', ''), E' \t\r\n');
-		if char_length(v_body) not between 1 and 20000 then
-			raise exception 'Email body must be 1 to 20000 characters' using errcode = '22023';
-		end if;
-		if coalesce(v_payload ->> 'mailboxId', '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
-			select * into v_mailbox
-			from public.qorpera_company_mailboxes
-			where id = (v_payload ->> 'mailboxId')::uuid
-				and profile_id = p_profile_id
-				and environment_id = v_env_id
-				and removed_at is null;
-		else
-			select * into v_mailbox
-			from public.qorpera_company_mailboxes
-			where profile_id = p_profile_id
-				and environment_id = v_env_id
-				and removed_at is null
-			order by created_at asc, id asc
-			limit 1;
-		end if;
-		if v_mailbox.id is null then
-			raise exception 'No active company mailbox is connected for sending email' using errcode = '55000';
-		end if;
-		if exists (
-			select 1 from public.qorpera_google_mailboxes as gm
-			where gm.mailbox_id = v_mailbox.id and gm.state = 'live' and not gm.paused
-		) then
-			v_route := 'gmail';
-		end if;
-		select public.qorpera_mail_display_name(
-			coalesce(u.raw_user_meta_data ->> 'full_name', u.raw_user_meta_data ->> 'name', u.email),
-			'Team'
-		) into v_member_name
-		from auth.users as u
-		where u.id = v_job.requested_by_user_id;
-		select public.qorpera_mail_display_name(p.name, 'Company') into v_company_name
-		from public.qorpera_profiles as p
-		where p.id = p_profile_id;
-		v_from_name := left(coalesce(v_member_name, 'Team') || ' at ' || coalesce(v_company_name, 'Company'), 160);
-		v_mail_id := extensions.gen_random_uuid();
-		v_thread := public.qorpera_mail_thread_id(v_mailbox.id, 'mail:' || v_mail_id::text);
-
-		insert into public.qorpera_company_mail_outbox (
-			id, thread, profile_id, environment_id, mailbox_id, route,
-			member_user_id, member_send_id, from_name, recipients_to, recipients_cc, subject, body
-		) values (
-			v_mail_id, v_thread, p_profile_id, v_env_id, v_mailbox.id, v_route,
-			v_job.requested_by_user_id, p_change_id, v_from_name, v_to, v_cc, v_subject, v_body
-		)
-		on conflict (profile_id, member_user_id, member_send_id) where member_user_id is not null do nothing;
-
-		select o.id into v_mail_id
-		from public.qorpera_company_mail_outbox as o
-		where o.profile_id = p_profile_id
-			and o.member_user_id = v_job.requested_by_user_id
-			and o.member_send_id = p_change_id;
-
-		v_result := jsonb_build_object(
-			'action', 'mail.send',
-			'outboxId', v_mail_id,
-			'mailboxId', v_mailbox.id,
-			'route', v_route,
-			'recipientsTo', to_jsonb(v_to)
+		v_result := public.qorpera_queue_surface_ops_mail(
+			p_profile_id, v_env_id, v_job.requested_by_user_id, p_change_id, v_payload
 		);
 	else
 		raise exception 'Unsupported ops action kind: %', left(v_kind, 80) using errcode = '22023';
@@ -717,8 +963,7 @@ begin
 		change_id, job_id, profile_id, action_kind, result
 	) values (
 		p_change_id, p_job_id, p_profile_id, v_kind, coalesce(v_result, '{}'::jsonb)
-	)
-	on conflict (change_id) do nothing;
+	);
 
 	return jsonb_build_object(
 		'status', 'landed',
@@ -752,8 +997,7 @@ select pg_temp.git_ops_tel_patch(
 				(v_args ->> 'p_profile_id')::uuid,
 				(v_args ->> 'p_job_id')::uuid,
 				(v_args ->> 'p_change_id')::uuid,
-				v_args ->> 'p_action_kind',
-				coalesce(v_args -> 'p_action_payload', '{}'::jsonb)
+				(v_args ->> 'p_lease_token')::uuid
 			);$new$
 	]
 );
@@ -1142,7 +1386,8 @@ revoke all on function
 	public.qorpera_revoke_code_git_token(uuid),
 	public.qorpera_verify_code_git_token(text, uuid, text, text, text),
 	public.qorpera_record_git_http_push(uuid, text, text, uuid, text, text, jsonb),
-	public.qorpera_execute_surface_ops_action(uuid, uuid, uuid, text, jsonb),
+	public.qorpera_queue_surface_ops_mail(uuid, uuid, uuid, uuid, jsonb),
+	public.qorpera_execute_surface_ops_action(uuid, uuid, uuid, uuid),
 	public.qorpera_ingest_app_telemetry(jsonb),
 	public.qorpera_company_numbers_app(uuid, timestamptz, text, jsonb)
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_web_router;
@@ -1156,7 +1401,7 @@ grant execute on function
 grant execute on function
 	public.qorpera_verify_code_git_token(text, uuid, text, text, text),
 	public.qorpera_record_git_http_push(uuid, text, text, uuid, text, text, jsonb),
-	public.qorpera_execute_surface_ops_action(uuid, uuid, uuid, text, jsonb)
+	public.qorpera_execute_surface_ops_action(uuid, uuid, uuid, uuid)
 	to service_role;
 
 grant execute on function

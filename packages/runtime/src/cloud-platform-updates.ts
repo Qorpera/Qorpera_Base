@@ -623,11 +623,11 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Qorpera-hosted repositories now support two-way GitHub sync through manage_code: sync fetches upstream changes to inspect ahead/behind status, pull fast-forwards or merges them into main, push publishes a branch to GitHub while guarding the default branch, and opening a pull request creates a GitHub PR and links it directly to an app track. Connected GitHub accounts also gain pull request list, create, update, review, check-run, and branch tools, and signed GitHub webhooks update linked app tracks with PR state, reviews, and check results automatically.",
 	},
 	{
-		id: "git-https-remote-ops-and-app-telemetry",
+		id: "ops-actions-and-live-app-telemetry",
 		kind: "capability",
 		date: "2026-11-27",
-		title: "Direct Git access, real ops actions and live app metrics",
-		text: "Qorpera-hosted repositories now support scoped HTTPS Git tokens so developers can clone, fetch, and push directly from local Git clients while preserving main branch protections and numbered change history. Approved operations actions (such as mailbox triage, sender blocking, unsubscribe, outbound mail, and safe company file edits) now execute directly with idempotent receipts instead of failing as unconfigured. Hosted server and hybrid apps also report real request counts, status classes, and latency percentiles to platform analytics, readable via data_describe and data_query on database qorpera with questions app-health, app-latency, and app-errors.",
+		title: "Real ops actions and live hosted app metrics",
+		text: "Approved operations actions (such as mailbox triage, sender blocking, unsubscribe, outbound mail, and safe company file edits) now execute directly with idempotent receipts instead of failing as unconfigured. Hosted server and hybrid apps also report real request counts, status classes, and latency percentiles to platform analytics, readable via data_describe and data_query on database qorpera with questions app-health, app-latency, and app-errors.",
 	},
 ]);
 

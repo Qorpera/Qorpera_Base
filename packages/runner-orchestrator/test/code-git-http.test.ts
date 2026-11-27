@@ -12,6 +12,7 @@ import {
 	parseReceivePackCommands,
 } from "../src/code-git-http.ts";
 import { type CodeHostJob, startCodeArea } from "../src/code-host-jobs.ts";
+import { CodingControlRefused } from "../src/coding-executor.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
 
 const execFileAsync = promisify(execFile);
@@ -134,7 +135,7 @@ describe("CodeGitHttpServer end-to-end git clone and push", () => {
 								defaultBranch: "main",
 							};
 						}
-						throw new Error("UNAUTHORIZED");
+						throw new CodingControlRefused(null, null);
 					}
 					if (method === "qorpera_record_git_http_push") {
 						recordedPushes.push(args);
@@ -200,9 +201,69 @@ describe("CodeGitHttpServer end-to-end git clone and push", () => {
 		).rejects.toThrow();
 
 		await expect(
+			execFileAsync(gitBin, ["-C", cloneDir, "push", writeUrl, "HEAD:refs/heads/qorpera/coding/w1"], {
+				env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+			}),
+		).rejects.toThrow();
+
+		await expect(
 			execFileAsync(gitBin, ["-C", cloneDir, "push", writeUrl, ":refs/heads/main"], {
 				env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
 			}),
 		).rejects.toThrow();
+
+		const bareRepo = join(companyRoot, "code/acme/app/repo.git");
+		await execFileAsync(gitBin, ["--git-dir", bareRepo, "update-ref", "refs/heads/qorpera/coding/hidden", started.baseSha]);
+		const lsRemote = await execFileAsync(gitBin, ["ls-remote", readUrl], {
+			env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+		});
+		expect(lsRemote.stdout).toContain("refs/heads/main");
+		expect(lsRemote.stdout).not.toContain("refs/qorpera/");
+		expect(lsRemote.stdout).not.toContain("refs/heads/qorpera/");
+	});
+
+	it("maps verify failures distinctly to 401, 403 (paused), and 503 (outage)", async () => {
+		let verifyMode: "unauthorized" | "paused" | "outage" = "unauthorized";
+		server = new CodeGitHttpServer({
+			host: "127.0.0.1",
+			port: 0,
+			control: {
+				async call(method) {
+					if (method !== "qorpera_verify_code_git_token") throw new Error("unexpected");
+					if (verifyMode === "unauthorized") throw new CodingControlRefused(null, null);
+					if (verifyMode === "paused") {
+						throw new Error("CODING_CONTROL_UNCONFIRMED", {
+							cause: new Error("qorpera_verify_code_git_token: HTTP 500 55000 Company execution is paused"),
+						});
+					}
+					throw new Error("CODING_CONTROL_UNCONFIRMED", {
+						cause: new Error("qorpera_verify_code_git_token: HTTP 503 Service Unavailable"),
+					});
+				},
+			},
+			hosts: {
+				async run() {
+					throw new Error("should not reach host");
+				},
+			},
+		});
+		const addr = await server.start();
+		const target = `http://127.0.0.1:${addr.port}/git/${COMPANY_ID}/acme/app.git/info/refs?service=git-upload-pack`;
+		const headers = { authorization: `Bearer ${READ_TOKEN}` };
+
+		verifyMode = "unauthorized";
+		const res401 = await fetch(target, { headers });
+		expect(res401.status).toBe(401);
+		expect(res401.headers.get("www-authenticate")).toContain("Basic");
+
+		verifyMode = "paused";
+		const res403 = await fetch(target, { headers });
+		expect(res403.status).toBe(403);
+		expect(res403.headers.get("www-authenticate")).toBeNull();
+
+		verifyMode = "outage";
+		const res503 = await fetch(target, { headers });
+		expect(res503.status).toBe(503);
+		expect(res503.headers.get("www-authenticate")).toBeNull();
 	});
 });

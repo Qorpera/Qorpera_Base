@@ -303,8 +303,7 @@ Deno.serve(async (request) => {
 					p_profile_id: action.profileId,
 					p_job_id: action.jobId,
 					p_change_id: action.changeId,
-					p_action_kind: action.actionKind,
-					p_action_payload: action.actionPayload ?? {},
+					p_lease_token: action.leaseToken ?? null,
 				};
 				break;
 		}

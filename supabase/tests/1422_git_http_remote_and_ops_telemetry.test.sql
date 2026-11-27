@@ -22,9 +22,25 @@ declare
 	v_change_noop uuid := '14220000-0000-4000-8000-000000000003';
 	v_change_block uuid := '14220000-0000-4000-8000-000000000004';
 	v_change_bad uuid := '14220000-0000-4000-8000-000000000005';
+	v_change_discarded uuid := '14220000-0000-4000-8000-000000000021';
+	v_change_git uuid := '14220000-0000-4000-8000-000000000022';
+	v_change_unlisted uuid := '14220000-0000-4000-8000-000000000023';
+	v_change_mail_ok uuid := '14220000-0000-4000-8000-000000000024';
+	v_change_mail_paused uuid := '14220000-0000-4000-8000-000000000025';
+	v_change_mail_self uuid := '14220000-0000-4000-8000-000000000026';
+	v_change_mail_limit uuid := '14220000-0000-4000-8000-000000000027';
+	v_change_mail_qorpera uuid := '14220000-0000-4000-8000-000000000028';
 	v_job_id uuid := '14220000-0000-4000-8000-000000000006';
+	v_pub_job_id uuid := '14220000-0000-4000-8000-000000000029';
+	v_lease_token uuid := '14220000-0000-4000-8000-000000000030';
+	v_wrong_lease uuid := '14220000-0000-4000-8000-000000000031';
+	v_hook_active uuid := '14220000-0000-4000-8000-000000000032';
+	v_hook_paused uuid := '14220000-0000-4000-8000-000000000033';
+	v_box_active uuid := '14220000-0000-4000-8000-000000000034';
+	v_box_paused uuid := '14220000-0000-4000-8000-000000000035';
 	v_ops_res jsonb;
 	v_ops_replay jsonb;
+	v_mail_row public.qorpera_company_mail_outbox%rowtype;
 	v_site_id uuid := '14220000-0000-4000-8000-000000000010';
 	v_dep_id uuid := '14220000-0000-4000-8000-000000000011';
 	v_ingested integer;
@@ -116,28 +132,71 @@ begin
 	insert into public.qorpera_surface_sessions (id, profile_id, surface_id, title, prompt, state, created_by_user_id)
 	values (v_session_id, v_profile, v_surface_id, 'Ops run', 'Handle ops actions', 'ready', v_owner);
 
-	insert into public.qorpera_surface_changes (id, profile_id, surface_id, session_id, seq, title, kind, status)
+	insert into public.qorpera_surface_changes (id, profile_id, surface_id, session_id, seq, title, kind, status, patch_manifest)
 	values
-		(v_change_noop, v_profile, v_surface_id, v_session_id, 1, 'Noop', 'ops_action', 'merging'),
-		(v_change_block, v_profile, v_surface_id, v_session_id, 2, 'Block spam', 'ops_action', 'merging'),
-		(v_change_bad, v_profile, v_surface_id, v_session_id, 3, 'Unsupported', 'ops_action', 'merging');
+		(v_change_noop, v_profile, v_surface_id, v_session_id, 1, 'Noop', 'ops_action', 'merging', '{"actionKind":"noop","actionPayload":{}}'::jsonb),
+		(v_change_block, v_profile, v_surface_id, v_session_id, 2, 'Block spam', 'ops_action', 'merging', '{"actionKind":"mail.block_sender","actionPayload":{"sender":"spam@example.com","trashExisting":false}}'::jsonb),
+		(v_change_bad, v_profile, v_surface_id, v_session_id, 3, 'Unsupported', 'ops_action', 'merging', '{"actionKind":"unknown.kind","actionPayload":{}}'::jsonb),
+		(v_change_discarded, v_profile, v_surface_id, v_session_id, 4, 'Discarded', 'ops_action', 'discarded', '{"actionKind":"noop","actionPayload":{}}'::jsonb),
+		(v_change_git, v_profile, v_surface_id, v_session_id, 5, 'Git change', 'git_range', 'merging', '{"actionKind":"noop","actionPayload":{}}'::jsonb),
+		(v_change_unlisted, v_profile, v_surface_id, v_session_id, 6, 'Unlisted', 'ops_action', 'merging', '{"actionKind":"noop","actionPayload":{}}'::jsonb),
+		(v_change_mail_ok, v_profile, v_surface_id, v_session_id, 7, 'Send update', 'ops_action', 'merging',
+			jsonb_build_object('actionKind', 'mail.send', 'actionPayload', jsonb_build_object('mailboxId', v_box_active, 'to', jsonb_build_array('customer@example.org'), 'subject', 'Weekly update', 'body', 'Hello customer.'))),
+		(v_change_mail_paused, v_profile, v_surface_id, v_session_id, 8, 'Send paused', 'ops_action', 'merging',
+			jsonb_build_object('actionKind', 'mail.send', 'actionPayload', jsonb_build_object('mailboxId', v_box_paused, 'to', jsonb_build_array('customer@example.org'), 'subject', 'Paused', 'body', 'Should refuse.'))),
+		(v_change_mail_self, v_profile, v_surface_id, v_session_id, 9, 'Send self', 'ops_action', 'merging',
+			jsonb_build_object('actionKind', 'mail.send', 'actionPayload', jsonb_build_object('mailboxId', v_box_active, 'to', jsonb_build_array('active1422@nordlys.example'), 'subject', 'Self', 'body', 'Should refuse.'))),
+		(v_change_mail_limit, v_profile, v_surface_id, v_session_id, 10, 'Send limit', 'ops_action', 'merging',
+			jsonb_build_object('actionKind', 'mail.send', 'actionPayload', jsonb_build_object('mailboxId', v_box_active, 'to', jsonb_build_array('second@example.org'), 'subject', 'Over cap', 'body', 'Should hit limit.'))),
+		(v_change_mail_qorpera, v_profile, v_surface_id, v_session_id, 11, 'Send qorpera name', 'ops_action', 'merging',
+			jsonb_build_object('actionKind', 'mail.send', 'actionPayload', jsonb_build_object('mailboxId', v_box_active, 'to', jsonb_build_array('third@example.org'), 'subject', 'Brand check', 'body', 'Should refuse Qorpera name.')));
 
-	insert into public.qorpera_surface_jobs (id, profile_id, surface_id, session_id, kind, status, requested_by_user_id)
-	values (v_job_id, v_profile, v_surface_id, v_session_id, 'land_change', 'running', v_owner);
+	insert into public.qorpera_surface_jobs (id, profile_id, surface_id, session_id, kind, status, requested_by_user_id, lease_token, payload)
+	values
+		(v_job_id, v_profile, v_surface_id, v_session_id, 'land_change', 'running', v_owner, v_lease_token,
+			jsonb_build_object('changeIds', jsonb_build_array(
+				v_change_noop, v_change_block, v_change_bad, v_change_discarded, v_change_git,
+				v_change_mail_ok, v_change_mail_paused, v_change_mail_self, v_change_mail_limit, v_change_mail_qorpera
+			))),
+		(v_pub_job_id, v_profile, v_surface_id, v_session_id, 'publish_surface', 'running', v_owner, v_lease_token,
+			jsonb_build_object('changeIds', jsonb_build_array(v_change_noop)));
 
-	v_ops_res := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_noop, 'noop', '{}'::jsonb);
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_noop, v_wrong_lease);
+		raise exception 'Wrong lease token must be refused';
+	exception when sqlstate '55000' then null;
+	end;
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_pub_job_id, v_change_noop, v_lease_token);
+		raise exception 'Non-land_change job must be refused';
+	exception when sqlstate '22023' then null;
+	end;
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_unlisted, v_lease_token);
+		raise exception 'Unapproved change not in job payload must be refused';
+	exception when sqlstate '42501' then null;
+	end;
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_discarded, v_lease_token);
+		raise exception 'Discarded change must be refused';
+	exception when sqlstate '55000' then null;
+	end;
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_git, v_lease_token);
+		raise exception 'Non-ops_action change must be refused';
+	exception when sqlstate '22023' then null;
+	end;
+
+	v_ops_res := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_noop, v_lease_token);
 	if (v_ops_res ->> 'status') <> 'landed' or coalesce((v_ops_res ->> 'replayed')::boolean, true) is not false then
 		raise exception 'Expected landed non-replayed noop ops result, got %', v_ops_res;
 	end if;
-	v_ops_replay := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_noop, 'noop', '{}'::jsonb);
+	v_ops_replay := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_noop, v_lease_token);
 	if coalesce((v_ops_replay ->> 'replayed')::boolean, false) is not true then
 		raise exception 'Expected idempotent replay for duplicate ops change, got %', v_ops_replay;
 	end if;
 
-	v_ops_res := public.qorpera_execute_surface_ops_action(
-		v_profile, v_job_id, v_change_block, 'mail.block_sender',
-		jsonb_build_object('sender', 'spam@example.com', 'trashExisting', false)
-	);
+	v_ops_res := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_block, v_lease_token);
 	if (v_ops_res ->> 'status') <> 'landed'
 		or not exists (
 			select 1 from public.qorpera_mail_blocked_senders
@@ -147,11 +206,59 @@ begin
 	end if;
 
 	begin
-		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_bad, 'unknown.kind', '{}'::jsonb);
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_bad, v_lease_token);
 		raise exception 'Unsupported ops action kind should fail';
 	exception when sqlstate '22023' then
 		null;
 	end;
+
+	update public.qorpera_mail_settings
+	set enabled = true, sending = true, domain = 'nordlys.example',
+		company_hourly_recipients = 1, company_daily_recipients = 10;
+	insert into public.qorpera_event_hooks (id, profile_id, environment_id, name, purpose, proof, address, status, created_by_user_id) values
+		(v_hook_active, v_profile, v_env, 'mail-1422-a', 'active mailbox', 'mail', repeat('a', 43), 'active', v_owner),
+		(v_hook_paused, v_profile, v_env, 'mail-1422-p', 'paused mailbox', 'mail', repeat('b', 43), 'paused', v_owner);
+	insert into public.qorpera_company_mailboxes (id, hook_id, profile_id, environment_id, local_part, created_by_user_id) values
+		(v_box_active, v_hook_active, v_profile, v_env, 'active1422', v_owner),
+		(v_box_paused, v_hook_paused, v_profile, v_env, 'paused1422', v_owner);
+
+	update auth.users set raw_user_meta_data = '{"display_name":"jane@example.com"}' where id = v_owner;
+
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_mail_paused, v_lease_token);
+		raise exception 'Paused mailbox send must be refused';
+	exception when sqlstate '0A000' then null;
+	end;
+
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_mail_self, v_lease_token);
+		raise exception 'Self-mailbox send must be refused';
+	exception when sqlstate '42501' then null;
+	end;
+
+	v_ops_res := public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_mail_ok, v_lease_token);
+	select * into v_mail_row from public.qorpera_company_mail_outbox where id = (v_ops_res -> 'receipt' ->> 'outboxId')::uuid;
+	if v_mail_row.id is null
+		or v_mail_row.from_name <> 'A member at Folder runtime base'
+		or position('Drafted by an AI agent' in v_mail_row.body) = 0
+		or not exists (select 1 from public.qorpera_mail_threads where id = v_mail_row.thread) then
+		raise exception 'Expected guarded ops mail row with non-email from_name, AI line, and thread note; got %', row_to_json(v_mail_row);
+	end if;
+
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_mail_limit, v_lease_token);
+		raise exception 'Company hourly recipient limit must be enforced';
+	exception when sqlstate '54000' then null;
+	end;
+
+	update public.qorpera_mail_settings set company_hourly_recipients = 10;
+	update auth.users set raw_user_meta_data = '{"display_name":"Q0rpera Support"}' where id = v_owner;
+	begin
+		perform public.qorpera_execute_surface_ops_action(v_profile, v_job_id, v_change_mail_qorpera, v_lease_token);
+		raise exception 'Qorpera-impersonating sender display name must be refused';
+	exception when sqlstate '42501' then null;
+	end;
+	update auth.users set raw_user_meta_data = '{"display_name":"Olivia Owner"}' where id = v_owner;
 
 	perform pg_temp.o_same(
 		pg_temp.o_refused('app-health', '{}', v_owner, v_env),
@@ -251,7 +358,8 @@ begin
 	end if;
 	if has_function_privilege('authenticated', 'public.qorpera_ingest_app_telemetry(jsonb)', 'EXECUTE')
 		or has_function_privilege('authenticated', 'public.qorpera_verify_code_git_token(text,uuid,text,text,text)', 'EXECUTE')
-		or has_function_privilege('authenticated', 'public.qorpera_execute_surface_ops_action(uuid,uuid,uuid,text,jsonb)', 'EXECUTE') then
+		or has_function_privilege('authenticated', 'public.qorpera_queue_surface_ops_mail(uuid,uuid,uuid,uuid,jsonb)', 'EXECUTE')
+		or has_function_privilege('authenticated', 'public.qorpera_execute_surface_ops_action(uuid,uuid,uuid,uuid)', 'EXECUTE') then
 		raise exception 'Internal functions must not be executable by authenticated';
 	end if;
 end $$;

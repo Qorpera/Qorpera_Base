@@ -91,8 +91,7 @@ export function createOpsActionExecutor(
 						profileId: job.profileId,
 						jobId: job.jobId,
 						changeId: change.changeId,
-						actionKind,
-						actionPayload,
+						...(job.leaseToken ? { leaseToken: job.leaseToken } : {}),
 					},
 					signal,
 				);

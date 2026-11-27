@@ -540,8 +540,7 @@ export interface ExecuteSurfaceOpsActionInput {
 	readonly profileId: string;
 	readonly jobId: string;
 	readonly changeId: string;
-	readonly actionKind: string;
-	readonly actionPayload?: Readonly<Record<string, unknown>>;
+	readonly leaseToken?: string | null;
 }
 
 export interface ExecuteSurfaceOpsActionResult {
@@ -866,8 +865,7 @@ type CloudRunnerOrchestratorRequest =
 			profileId: string;
 			jobId: string;
 			changeId: string;
-			actionKind: string;
-			actionPayload?: Readonly<Record<string, unknown>>;
+			leaseToken?: string;
 	  };
 
 function requiredUuid(value: string, label: string): void {
@@ -5126,9 +5124,10 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 		requiredUuid(input.profileId, "Surface ops profile id");
 		requiredUuid(input.jobId, "Surface ops job id");
 		requiredUuid(input.changeId, "Surface ops change id");
-		const actionKind = validateSurfaceShortText(input.actionKind, "Surface ops action kind", 80);
-		if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,79}$/.test(actionKind)) {
-			throw new Error("Surface ops action kind is invalid");
+		let leaseToken: string | undefined;
+		if (input.leaseToken !== null && input.leaseToken !== undefined) {
+			requiredUuid(input.leaseToken, "Surface lease token");
+			leaseToken = input.leaseToken;
 		}
 		const raw = await this.#request(
 			{
@@ -5137,8 +5136,7 @@ export class SupabaseCloudRunnerOrchestratorControlPlane implements CloudRunnerO
 				profileId: input.profileId,
 				jobId: input.jobId,
 				changeId: input.changeId,
-				actionKind,
-				...(input.actionPayload !== undefined ? { actionPayload: input.actionPayload } : {}),
+				...(leaseToken !== undefined ? { leaseToken } : {}),
 			},
 			signal,
 		);

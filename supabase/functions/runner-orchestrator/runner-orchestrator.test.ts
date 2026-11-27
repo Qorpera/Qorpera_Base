@@ -654,6 +654,7 @@ describe("runner orchestrator boundary", () => {
 			}),
 		);
 
+		const opsLeaseToken = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 		assert.deepEqual(
 			parseRunnerOrchestratorRequest({
 				action: "surface_execute_ops_action",
@@ -661,8 +662,7 @@ describe("runner orchestrator boundary", () => {
 				profileId,
 				jobId,
 				changeId: conflictChangeId,
-				actionKind: "mail.archive",
-				actionPayload: { threadIds: ["t".repeat(43)] },
+				leaseToken: opsLeaseToken,
 			}),
 			{
 				action: "surface_execute_ops_action",
@@ -670,8 +670,7 @@ describe("runner orchestrator boundary", () => {
 				profileId,
 				jobId,
 				changeId: conflictChangeId,
-				actionKind: "mail.archive",
-				actionPayload: { threadIds: ["t".repeat(43)] },
+				leaseToken: opsLeaseToken,
 			},
 		);
 		assert.throws(() =>
@@ -681,7 +680,7 @@ describe("runner orchestrator boundary", () => {
 				profileId,
 				jobId,
 				changeId: conflictChangeId,
-				actionKind: "bad kind with spaces",
+				leaseToken: "not-a-uuid",
 			}),
 		);
 	});
@@ -1014,8 +1013,7 @@ describe("the edge function's route for the one call", () => {
 			profileId,
 			jobId,
 			changeId: conflictChangeId,
-			actionKind: "noop",
-			actionPayload: {},
+			leaseToken,
 		});
 		assert.equal(opsRes.status, 200);
 		assert.deepEqual(calls[2], [
@@ -1024,8 +1022,7 @@ describe("the edge function's route for the one call", () => {
 				p_profile_id: profileId,
 				p_job_id: jobId,
 				p_change_id: conflictChangeId,
-				p_action_kind: "noop",
-				p_action_payload: {},
+				p_lease_token: leaseToken,
 			},
 		]);
 

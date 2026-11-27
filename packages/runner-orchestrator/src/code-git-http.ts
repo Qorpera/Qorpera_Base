@@ -15,6 +15,7 @@ import {
 	ZERO,
 } from "./code-host-jobs.ts";
 import type { CodeHostJobs } from "./code-host-views.ts";
+import { CodingControlRefused } from "./coding-executor.ts";
 
 export const CODE_GIT_HTTP_RPCS = [
 	"qorpera_verify_code_git_token",
@@ -62,12 +63,51 @@ interface RefUpdateCommand {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const RECORD_PUSH_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_UPLOAD_PACK_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_RECEIVE_PACK_BYTES = 64 * 1024 * 1024;
 const MAX_ADVERTISE_BYTES = 16 * 1024 * 1024;
+const HIDE_INTERNAL_REFS_ARGS = [
+	"-c",
+	"transfer.hideRefs=refs/qorpera",
+	"-c",
+	"transfer.hideRefs=refs/heads/qorpera",
+] as const;
 const OWNER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 const NAME_PATTERN = /^[A-Za-z0-9_.-]{1,100}$/;
 const TOKEN_PATTERN = /^qgit_[A-Za-z0-9_-]{16,128}$/;
+
+function isInternalPlatformRef(refName: string): boolean {
+	const lowered = refName.toLowerCase();
+	return (
+		lowered === "refs/qorpera" ||
+		lowered.startsWith("refs/qorpera/") ||
+		lowered === "refs/heads/qorpera" ||
+		lowered.startsWith("refs/heads/qorpera/")
+	);
+}
+
+function hasSqlState(error: unknown, sqlState: string): boolean {
+	if (!error || typeof error !== "object") return false;
+	const rec = error as { code?: unknown; message?: unknown; cause?: unknown };
+	if (rec.code === sqlState) return true;
+	const text = `${typeof rec.message === "string" ? rec.message : ""} ${rec.cause instanceof Error ? rec.cause.message : typeof rec.cause === "string" ? rec.cause : ""}`;
+	return text.includes(` ${sqlState} `) || text.endsWith(` ${sqlState}`) || text === sqlState;
+}
+
+function classifyVerifyFailure(error: unknown): { status: number; body: string; challenge: boolean } {
+	if (
+		error instanceof CodingControlRefused ||
+		hasSqlState(error, "42501") ||
+		(error instanceof Error && error.message === "GIT_HTTP_UNAUTHORIZED")
+	) {
+		return { status: 401, body: "Invalid or unauthorized Git token\n", challenge: true };
+	}
+	if (hasSqlState(error, "55000")) {
+		return { status: 403, body: "Company execution is paused\n", challenge: false };
+	}
+	return { status: 503, body: "Git authentication service temporarily unavailable\n", challenge: false };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -359,13 +399,14 @@ export class CodeGitHttpServer {
 					controller.signal,
 				);
 				verified = parseVerifiedToken(raw);
-			} catch {
-				res.writeHead(401, {
-					"www-authenticate": 'Basic realm="Qorpera Git"',
+			} catch (error) {
+				const classified = classifyVerifyFailure(error);
+				res.writeHead(classified.status, {
+					...(classified.challenge ? { "www-authenticate": 'Basic realm="Qorpera Git"' } : {}),
 					"content-type": "text/plain; charset=utf-8",
 					"cache-control": "no-store",
 				});
-				res.end("Invalid or unauthorized Git token\n");
+				res.end(classified.body);
 				return;
 			}
 
@@ -386,7 +427,7 @@ export class CodeGitHttpServer {
 							await run.prepare(undefined, { readOnly: true });
 							const subcommand = route.service === "git-receive-pack" ? "receive-pack" : "upload-pack";
 							const result = await run.command(
-								[run.layout.git, subcommand, "--stateless-rpc", "--advertise-refs", run.repo],
+								[run.layout.git, ...HIDE_INTERNAL_REFS_ARGS, subcommand, "--stateless-rpc", "--advertise-refs", run.repo],
 								{ maximumOutputBytes: MAX_ADVERTISE_BYTES },
 							);
 							if (result.status !== 0) {
@@ -418,7 +459,7 @@ export class CodeGitHttpServer {
 						withJob(job, repository, async (run) => {
 							await run.prepare(undefined, { readOnly: true });
 							const result = await run.command(
-								[run.layout.git, "upload-pack", "--stateless-rpc", run.repo],
+								[run.layout.git, ...HIDE_INTERNAL_REFS_ARGS, "upload-pack", "--stateless-rpc", run.repo],
 								{ stdin: body, maximumOutputBytes: MAX_PACK },
 							);
 							if (result.status !== 0) {
@@ -439,7 +480,7 @@ export class CodeGitHttpServer {
 			const commands = parseReceivePackCommands(body);
 			const defaultRef = `refs/heads/${verified.defaultBranch}`;
 			for (const cmd of commands) {
-				if (cmd.refName.startsWith("refs/qorpera/")) {
+				if (isInternalPlatformRef(cmd.refName)) {
 					res.writeHead(403, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
 					res.end("Refused: cannot push to internal platform refs\n");
 					return;
@@ -458,10 +499,16 @@ export class CodeGitHttpServer {
 				async (job) =>
 					withJob(job, repository, async (run) => {
 						const area = await run.prepare();
-						const mainBefore = await readRefSha(run, defaultRef);
+						const refSnapshots = new Map<string, string | null>();
+						const trackedRefs = new Set<string>([defaultRef, ...commands.map((cmd) => cmd.refName)]);
+						for (const refName of trackedRefs) {
+							refSnapshots.set(refName, await readRefSha(run, refName));
+						}
+						const mainBefore = refSnapshots.get(defaultRef) ?? null;
 						const result = await run.command(
 							[
 								run.layout.git,
+								...HIDE_INTERNAL_REFS_ARGS,
 								"-c",
 								"receive.denyNonFastForwards=true",
 								"-c",
@@ -487,42 +534,49 @@ export class CodeGitHttpServer {
 								}
 								await moveBase(run, area.main, defaultRef, mainAfter, mainAfter);
 							} catch (error) {
-								if (mainBefore) {
-									await run.git(run.repo, ["update-ref", defaultRef, mainBefore, mainAfter]);
+								for (const [refName, priorSha] of refSnapshots.entries()) {
+									const currentSha = await readRefSha(run, refName);
+									if (currentSha === priorSha) continue;
+									if (priorSha === null) {
+										if (currentSha) {
+											await run.git(run.repo, ["update-ref", "-d", refName, currentSha]);
+										}
+									} else if (currentSha) {
+										await run.git(run.repo, ["update-ref", refName, priorSha, currentSha]);
+									} else {
+										await run.git(run.repo, ["update-ref", refName, priorSha]);
+									}
 								}
 								throw error;
+							}
+							try {
+								await this.#control.call(
+									"qorpera_record_git_http_push",
+									{
+										p_environment_id: verified.environmentId,
+										p_owner: verified.owner,
+										p_name: verified.name,
+										p_token_id: verified.tokenId,
+										p_main_before: mainBefore,
+										p_main_after: mainAfter,
+										p_pushed_refs: commands.map((cmd) => cmd.refName),
+									},
+									AbortSignal.timeout(RECORD_PUSH_TIMEOUT_MS),
+								);
+							} catch (error) {
+								this.#report({
+									event: "code-git-http-record-error",
+									companyId: verified.companyId,
+									owner: verified.owner,
+									name: verified.name,
+									code: error instanceof Error ? error.message : "UNKNOWN",
+								});
 							}
 						}
 						return { stdout: result.stdout, mainBefore, mainAfter };
 					}),
 				{ readOnly: false, yields: false },
 			);
-
-			if (receiveOutcome.mainAfter && receiveOutcome.mainAfter !== receiveOutcome.mainBefore) {
-				try {
-					await this.#control.call(
-						"qorpera_record_git_http_push",
-						{
-							p_environment_id: verified.environmentId,
-							p_owner: verified.owner,
-							p_name: verified.name,
-							p_token_id: verified.tokenId,
-							p_main_before: receiveOutcome.mainBefore,
-							p_main_after: receiveOutcome.mainAfter,
-							p_pushed_refs: commands.map((cmd) => cmd.refName),
-						},
-						controller.signal,
-					);
-				} catch (error) {
-					this.#report({
-						event: "code-git-http-record-error",
-						companyId: verified.companyId,
-						owner: verified.owner,
-						name: verified.name,
-						code: error instanceof Error ? error.message : "UNKNOWN",
-					});
-				}
-			}
 
 			res.writeHead(200, {
 				"content-type": "application/x-git-receive-pack-result",
