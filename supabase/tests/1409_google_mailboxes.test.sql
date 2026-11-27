@@ -662,6 +662,10 @@ select pg_temp.base_claims('service_role');
 select pg_temp.base_assert((pg_temp.g_box('team@example.org')).lease_id::text
 		= current_setting('qorpera_test.g_claim')::jsonb ->> 'lease',
 	'An idempotent connect_existing leaves an in-flight import lease intact');
+insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
+	envelope_sha256, created_by_user_id)
+values ('12970000-0000-4000-8000-000000000f02', 2, '12970000-0000-4000-8000-0000000000d1', 'key-1', '\x0202',
+	encode(extensions.digest('\x0202'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
 update public.qorpera_cloud_secrets
 set current_version = 2, account_label = 'someone-else@example.org'
 where id = '12970000-0000-4000-8000-000000000f02';
@@ -675,6 +679,10 @@ select pg_temp.base_assert((current_setting('qorpera_test.g_unowned_begin')::jso
 		and current_setting('qorpera_test.g_unowned_begin')::jsonb #>> '{scope,secretId}'
 			<> '12970000-0000-4000-8000-000000000f02',
 	'Signing in again for a Settings-linked mailbox mints its own secret rather than overwriting the Settings secret');
+insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_authority_id, key_id, encrypted_envelope,
+	envelope_sha256, created_by_user_id)
+values ('12970000-0000-4000-8000-000000000f02', 3, '12970000-0000-4000-8000-0000000000d1', 'key-1', '\x0203',
+	encode(extensions.digest('\x0203'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
 update public.qorpera_cloud_secrets
 set current_version = 3, account_label = 'Team@Example.org'
 where id = '12970000-0000-4000-8000-000000000f02';
