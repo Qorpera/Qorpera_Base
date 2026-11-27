@@ -601,6 +601,10 @@ export async function emitHostedAppUnhealthy(
 	}
 }
 
+export function isDefiniteAppHostDeployRefusal(error: unknown): boolean {
+	return error instanceof Error && /^APP_HOST_DEPLOY_FAILED_(?:4\d\d|5(?:0[0-3]|[1-9]\d))$/.test(error.message);
+}
+
 export async function triggerBlueGreenAppDeploy(options: {
 	readonly appHostInternalUrl: string;
 	readonly controlToken: string;

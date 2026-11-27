@@ -2826,7 +2826,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
 		const appHostPayloads: Array<Record<string, unknown>> = [];
 		const directLoginCalls: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
-		let failWithSecret = false;
+		let failMode: "none" | "secret_throw" | "http_refusal" | "timeout_abort" = "none";
 		let registerAlreadyLive = false;
 		let claimMode: "publish" | "preview" = "publish";
 
@@ -2882,8 +2882,14 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 8 }),
 					appHostFetchImpl: async (_url, init) => {
 						if (init.body) appHostPayloads.push(JSON.parse(init.body) as Record<string, unknown>);
-						if (failWithSecret) {
+						if (failMode === "secret_throw") {
 							throw new Error(`container failed with ${stripeSecret} and ${dbUrl}`);
+						}
+						if (failMode === "http_refusal") {
+							return { status: 422, body: "health check failed" };
+						}
+						if (failMode === "timeout_abort") {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
 						}
 						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:48001", stopped: true }) };
 					},
@@ -3040,7 +3046,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		).toBe(true);
 
 		claimMode = "publish";
-		failWithSecret = true;
+		failMode = "secret_throw";
 		directLoginCalls.length = 0;
 		rpcCalls.length = 0;
 		const workerFail = makeWorker();
@@ -3049,6 +3055,13 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		expect(failedPublish?.args.p_status).toBe("failed");
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(stripeSecret);
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(dbUrl);
+		expect(directLoginCalls.some((c) => c.method === "DELETE")).toBe(false);
+
+		failMode = "http_refusal";
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerRefused = makeWorker();
+		await workerRefused.pass(new AbortController().signal);
 		expect(
 			directLoginCalls.some(
 				(c) =>
@@ -3082,6 +3095,15 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
 			),
 		).toBe(false);
+
+		failMode = "timeout_abort";
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerLiveTimeout = makeWorker();
+		await workerLiveTimeout.pass(new AbortController().signal);
+		expect(directLoginCalls.some((c) => c.method === "POST")).toBe(true);
+		expect(directLoginCalls.some((c) => c.method === "DELETE")).toBe(false);
 		registerAlreadyLive = false;
+		failMode = "none";
 	});
 });

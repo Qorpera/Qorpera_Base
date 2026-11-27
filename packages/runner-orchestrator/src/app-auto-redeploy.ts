@@ -21,6 +21,7 @@ import {
 	type BuildAppImageFn,
 	buildAppImageWithScript,
 	buildNativeAppEnvSpec,
+	isDefiniteAppHostDeployRefusal,
 	type NativeEdgeHostingConfig,
 	resolveAppRuntimeEnv,
 	revokeCompanyDataDirectLogin,
@@ -950,7 +951,7 @@ export function createNativeEdgeAutoRedeploy(
 							signal: hookSignal,
 						});
 					} catch (error) {
-						if (provisionedNewDbLogin) {
+						if (provisionedNewDbLogin && isDefiniteAppHostDeployRefusal(error)) {
 							await revokeDirectLoginBestEffort(input.releaseId);
 						}
 						if (error instanceof Error) {
@@ -988,7 +989,7 @@ export function createNativeEdgeAutoRedeploy(
 							signal: hookSignal,
 						});
 					} catch (error) {
-						if (provisionedRollbackDbLogin) {
+						if (provisionedRollbackDbLogin && isDefiniteAppHostDeployRefusal(error)) {
 							await revokeDirectLoginBestEffort(input.previousReleaseId, rollbackGeneration);
 						}
 						if (error instanceof Error) {

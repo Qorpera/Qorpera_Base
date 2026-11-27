@@ -739,7 +739,7 @@ describe("app-auto-redeploy", () => {
 			const appHostBodies: Array<Record<string, unknown>> = [];
 			const directLoginEvents: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
 			let appHostSeq = 0;
-			let failRollbackDeploy = false;
+			let rollbackDeployMode: "ok" | "http_500" | "timeout_abort" = "ok";
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
 					if (method === "qorpera_code_site_for_auto_redeploy") {
@@ -847,8 +847,11 @@ describe("app-auto-redeploy", () => {
 						appHostSeq += 1;
 						const parsed = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
 						appHostBodies.push(parsed);
-						if (failRollbackDeploy && parsed.deployment_id === oldDepId) {
+						if (rollbackDeployMode === "http_500" && parsed.deployment_id === oldDepId) {
 							return { status: 500, body: "rollback container failed" };
+						}
+						if (rollbackDeployMode === "timeout_abort" && parsed.deployment_id === oldDepId) {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
 						}
 						return {
 							status: 200,
@@ -927,7 +930,7 @@ describe("app-auto-redeploy", () => {
 			).toBe(true);
 
 			directLoginEvents.length = 0;
-			failRollbackDeploy = true;
+			rollbackDeployMode = "http_500";
 			const ctxRbFail = await autoRedeploy(
 				claim,
 				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 11 },
@@ -961,7 +964,33 @@ describe("app-auto-redeploy", () => {
 					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${oldDepId}`),
 				),
 			).toBe(false);
-			failRollbackDeploy = false;
+
+			directLoginEvents.length = 0;
+			rollbackDeployMode = "timeout_abort";
+			const ctxRbTimeout = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 12 },
+				new AbortController().signal,
+			);
+			const resRbTimeout = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "12",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxRbTimeout!.paths ?? [],
+				},
+				hooks: {
+					...ctxRbTimeout!.hooks,
+					probeHealth: async () => ({ ok: false, status: 503, error: "smoke failed" }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resRbTimeout.status).toBe("rollback_failed");
+			expect(directLoginEvents.some((e) => e.method === "DELETE")).toBe(false);
+			rollbackDeployMode = "ok";
 
 			expect(() =>
 				parseAppDeployConfig(

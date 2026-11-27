@@ -43,6 +43,7 @@ import {
 	type BuildAppImageFn,
 	buildAppImageWithScript,
 	buildNativeAppEnvSpec,
+	isDefiniteAppHostDeployRefusal,
 	type NativeEdgeHostingConfig,
 	resolveAppRuntimeEnv,
 	revokeCompanyDataDirectLogin,
@@ -2055,7 +2056,9 @@ export class SurfaceCodeHostWorker {
 					signal,
 				});
 			} catch (error) {
-				await revokeProvisionedDbLogin(directLoginGeneration);
+				if (isDefiniteAppHostDeployRefusal(error)) {
+					await revokeProvisionedDbLogin(directLoginGeneration);
+				}
 				if (error instanceof Error) {
 					const masked = maskAppLogText(resolvedRuntime.mask, error.message);
 					if (masked !== error.message) throw new Error(masked);
