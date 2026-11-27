@@ -59,7 +59,10 @@ export function createOpsActionExecutor(
 				}
 				if (normalizedKind === "file.write") {
 					if (!ports.folder?.writeFile) {
-						return { status: "failed", errorDetail: "Company folder write is not configured on this orchestrator" };
+						return {
+							status: "failed",
+							errorDetail: "Company folder write is not configured on this orchestrator",
+						};
 					}
 					if (typeof actionPayload.content !== "string") {
 						return { status: "failed", errorDetail: "file.write action requires string content" };

@@ -63,14 +63,9 @@ describe("interface apps", () => {
 		expect(parsed.ok && parsed.manifest.reads).toEqual(["money", "site", "data"]);
 		expect(APP_NUMBERS_DATABASE).toBe("qorpera");
 		expect(["money-now", "money-balance", "money-kinds"].map(appNumbersRead)).toEqual(["money", "money", "money"]);
-		expect(["sites", "site-now", "site-pages", "app-health", "app-latency", "app-errors"].map(appNumbersRead)).toEqual([
-			"site",
-			"site",
-			"site",
-			"site",
-			"site",
-			"site",
-		]);
+		expect(
+			["sites", "site-now", "site-pages", "app-health", "app-latency", "app-errors"].map(appNumbersRead),
+		).toEqual(["site", "site", "site", "site", "site", "site"]);
 		for (const question of ["money", "money-", "site", "sitesx", "app", "app-", "orders-now", "balance", ""])
 			expect(appNumbersRead(question), question).toBeNull();
 	});

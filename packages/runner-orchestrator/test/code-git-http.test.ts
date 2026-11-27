@@ -213,7 +213,13 @@ describe("CodeGitHttpServer end-to-end git clone and push", () => {
 		).rejects.toThrow();
 
 		const bareRepo = join(companyRoot, "code/acme/app/repo.git");
-		await execFileAsync(gitBin, ["--git-dir", bareRepo, "update-ref", "refs/heads/qorpera/coding/hidden", started.baseSha]);
+		await execFileAsync(gitBin, [
+			"--git-dir",
+			bareRepo,
+			"update-ref",
+			"refs/heads/qorpera/coding/hidden",
+			started.baseSha,
+		]);
 		const lsRemote = await execFileAsync(gitBin, ["ls-remote", readUrl], {
 			env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
 		});

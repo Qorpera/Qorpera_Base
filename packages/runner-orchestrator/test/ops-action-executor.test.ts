@@ -102,10 +102,7 @@ describe("createOpsActionExecutor", () => {
 			new AbortController().signal,
 		);
 		expect(deleted).toEqual({ status: "landed" });
-		expect(deleteFile).toHaveBeenCalledWith(
-			{ profileId: PROFILE_ID, path: "notes/old.md" },
-			expect.any(AbortSignal),
-		);
+		expect(deleteFile).toHaveBeenCalledWith({ profileId: PROFILE_ID, path: "notes/old.md" }, expect.any(AbortSignal));
 
 		for (const blockedPath of ["QorperaOS/agents/ceo.md", "code/acme/app/repo.git/config", "../escape.txt"]) {
 			const refused = await executor(

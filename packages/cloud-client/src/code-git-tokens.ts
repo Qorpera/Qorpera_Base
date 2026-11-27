@@ -59,10 +59,7 @@ export async function listCodeGitTokens(
 	return data.map((row) => parseCodeGitTokenSummary(row));
 }
 
-export async function revokeCodeGitToken(
-	supabase: SupabaseClient,
-	tokenId: string,
-): Promise<RevokedCodeGitToken> {
+export async function revokeCodeGitToken(supabase: SupabaseClient, tokenId: string): Promise<RevokedCodeGitToken> {
 	if (!isUuid(tokenId)) {
 		throw new Error("tokenId must be a valid UUID");
 	}

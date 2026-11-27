@@ -17,10 +17,7 @@ import {
 import type { CodeHostJobs } from "./code-host-views.ts";
 import { CodingControlRefused } from "./coding-executor.ts";
 
-export const CODE_GIT_HTTP_RPCS = [
-	"qorpera_verify_code_git_token",
-	"qorpera_record_git_http_push",
-] as const;
+export const CODE_GIT_HTTP_RPCS = ["qorpera_verify_code_git_token", "qorpera_record_git_http_push"] as const;
 
 export type CodeGitHttpRpc = (typeof CODE_GIT_HTTP_RPCS)[number];
 
@@ -427,7 +424,14 @@ export class CodeGitHttpServer {
 							await run.prepare(undefined, { readOnly: true });
 							const subcommand = route.service === "git-receive-pack" ? "receive-pack" : "upload-pack";
 							const result = await run.command(
-								[run.layout.git, ...HIDE_INTERNAL_REFS_ARGS, subcommand, "--stateless-rpc", "--advertise-refs", run.repo],
+								[
+									run.layout.git,
+									...HIDE_INTERNAL_REFS_ARGS,
+									subcommand,
+									"--stateless-rpc",
+									"--advertise-refs",
+									run.repo,
+								],
 								{ maximumOutputBytes: MAX_ADVERTISE_BYTES },
 							);
 							if (result.status !== 0) {
