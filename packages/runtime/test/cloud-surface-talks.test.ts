@@ -183,7 +183,7 @@ describe("staging a talk against its page", () => {
 		await expect(
 			checkStagedSurfaceTalks([write("talks/why-it-exists/talk.json", named)], page, signal),
 		).rejects.toThrow(
-			'outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
+			'outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; only a word taken unchanged from the founders\' own text, never the rival itself, goes in "ownWords"',
 		);
 		expect(page.readText).toHaveBeenCalledWith("landscape.json", signal);
 
@@ -397,6 +397,9 @@ describe("the talk skills and the Co-Founder's side", () => {
 			expect(writer, rule).toContain(rule);
 		expect(writer).toContain("Never write your own reading of a reason, not even as a draft to confirm");
 		expect(writer).toContain("No picture before that yes");
+		expect(writer).toContain(
+			"A founders' own word that is also a rival's name goes in `ownWords`; the rival itself never.",
+		);
 		expect(writer).toContain("the talk-listen skill (`read_skill`)");
 		expect(writer).toContain("Record a voice with `narrate_explainer` only when the founder asks");
 		for (const starter of SURFACE_TALK_STARTERS) expect(writer, starter.id).toContain(`- ${starter.name}: `);

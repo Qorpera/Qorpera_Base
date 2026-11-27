@@ -247,7 +247,7 @@ describe("the talk checker", () => {
 		((bordered.chapters as Json[])[0] as Json).title = "Cheaper than Velo Fix";
 		expect(problemsOf(bordered, ["Velo Fix"])).toEqual([
 			'chapter 1: outside this talk\'s borders: prices or money ("Cheaper") never belongs in "Why it exists"',
-			'chapter 1: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
+			'chapter 1: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; only a word taken unchanged from the founders\' own text, never the rival itself, goes in "ownWords"',
 		]);
 
 		const asked = {
@@ -342,7 +342,7 @@ describe("the talk checker", () => {
 		};
 		expect(problemsOf(whyItExists([rival]))).toEqual([]);
 		expect(problemsOf(whyItExists([rival]), ["Velo Fix", "Spokesmen"])).toEqual([
-			'chapter 1 picture 3: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
+			'chapter 1 picture 3: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; only a word taken unchanged from the founders\' own text, never the rival itself, goes in "ownWords"',
 		]);
 
 		const calm = {
@@ -352,9 +352,14 @@ describe("the talk checker", () => {
 			by: "A founder",
 			say: "What it is for in the end is more calm on the ride to work, every single day.",
 		};
-		expect(problemsOf(whyItExists([{ ...calm, text: "More calm on the ride to work." }]), ["Calm"])).toEqual([]);
 		expect(problemsOf(whyItExists([calm]), ["Calm"])[0]).toContain('a rival the page names ("Calm")');
-		expect(problemsOf({ ...whyItExists([calm]), ownWords: ["Calm"] }, ["Calm", "Velo Fix"])).toEqual([]);
+		expect(problemsOf(whyItExists([{ ...calm, text: "More calm on the ride to work." }]), ["Calm"])[0]).toContain(
+			'a rival the page names ("calm")',
+		);
+		expect(
+			problemsOf(whyItExists([{ ...rival, left: { title: "VELO FIX", lines: [] } }]), ["Velo Fix"])[0],
+		).toContain('a rival the page names ("VELO FIX")');
+		expect(problemsOf({ ...whyItExists([calm]), ownWords: ["calm"] }, ["Calm", "Velo Fix"])).toEqual([]);
 		expect(problemsOf({ ...whyItExists([rival]), ownWords: ["Calm"] }, ["Calm", "Velo Fix"])[0]).toContain(
 			'("Velo Fix")',
 		);
