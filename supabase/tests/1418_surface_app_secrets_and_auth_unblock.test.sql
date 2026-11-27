@@ -376,7 +376,7 @@ begin
 	);
 	execute 'reset session authorization';
 	perform pg_temp.sasa_assert(
-		v_auth ->> 'schema' = 'qorpera.app-secrets-authorized/v1'
+		v_auth ->> 'schema' = 'qorpera.app-secrets-authorization/v1'
 		and jsonb_array_length(v_auth -> 'secrets') = 1
 		and v_auth #>> '{secrets,0,name}' = 'STRIPE_SECRET_KEY',
 		'qorpera_authorize_app_secrets authorizes surface deployment runtime secrets: ' || v_auth::text

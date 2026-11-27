@@ -739,6 +739,7 @@ describe("app-auto-redeploy", () => {
 			const appHostBodies: Array<Record<string, unknown>> = [];
 			const directLoginEvents: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
 			let appHostSeq = 0;
+			let reloadDeployMode: "ok" | "timeout_abort" = "ok";
 			let rollbackDeployMode: "ok" | "http_500" | "timeout_abort" = "ok";
 			const control = {
 				call: vi.fn(async (method: string, args: Record<string, unknown>) => {
@@ -847,6 +848,9 @@ describe("app-auto-redeploy", () => {
 						appHostSeq += 1;
 						const parsed = JSON.parse(init.body ?? "{}") as Record<string, unknown>;
 						appHostBodies.push(parsed);
+						if (reloadDeployMode === "timeout_abort" && parsed.deployment_id === newDepId) {
+							throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+						}
 						if (rollbackDeployMode === "http_500" && parsed.deployment_id === oldDepId) {
 							return { status: 500, body: "rollback container failed" };
 						}
@@ -991,6 +995,37 @@ describe("app-auto-redeploy", () => {
 			expect(resRbTimeout.status).toBe("rollback_failed");
 			expect(directLoginEvents.some((e) => e.method === "DELETE")).toBe(false);
 			rollbackDeployMode = "ok";
+
+			directLoginEvents.length = 0;
+			reloadDeployMode = "timeout_abort";
+			const ctxReloadTimeout = await autoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 13 },
+				new AbortController().signal,
+			);
+			const resReloadTimeout = await runPostLandAppAutoRedeploy({
+				config,
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "13",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: ctxReloadTimeout!.paths ?? [],
+				},
+				hooks: {
+					...ctxReloadTimeout!.hooks,
+					probeHealth: async () => ({ ok: true, status: 200 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(resReloadTimeout.status).toBe("rolled_back");
+			expect(
+				directLoginEvents.some(
+					(e) => e.method === "DELETE" && e.url.endsWith(`/direct-login?principal=${newDepId}`),
+				),
+			).toBe(true);
+			reloadDeployMode = "ok";
 
 			expect(() =>
 				parseAppDeployConfig(

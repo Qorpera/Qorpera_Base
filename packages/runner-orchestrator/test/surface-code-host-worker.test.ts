@@ -3055,7 +3055,13 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		expect(failedPublish?.args.p_status).toBe("failed");
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(stripeSecret);
 		expect(String(failedPublish?.args.p_error_detail ?? "")).not.toContain(dbUrl);
-		expect(directLoginCalls.some((c) => c.method === "DELETE")).toBe(false);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(true);
 
 		failMode = "http_refusal";
 		directLoginCalls.length = 0;

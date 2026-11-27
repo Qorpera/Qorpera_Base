@@ -951,7 +951,7 @@ export function createNativeEdgeAutoRedeploy(
 							signal: hookSignal,
 						});
 					} catch (error) {
-						if (provisionedNewDbLogin && isDefiniteAppHostDeployRefusal(error)) {
+						if (provisionedNewDbLogin) {
 							await revokeDirectLoginBestEffort(input.releaseId);
 						}
 						if (error instanceof Error) {

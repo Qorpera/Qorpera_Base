@@ -2056,7 +2056,7 @@ export class SurfaceCodeHostWorker {
 					signal,
 				});
 			} catch (error) {
-				if (isDefiniteAppHostDeployRefusal(error)) {
+				if (directLoginGeneration === undefined || isDefiniteAppHostDeployRefusal(error)) {
 					await revokeProvisionedDbLogin(directLoginGeneration);
 				}
 				if (error instanceof Error) {
