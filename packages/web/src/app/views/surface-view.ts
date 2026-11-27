@@ -1359,6 +1359,7 @@ export class SurfaceView {
 		this.#sitePublic = site === "live";
 		if (site === "private" && !this.#address.isWriting) this.#publishWhileNotLive(surface);
 		if (mark === "live" && !this.#address.isWriting) this.#switchAutoPublishOffOwed(surface);
+		const merging = store.isSurfaceMerging(surface.id);
 		const key = JSON.stringify([
 			site,
 			siteLive,
@@ -1369,6 +1370,8 @@ export class SurfaceView {
 			look.kind,
 			surface.liveUrl,
 			surface.unpublishedChangeCount,
+			surface.hasUnpublishedChanges,
+			merging,
 			state.mode,
 			reportMode,
 			state.device,
@@ -1496,10 +1499,12 @@ export class SurfaceView {
 					),
 				);
 			}
+			const hasUnpublished = count > 0 || surface.hasUnpublishedChanges;
 			const publishBusy = Boolean(state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+			const publishDisabled = publishBusy || merging;
 			const askBusy = Boolean(state.busy[`publish-ask:${surface.id}`]);
 			const personName = (userId: string) => store.memberName(userId) ?? t("A teammate");
-			if (askedMe && surface.archetype !== "ops" && count > 0 && !publishBusy) {
+			if (askedMe && surface.archetype !== "ops" && hasUnpublished && !publishDisabled) {
 				const asker = personName(ask!.askedByUserId);
 				const label = t("{name} asks you to publish", { name: firstName(asker) });
 				groups.push(
@@ -1538,33 +1543,45 @@ export class SurfaceView {
 						),
 					),
 				);
-			} else if (site === "live" && surface.archetype !== "ops" && (count > 0 || publishBusy)) {
-				const askedUser = myAsk && !publishBusy ? myAsk.askedUserId : null;
+			} else if (site === "live" && surface.archetype !== "ops" && (hasUnpublished || publishBusy)) {
+				const askedUser = myAsk && !publishDisabled ? myAsk.askedUserId : null;
 				const saidNo = askedUser && myAsk?.status === "declined" ? firstName(personName(askedUser)) : null;
 				groups.push(
 					h(
 						"div",
-						{ class: `surface-publish${count ? " has-changes" : ""}${publishBusy ? " is-busy" : ""}` },
+						{
+							class: `surface-publish${hasUnpublished ? " has-changes" : ""}${publishDisabled ? " is-busy" : ""}`,
+						},
 						h(
 							"button",
 							{
 								type: "button",
 								class: "surface-publish-main",
-								disabled: publishBusy,
-								title: publishBusy ? t("Publishing…") : t("Publish Base to the live surface"),
+								disabled: publishDisabled,
+								title: publishBusy
+									? t("Publishing…")
+									: merging
+										? t("Waiting for changes to finish merging…")
+										: t("Publish Base to the live surface"),
 								"data-act": "publish",
 							},
-							publishBusy ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
+							publishDisabled ? h("span", { class: "surface-state is-running", "aria-hidden": "true" }) : null,
 							saidNo && askedUser ? personAvatar(personName(askedUser), askedUser) : null,
 							publishBusy
 								? h("span", { class: "surface-publish-word" }, t("Publishing…"))
-								: saidNo
-									? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
-									: t("Publish"),
-							publishBusy || saidNo
-								? h("span", { class: "surface-publish-short" }, publishBusy ? t("Publish") : t("No"))
+								: merging
+									? h("span", { class: "surface-publish-word" }, t("Merging…"))
+									: saidNo
+										? h("span", { class: "surface-publish-word" }, t("{name} said no", { name: saidNo }))
+										: t("Publish"),
+							publishDisabled || saidNo
+								? h(
+										"span",
+										{ class: "surface-publish-short" },
+										publishBusy ? t("Publish") : merging ? t("Merging") : t("No"),
+									)
 								: null,
-							!publishBusy && !saidNo && count
+							!publishDisabled && !saidNo && count
 								? h("span", { class: "surface-notch-count" }, String(count))
 								: null,
 							askedUser && !saidNo
@@ -1679,7 +1696,10 @@ export class SurfaceView {
 			this.#publishedAt.delete(surface.id);
 			return;
 		}
-		const publishing = Boolean(store.state.busy[`publish:${surface.id}`]) || surface.publishStatus === "publishing";
+		const publishing =
+			Boolean(store.state.busy[`publish:${surface.id}`]) ||
+			surface.publishStatus === "publishing" ||
+			store.isSurfaceMerging(surface.id);
 		const at = `${count}:${surface.liveHeadSha ?? ""}`;
 		if (publishing || this.#publishedAt.get(surface.id) === at) return;
 		this.#publishedAt.set(surface.id, at);
@@ -1709,6 +1729,7 @@ export class SurfaceView {
 		const signal = AbortSignal.any([this.#active.signal, ceiling.signal]);
 		const settled = () =>
 			!store.state.busy[`publish:${surfaceId}`] &&
+			!store.isSurfaceMerging(surfaceId) &&
 			store.state.surfaces.find((item) => item.id === surfaceId)?.publishStatus !== "publishing";
 		try {
 			if (!(await this.#until(settled, signal))) return false;

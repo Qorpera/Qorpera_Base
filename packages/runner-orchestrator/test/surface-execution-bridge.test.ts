@@ -1719,6 +1719,39 @@ describe("surface execution bridge Company Folder studio patches and publishing"
 			},
 			expect.any(AbortSignal),
 		);
+
+		completeSurfacePublish.mockClear();
+		publishSurface.mockReset();
+		const freshSha = "d".repeat(40);
+		publishSurface.mockResolvedValueOnce({ publishedHeadSha: freshSha });
+		const freshJobId = randomUUID();
+		await handlers.runPublishJob(
+			{
+				jobId: freshJobId,
+				surfaceId,
+				profileId,
+				repositoryKey: "thetaband/website",
+				siteId,
+				liveHeadSha: freshSha,
+				payload: { liveHeadSha: sha, repositoryKey: "thetaband/website" },
+			},
+			new AbortController().signal,
+		);
+		expect(publishSurface).toHaveBeenCalledWith(
+			expect.objectContaining({
+				jobId: freshJobId,
+				liveHeadSha: freshSha,
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(completeSurfacePublish).toHaveBeenCalledWith(
+			{
+				jobId: freshJobId,
+				status: "published",
+				publishedHeadSha: freshSha,
+			},
+			expect.any(AbortSignal),
+		);
 	});
 
 	it("parses enriched claimSurfaceJobs payloads and plugs directly into SurfaceWorkerLoop", async () => {

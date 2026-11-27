@@ -1713,7 +1713,12 @@ export function createSurfaceExecutionHandlers(ports: SurfaceExecutionBridgePort
 			if (!ports.publishSurface) {
 				throw new Error("Surface publish handler is not configured");
 			}
-			const liveHeadSha = typeof job.payload.liveHeadSha === "string" ? job.payload.liveHeadSha : null;
+			const liveHeadSha =
+				typeof job.liveHeadSha === "string"
+					? job.liveHeadSha
+					: typeof job.payload.liveHeadSha === "string"
+						? job.payload.liveHeadSha
+						: null;
 			const productFolderRoots =
 				ports.folder && ports.resolveProductFolderRoots
 					? await ports.resolveProductFolderRoots(job.profileId, signal).catch(() => undefined)
