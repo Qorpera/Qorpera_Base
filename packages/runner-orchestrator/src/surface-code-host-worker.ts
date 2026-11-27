@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	type CloudCodingRepository,
 	compileIdentityTokensCss,
@@ -2002,18 +2002,20 @@ export class SurfaceCodeHostWorker {
 				signal,
 			);
 			const deploymentId = registered.deploymentId!;
+			const directLoginGeneration = registered.deploymentState === "live" ? randomUUID() : undefined;
 			const resolvedRuntime = await resolveAppRuntimeEnv({
 				baseEnvSpec: envSpec,
 				siteId: registered.siteId,
 				environmentId: input.environmentId,
 				deploymentId,
+				...(directLoginGeneration !== undefined ? { directLoginGeneration } : {}),
 				targetEnv: input.promoteLive ? "prod" : "dev",
 				hasRuntimeSecrets,
 				linkedDatabaseName,
 				nativeEdge,
 				signal,
 			});
-			const revokeProvisionedDbLogin = async (): Promise<void> => {
+			const revokeProvisionedDbLogin = async (generation?: string): Promise<void> => {
 				if (
 					!resolvedRuntime.secretNames.includes("DATABASE_URL") ||
 					!nativeEdge.companyDataUrl ||
@@ -2027,6 +2029,7 @@ export class SurfaceCodeHostWorker {
 					environmentId: input.environmentId,
 					database: null,
 					principal: deploymentId,
+					...(generation !== undefined ? { generation } : {}),
 					fetchImpl: nativeEdge.companyDataFetchImpl,
 					signal: AbortSignal.timeout(5_000),
 				}).catch(() => undefined);
@@ -2052,9 +2055,7 @@ export class SurfaceCodeHostWorker {
 					signal,
 				});
 			} catch (error) {
-				if (registered.deploymentState !== "live") {
-					await revokeProvisionedDbLogin();
-				}
+				await revokeProvisionedDbLogin(directLoginGeneration);
 				if (error instanceof Error) {
 					const masked = maskAppLogText(resolvedRuntime.mask, error.message);
 					if (masked !== error.message) throw new Error(masked);

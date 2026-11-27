@@ -2827,6 +2827,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		const appHostPayloads: Array<Record<string, unknown>> = [];
 		const directLoginCalls: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
 		let failWithSecret = false;
+		let registerAlreadyLive = false;
 		let claimMode: "publish" | "preview" = "publish";
 
 		const makeWorker = () =>
@@ -2956,7 +2957,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 								deploymentId: claimMode === "preview" ? previewDepId : depId,
 								versionNumber: 1,
 								kind: "server",
-								state: args.p_promote_live === true ? "live" : "ready",
+								state: registerAlreadyLive || args.p_promote_live === true ? "live" : "ready",
 							};
 						}
 						if (method === "qorpera_surface_stale_app_deployments_due" && claimMode === "preview") {
@@ -3055,5 +3056,32 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
 			),
 		).toBe(true);
+
+		registerAlreadyLive = true;
+		directLoginCalls.length = 0;
+		rpcCalls.length = 0;
+		const workerLiveRestartFail = makeWorker();
+		await workerLiveRestartFail.pass(new AbortController().signal);
+		const livePost = directLoginCalls.find((c) => c.method === "POST");
+		const liveGen = typeof livePost?.body?.generation === "string" ? livePost.body.generation : null;
+		expect(liveGen).not.toBeNull();
+		expect(livePost?.body?.principal).toBe(depId);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(
+						`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}&generation=${liveGen}`,
+					),
+			),
+		).toBe(true);
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login?principal=${depId}`),
+			),
+		).toBe(false);
+		registerAlreadyLive = false;
 	});
 });

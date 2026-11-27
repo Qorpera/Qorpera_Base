@@ -84,6 +84,10 @@ begin
 
 	perform pg_temp.as_service();
 	perform public.qorpera_configure_coding_executor(v_env_id, 'exec-1418', true, array['codex']);
+	update public.qorpera_coding_executors
+	set enabled = (owner = 'exec-1418'),
+		nas_machine_id_sha256 = case when owner = 'exec-1418' then v_machine_sha else nas_machine_id_sha256 end
+	where environment_id = v_env_id;
 	insert into public.qorpera_cloud_secret_broker_authorities(
 		id, profile_id, service_origin, key_id, capability_sha256
 	) values (
