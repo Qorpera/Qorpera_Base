@@ -24,12 +24,13 @@ import {
 	sourceFile,
 } from "./context.ts";
 import { expandButton, type StudioFullscreen } from "./fullscreen.ts";
-import { answerAge, answerRecords, cellText, codeWords, type SurfaceAskState } from "./live.ts";
+import { answerAge, answerRecords, codeWords, columnTexts, type SurfaceAskState } from "./live.ts";
 
 export interface SpecTable {
 	readonly title: string;
 	readonly columns: readonly string[];
 	readonly labels?: readonly string[];
+	readonly numeric?: readonly boolean[];
 	readonly rows: readonly Record<string, string>[];
 }
 
@@ -82,14 +83,24 @@ function tableOf(
 	title: string,
 	rows: readonly Record<string, unknown>[],
 	columns?: readonly { readonly key: string; readonly label: string }[],
+	live = false,
 ): SpecTable {
 	const keys: string[] = columns ? columns.map((column) => column.key) : [];
 	if (!columns) for (const row of rows) for (const col of Object.keys(row)) if (!keys.includes(col)) keys.push(col);
+	const texts = keys.map((col) =>
+		columnTexts(
+			rows.map((row) => row[col]),
+			live,
+		),
+	);
 	return {
 		title,
 		columns: keys,
 		...(columns ? { labels: columns.map((column) => column.label) } : {}),
-		rows: rows.map((row) => Object.fromEntries(keys.map((col) => [col, formatScalar(row[col])]))),
+		numeric: texts.map((column) => column.numeric),
+		rows: rows.map((row, at) =>
+			Object.fromEntries(keys.map((col, index) => [col, texts[index]!.texts[at] ?? formatScalar(row[col])])),
+		),
 	};
 }
 
@@ -112,11 +123,15 @@ export function renderSpecEntries(entries: readonly SpecEntry[]): HTMLElement {
 	);
 }
 
-function renderSpecRow(columns: readonly string[], row: Readonly<Record<string, string>>): HTMLElement {
+function numberClass(table: SpecTable, index: number): { class: string } | null {
+	return table.numeric?.[index] ? { class: "is-num" } : null;
+}
+
+function renderSpecRow(table: SpecTable, row: Readonly<Record<string, string>>): HTMLElement {
 	return h(
 		"tr",
 		null,
-		columns.map((col) => h("td", null, row[col] ?? "–")),
+		table.columns.map((col, index) => h("td", numberClass(table, index), row[col] ?? "–")),
 	);
 }
 
@@ -126,7 +141,7 @@ export function renderSpecTable(table: SpecTable, signal: AbortSignal, full = fa
 	const tbody = h(
 		"tbody",
 		null,
-		initialRows.map((row) => renderSpecRow(table.columns, row)),
+		initialRows.map((row) => renderSpecRow(table, row)),
 	);
 	const moreBtn = truncated
 		? h(
@@ -141,7 +156,7 @@ export function renderSpecTable(table: SpecTable, signal: AbortSignal, full = fa
 			() => {
 				const frag = document.createDocumentFragment();
 				for (let i = MAX_INITIAL_TABLE_ROWS; i < table.rows.length; i++) {
-					frag.append(renderSpecRow(table.columns, table.rows[i]!));
+					frag.append(renderSpecRow(table, table.rows[i]!));
 				}
 				tbody.append(frag);
 				moreBtn.remove();
@@ -154,18 +169,24 @@ export function renderSpecTable(table: SpecTable, signal: AbortSignal, full = fa
 		{ class: "studio-table-wrap" },
 		table.title ? h("h3", { class: "studio-subhead" }, table.title) : null,
 		h(
-			"table",
-			{ class: "studio-table" },
+			"div",
+			{ class: "studio-table-scroll" },
 			h(
-				"thead",
-				null,
+				"table",
+				{ class: "studio-table" },
 				h(
-					"tr",
+					"thead",
 					null,
-					table.columns.map((col, index) => h("th", null, table.labels?.[index] ?? readableName(col))),
+					h(
+						"tr",
+						null,
+						table.columns.map((col, index) =>
+							h("th", numberClass(table, index), table.labels?.[index] ?? readableName(col)),
+						),
+					),
 				),
+				tbody,
 			),
-			tbody,
 		),
 		moreBtn,
 	);
@@ -332,15 +353,13 @@ function liveTable(
 			return;
 		}
 		const rows = answerRecords(state.answer).map((row) =>
-			Object.fromEntries(
-				Object.entries(row).map(([key, value]) => [key, codeWords(source, key, value) ?? cellText(value) ?? value]),
-			),
+			Object.fromEntries(Object.entries(row).map(([key, value]) => [key, codeWords(source, key, value) ?? value])),
 		);
 		if (rows.length === 0) {
 			body.replaceChildren(paleTable(columns));
 			return;
 		}
-		const table = tableOf("", rows, columns);
+		const table = tableOf("", rows, columns, true);
 		const age = answerAge(state.answer);
 		if (age) section.title = age;
 		body.replaceChildren(renderSpecTable(table, ctx.signal));

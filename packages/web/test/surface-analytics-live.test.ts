@@ -11,8 +11,8 @@ import {
 	answerRecords,
 	askKey,
 	askQuestion,
-	cellText,
 	codeWords,
+	columnTexts,
 	figureText,
 	isRefusal,
 	isUnconnected,
@@ -33,6 +33,10 @@ const HTML_PAGES: StudioHtmlPages = {
 	frame: () => document.createElement("iframe"),
 	linksChanged: () => false,
 };
+
+function cellText(value: unknown): string | undefined {
+	return columnTexts([value], true).texts[0];
+}
 
 function answer(columns: string[], rows: unknown[][], etag = "e1"): CloudMemberDataAnswer {
 	return { columns, rows, more: false, etag, asOf: "2026-11-26T10:00:00Z" };
@@ -1056,12 +1060,116 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect(cellText("12345.5")).toBe((12345.5).toLocaleString("en"));
 		expect(cellText(3.5)).toBe("3.5");
 		expect(cellText("48250")).toBe("48250");
-		expect(cellText("0042")).toBe("0042");
-		expect(cellText("Card")).toBe("Card");
+		expect(cellText("0042")).toBeUndefined();
+		expect(cellText("Card")).toBeUndefined();
 		expect(cellText(null)).toBeUndefined();
 		setLanguagePreference("da");
 		expect(figureText(147579.4)).toBe("147.579");
 		expect(cellText(1234.5)).toBe("1.234,5");
+	});
+
+	it("groups every number in a column with a decimal part, with the same decimals, and leaves whole columns as written", () => {
+		const money = columnTexts([8088, 1940, 12536, "90963.36", "5293.78", 438.55, null], true);
+		expect(money.texts).toEqual(["8,088.00", "1,940.00", "12,536.00", "90,963.36", "5,293.78", "438.55", undefined]);
+		expect(money.numeric).toBe(true);
+		expect(columnTexts(["8088.00", "12536.00"], true).texts).toEqual(["8,088.00", "12,536.00"]);
+		expect(columnTexts([1.5, 2], true).texts).toEqual(["1.5", "2.0"]);
+		expect(columnTexts([0.3333, 1], true).texts).toEqual(["0.33", "1.00"]);
+		expect(columnTexts([8088, 12536], true).texts).toEqual(["8,088", "12,536"]);
+		expect(columnTexts([2025, 2026], true).texts).toEqual(["2025", "2026"]);
+		expect(columnTexts(["10042", "9", 2026], true).texts).toEqual(["10042", "9", "2026"]);
+		const codes = columnTexts(["10042", "0042", "9"], true);
+		expect(codes.texts).toEqual(["10042", undefined, "9"]);
+		expect(codes.numeric).toBe(false);
+		expect(columnTexts(["Total", 12, ""], true).numeric).toBe(false);
+		expect(columnTexts([12, "", null], true).numeric).toBe(true);
+		expect(columnTexts([null, ""], true).numeric).toBe(false);
+		expect(columnTexts([8088, 12536.5], false).texts).toEqual(["8,088.00", "12,536.50"]);
+		expect(columnTexts([8088, 12536, "12.5"], false)).toEqual({
+			texts: ["8088", "12536", undefined],
+			numeric: false,
+		});
+		setLanguagePreference("da");
+		expect(columnTexts([1234.5, 8], true).texts).toEqual(["1.234,50", "8,00"]);
+	});
+
+	it("right-aligns number columns and lets a wide table scroll inside its own frame", async () => {
+		const life = new AbortController();
+		const numbers = new FakeLive(async () =>
+			answer(
+				["source", "orders", "sales", "refunds"],
+				[
+					["stripe", 326, 115749.14, "5743.20"],
+					["added", 6, 3072, 0],
+				],
+			),
+		);
+		const root = mount(
+			planOf(
+				layoutView({ numbers }, life.signal),
+				{
+					schema: SURFACE_LAYOUT_SCHEMA,
+					tabs: [
+						{
+							id: "sales",
+							title: "Sales",
+							blocks: [
+								{
+									type: "table",
+									id: "t",
+									from: { ask: "qorpera/orders-sources" },
+									heading: "Card or by hand?",
+								},
+								{ type: "table", id: "s", from: "plan.json#/months", heading: "The plan" },
+							],
+						},
+					],
+				},
+				{
+					files: {
+						[`${ROOT}/plan.json`]: JSON.stringify({
+							months: [
+								{ month: "Jan", year: 2027, target: 8088 },
+								{ month: "Feb", year: 2027, target: 12536.5 },
+							],
+						}),
+					},
+				},
+			),
+		);
+		await settle();
+		const table = root.querySelector(
+			'[data-block="table"] .studio-table-wrap > .studio-table-scroll > .studio-table',
+		)!;
+		expect(table).toBeTruthy();
+		expect([...table.querySelectorAll("th")].map((cell) => cell.className)).toEqual([
+			"",
+			"is-num",
+			"is-num",
+			"is-num",
+		]);
+		expect(
+			[...table.querySelectorAll("tbody tr")].map((row) => [...row.children].map((cell) => cell.textContent)),
+		).toEqual([
+			["Card payments", "326", "115,749.14", "5,743.20"],
+			["Added by hand", "6", "3,072.00", "0.00"],
+		]);
+		expect([...table.querySelectorAll("tbody tr:first-child td")].map((cell) => cell.className)).toEqual([
+			"",
+			"is-num",
+			"is-num",
+			"is-num",
+		]);
+		const plan = root.querySelectorAll('[data-block="table"]')[1]!;
+		expect(plan.querySelector(".studio-table-scroll > .studio-table")).toBeTruthy();
+		expect([...plan.querySelectorAll("th")].map((cell) => cell.className)).toEqual(["", "is-num", "is-num"]);
+		expect(
+			[...plan.querySelectorAll("tbody tr")].map((row) => [...row.children].map((cell) => cell.textContent)),
+		).toEqual([
+			["Jan", "2027", "8,088.00"],
+			["Feb", "2027", "12,536.50"],
+		]);
+		life.abort();
 	});
 
 	it("says the qorpera codes in words by question and column, and leaves other databases as written", () => {
@@ -1133,10 +1241,10 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect([...root.querySelectorAll(".studio-table td")].map((cell) => cell.textContent)).toEqual([
 			"Paid",
 			"2",
-			(12500.5).toLocaleString("en"),
+			"12,500.50",
 			"On the way",
 			"1",
-			"300",
+			"300.00",
 		]);
 		life.abort();
 	});
