@@ -1070,6 +1070,7 @@ declare
 	v_coding public.qorpera_coding_sessions%rowtype;
 	v_user_id uuid;
 	v_wake_ids uuid[] := '{}'::uuid[];
+	v_turn_wake_id uuid;
 	v_job_id uuid;
 	v_now timestamptz := clock_timestamp();
 begin
@@ -1108,6 +1109,16 @@ begin
 	if v_worker.id is not null and v_worker.occurrence_id is not null then
 		v_wake_ids := array_append(v_wake_ids, v_worker.occurrence_id);
 	end if;
+	if v_worker.id is not null then
+		select t.occurrence_id into v_turn_wake_id
+		from public.qorpera_coding_session_turns t
+		where t.worker_id = v_worker.id
+			and t.sequence = v_worker.sequence
+			and t.occurrence_id is not null;
+		if v_turn_wake_id is not null and not (v_turn_wake_id = any(v_wake_ids)) then
+			v_wake_ids := array_append(v_wake_ids, v_turn_wake_id);
+		end if;
+	end if;
 	if v_session.wake_id is not null and not (v_session.wake_id = any(v_wake_ids)) then
 		v_wake_ids := array_append(v_wake_ids, v_session.wake_id);
 	end if;
@@ -1144,30 +1155,11 @@ begin
 	end if;
 
 	if v_worker.id is not null and v_worker.state = 'active' then
-		update public.qorpera_runtime_workers
-		set
-			epoch = epoch + 1,
-			occurrence_id = null,
-			updated_at = v_now
-		where id = v_worker.id;
-
+		perform public.qorpera_cancel_worker(v_worker, null, 'member_stopped');
 		if v_coding.worker_id is not null then
 			update public.qorpera_coding_sessions
-			set
-				phase = 'awaiting_input',
-				lease_owner = null,
-				lease_token = null,
-				lease_until = null,
-				last_step = 'Stopped by member',
-				updated_at = v_now
-			where worker_id = v_coding.worker_id
-				and phase in ('queued', 'input_ready', 'preparing', 'running', 'publishing');
-			if found then
-				perform public.qorpera_coding_event(
-					v_coding.worker_id, v_worker.sequence, 'phase', 'member',
-					jsonb_build_object('phase', 'awaiting_input', 'reason', 'member_stopped')
-				);
-			end if;
+			set last_step = 'Stopped by member', updated_at = v_now
+			where worker_id = v_coding.worker_id;
 		end if;
 	end if;
 

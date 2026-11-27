@@ -20,6 +20,9 @@ declare
 	v_contrib constant uuid := '93700000-0000-4000-8000-000000000002';
 	v_viewer constant uuid := '93700000-0000-4000-8000-000000000003';
 	v_outsider constant uuid := '93700000-0000-4000-8000-000000000004';
+	v_exec_owner constant uuid := '93700000-0000-4000-8000-000000000098';
+	v_exec_company constant uuid := '93700000-0000-4000-8000-000000000011';
+	v_exec_env constant uuid := '93700000-0000-4000-8000-000000000021';
 	v_profile uuid := (v_claim ->> 'profileId')::uuid;
 	v_env_id uuid;
 	v_staff_id uuid;
@@ -48,6 +51,9 @@ declare
 	v_lease_sup uuid := extensions.gen_random_uuid();
 	v_lease_ready_retry uuid := extensions.gen_random_uuid();
 	v_lease_stop uuid := extensions.gen_random_uuid();
+	v_lease_resume uuid := extensions.gen_random_uuid();
+	v_lease_id_stop uuid := extensions.gen_random_uuid();
+	v_coding_lease uuid := extensions.gen_random_uuid();
 	v_ch_a1 uuid;
 	v_ch_a2 uuid;
 	v_ch_a3 uuid;
@@ -87,20 +93,23 @@ declare
 	v_stopped jsonb;
 	v_summary jsonb;
 	v_surface_row public.qorpera_surfaces%rowtype;
-	v_worker_id uuid := extensions.gen_random_uuid();
-	v_wake_id uuid := extensions.gen_random_uuid();
-	v_job_id uuid := extensions.gen_random_uuid();
-	v_run_id uuid := extensions.gen_random_uuid();
+	v_worker_id uuid;
+	v_wake_id uuid;
+	v_enq jsonb;
+	v_enq_resume jsonb;
 	v_vm_id uuid := extensions.gen_random_uuid();
 	v_vol_id uuid := extensions.gen_random_uuid();
 	v_epoch_before integer;
 	v_epoch_after integer;
 	v_worker_state text;
+	v_worker_seq integer;
 	v_coding_phase text;
+	v_coding_archived timestamptz;
 	v_coding_branch text;
+	v_expected_branch text;
 	v_coding_vm uuid;
 	v_coding_vol uuid;
-	v_job_status text;
+	v_turn_state text;
 	v_wake_status text;
 	v_msg_count integer;
 	v_errcode text;
@@ -147,8 +156,17 @@ begin
 	insert into auth.users(id, email) values
 		(v_contrib, 'contrib-937@example.test'),
 		(v_viewer, 'viewer-937@example.test'),
-		(v_outsider, 'outsider-937@example.test')
+		(v_outsider, 'outsider-937@example.test'),
+		(v_exec_owner, 'exec-owner-937@example.test')
 	on conflict (id) do nothing;
+
+	insert into public.qorpera_profiles(id, name, created_by_user_id)
+	values (v_exec_company, 'Executor Template Co 937', v_exec_owner);
+	insert into public.qorpera_company_environments(id, profile_id, name, contract_version, created_by_user_id)
+	values (v_exec_env, v_exec_company, 'Executor Template Env 937', 1, v_exec_owner);
+	perform pg_temp.as_service();
+	perform public.qorpera_configure_coding_executor(v_exec_env, 'exec-1419', true, array['codex', 'claude-code']);
+	reset role;
 
 	insert into public.qorpera_profile_members(profile_id, user_id, email, role, display_name) values
 		(v_profile, v_contrib, 'contrib-937@example.test', 'contributor', 'Contributor'),
@@ -772,57 +790,34 @@ begin
 		'Shipping an empty track with publish=true must delegate to qorpera_publish_surface and ensure site provisioning'
 	);
 
-	insert into public.qorpera_wake_occurrences(
-		id, profile_id, environment_id, staff_agent_id, source_kind, source_id, status, payload, dedupe_key
-	)
-	values (
-		v_wake_id, v_profile, v_env_id, v_staff_id, 'surface-session', v_track_stop, 'queued', '{}'::jsonb,
-		'awtb-stop-wake-' || v_wake_id::text
-	);
-
-	insert into public.qorpera_runner_jobs(
-		id, profile_id, environment_id, staff_agent_id, status, created_by_user_id, run_id, payload
-	)
-	values (
-		v_job_id, v_profile, v_env_id, v_staff_id, 'queued', v_owner, v_run_id, '{}'::jsonb
-	);
-
-	insert into public.qorpera_execution_runs(
-		id, profile_id, environment_id, staff_agent_id, job_id, source_kind, status
-	)
-	values (
-		v_run_id, v_profile, v_env_id, v_staff_id, v_job_id, 'wake', 'queued'
-	);
-
-	update public.qorpera_wake_occurrences set run_id = v_run_id where id = v_wake_id;
-
-	insert into public.qorpera_runtime_workers(
-		id, profile_id, environment_id, parent_staff_agent_id, owner_user_id, species, title, goal,
-		state, sequence, epoch, occurrence_id, surface_backed, surface_session_id
-	)
-	values (
-		v_worker_id, v_profile, v_env_id, v_staff_id, v_owner, 'coding', 'Auth refactor', 'Refactor auth',
-		'active', 1, 3, v_wake_id, true, v_track_stop
-	);
-
-	insert into public.qorpera_coding_sessions(
-		worker_id, profile_id, environment_id, workspace_kind, branch, base_sha, phase,
-		vm_allocation_id, storage_volume_id, lease_owner, lease_token, lease_until
-	)
-	values (
-		v_worker_id, v_profile, v_env_id, 'git_repo', 'qorpera/coding/stop-test', v_sha_base, 'running',
-		v_vm_id, v_vol_id, 'runner-1', extensions.gen_random_uuid(), clock_timestamp() + interval '5 minutes'
-	);
-
 	update public.qorpera_surface_sessions
 	set
 		state = 'running',
-		worker_id = v_worker_id,
-		wake_id = v_wake_id,
 		lease_token = v_lease_stop,
 		lease_expires_at = clock_timestamp() + interval '10 minutes',
 		current_activity = 'Editing auth middleware'
 	where id = v_track_stop;
+
+	perform pg_temp.as_service();
+	v_enq := public.qorpera_surface_enqueue_session_run(v_track_stop, v_lease_stop);
+	reset role;
+	perform pg_temp.awtb_assert(v_enq ->> 'status' = 'enqueued', 'enqueue_session_run must enqueue coding turn: ' || v_enq::text);
+	v_worker_id := (v_enq ->> 'workerId')::uuid;
+	select branch into strict v_expected_branch from public.qorpera_coding_sessions where worker_id = v_worker_id;
+	perform pg_temp.awtb_assert(
+		(select track_branch from public.qorpera_surface_sessions where id = v_track_stop) = v_expected_branch,
+		'qorpera_surface_enqueue_session_run must backfill track_branch from coding session branch'
+	);
+
+	update public.qorpera_coding_sessions
+	set
+		phase = 'running',
+		vm_allocation_id = v_vm_id,
+		storage_volume_id = v_vol_id,
+		lease_owner = 'runner-1',
+		lease_token = v_coding_lease,
+		lease_until = clock_timestamp() + interval '5 minutes'
+	where worker_id = v_worker_id;
 
 	select epoch into v_epoch_before from public.qorpera_runtime_workers where id = v_worker_id;
 
@@ -846,21 +841,30 @@ begin
 	reset role;
 
 	select state, epoch into v_worker_state, v_epoch_after from public.qorpera_runtime_workers where id = v_worker_id;
-	select phase, branch, vm_allocation_id, storage_volume_id
-	into v_coding_phase, v_coding_branch, v_coding_vm, v_coding_vol
+	select phase, archived_at, branch, vm_allocation_id, storage_volume_id
+	into v_coding_phase, v_coding_archived, v_coding_branch, v_coding_vm, v_coding_vol
 	from public.qorpera_coding_sessions where worker_id = v_worker_id;
-	select status into v_job_status from public.qorpera_runner_jobs where id = v_job_id;
-	select status into v_wake_status from public.qorpera_wake_occurrences where id = v_wake_id;
+	select outcome ->> 'state' into v_turn_state
+	from public.qorpera_coding_session_turns where worker_id = v_worker_id and sequence = 1;
 
-	perform pg_temp.awtb_assert(v_worker_state = 'active', 'Non-destructive stop must keep worker active');
+	perform pg_temp.awtb_assert(v_worker_state = 'cancelled', 'Non-destructive stop must cancel active worker turn');
 	perform pg_temp.awtb_assert(v_epoch_after = v_epoch_before + 1, 'Non-destructive stop must bump worker epoch');
-	perform pg_temp.awtb_assert(v_coding_phase = 'awaiting_input', 'Non-destructive stop must move coding session to awaiting_input');
+	perform pg_temp.awtb_assert(v_turn_state = 'cancelled', 'Non-destructive stop must settle open coding turn as cancelled');
+	perform pg_temp.awtb_assert(v_coding_phase = 'cancelled' and v_coding_archived is null, 'Non-destructive stop must cancel turn without archiving coding session');
 	perform pg_temp.awtb_assert(
-		v_coding_branch = 'qorpera/coding/stop-test' and v_coding_vm = v_vm_id and v_coding_vol = v_vol_id,
+		v_coding_branch = v_expected_branch and v_coding_vm = v_vm_id and v_coding_vol = v_vol_id,
 		'Non-destructive stop must preserve branch, VM allocation, and storage volume'
 	);
-	perform pg_temp.awtb_assert(v_job_status = 'cancelled', 'Stopping turn must cancel runner job');
-	perform pg_temp.awtb_assert(v_wake_status = 'cancelled', 'Stopping turn must cancel queued wake');
+
+	perform pg_temp.as_service();
+	begin
+		perform public.qorpera_coding_leased_session(v_worker_id, v_coding_lease);
+		perform pg_temp.awtb_assert(false, 'Stopped coding lease must be rejected as cancelled');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.awtb_assert(v_errcode = '55000', 'Expected 55000 for cancelled coding lease, got ' || v_errcode);
+	end;
+	reset role;
 
 	select count(*) into v_msg_count
 	from public.qorpera_surface_session_messages
@@ -876,10 +880,72 @@ begin
 	where session_id = v_track_stop and author_kind = 'system' and body = 'Stopped by member.';
 	perform pg_temp.awtb_assert(v_msg_count = 1, 'Stopping an idle session must be idempotent');
 
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_reply_surface_session(v_track_stop, 'Use session cookies instead', true);
+	reset role;
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_resume, lease_expires_at = clock_timestamp() + interval '10 minutes'
+	where id = v_track_stop;
+	perform pg_temp.as_service();
+	v_enq_resume := public.qorpera_surface_enqueue_session_run(v_track_stop, v_lease_resume);
+	reset role;
+	perform pg_temp.awtb_assert(
+		v_enq_resume ->> 'status' = 'enqueued' and (v_enq_resume ->> 'workerId')::uuid = v_worker_id,
+		'Replying after non-destructive stop must resume the same coding worker: ' || v_enq_resume::text
+	);
+	select state, sequence into v_worker_state, v_worker_seq from public.qorpera_runtime_workers where id = v_worker_id;
+	select phase, archived_at, branch, vm_allocation_id, storage_volume_id
+	into v_coding_phase, v_coding_archived, v_coding_branch, v_coding_vm, v_coding_vol
+	from public.qorpera_coding_sessions where worker_id = v_worker_id;
+	perform pg_temp.awtb_assert(
+		v_worker_state = 'active' and v_worker_seq = 2 and v_coding_phase = 'input_ready' and v_coding_archived is null
+		and v_coding_branch = v_expected_branch and v_coding_vm = v_vm_id and v_coding_vol = v_vol_id
+		and exists (
+			select 1 from public.qorpera_coding_session_turns t
+			where t.worker_id = v_worker_id and t.sequence = 2 and t.outcome is null
+		),
+		'Resuming a stopped track must open turn 2 on the same branch, VM allocation, and storage volume'
+	);
+
+	perform pg_temp.awtb_as(v_contrib);
+	set local role authenticated;
+	perform public.qorpera_cancel_surface_session_turn(v_track_stop);
+	reset role;
+
+	update public.qorpera_surface_sessions
+	set state = 'running', lease_token = v_lease_id_stop, lease_expires_at = clock_timestamp() + interval '10 minutes'
+	where id = v_id_session;
+	perform public.qorpera_folder_admit_wakes(v_profile);
+	insert into public.qorpera_wake_occurrences(
+		id, profile_id, environment_id, wake_kind, source_kind, source_id,
+		trigger_id, occurrence_key, scheduled_for, not_before
+	)
+	values (
+		extensions.gen_random_uuid(),
+		v_profile,
+		v_env_id,
+		'agent',
+		'surface-session',
+		v_id_session,
+		'surface-session',
+		'surface-session:' || v_id_session::text || ':' || v_lease_id_stop::text,
+		clock_timestamp(),
+		clock_timestamp()
+	)
+	returning id into v_wake_id;
+	update public.qorpera_surface_sessions set wake_id = v_wake_id where id = v_id_session;
+	perform pg_temp.awtb_as(v_owner);
+	set local role authenticated;
+	perform public.qorpera_cancel_surface_session_turn(v_id_session);
+	reset role;
+	select status into v_wake_status from public.qorpera_wake_occurrences where id = v_wake_id;
+	perform pg_temp.awtb_assert(v_wake_status = 'cancelled', 'Stopping a wake-backed session turn must cancel its queued wake');
+
 	insert into public.qorpera_surface_sessions(
 		profile_id, surface_id, title, prompt, state, origin_kind, is_internal
 	)
-	values (v_profile, v_app_id, 'Internal reconcile', 'Reconcile', 'reconciling_running', 'system', true)
+	values (v_profile, v_app_id, 'Internal reconcile', 'Reconcile', 'reconciling_running', 'member', true)
 	returning id into v_track_internal;
 	perform pg_temp.awtb_as(v_owner);
 	set local role authenticated;
