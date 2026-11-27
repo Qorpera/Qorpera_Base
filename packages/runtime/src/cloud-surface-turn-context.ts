@@ -227,6 +227,8 @@ export interface CompanyInterfaceSummary {
 	readonly folderRoot: string | null;
 	readonly folderExists?: boolean;
 	readonly repositoryKey: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string;
 	readonly briefSummary: string | null;
 	readonly isGlobal: boolean;
 }
@@ -310,6 +312,12 @@ export function parseCompanyInterfacesResponse(raw: unknown): CompanyInterfaceSu
 			folderRoot: typeof item.folderRoot === "string" && item.folderRoot.trim() ? item.folderRoot.trim() : null,
 			repositoryKey:
 				typeof item.repositoryKey === "string" && item.repositoryKey.trim() ? item.repositoryKey.trim() : null,
+			...(typeof item.repositorySubpath === "string" && item.repositorySubpath.trim()
+				? { repositorySubpath: item.repositorySubpath.trim() }
+				: {}),
+			...(typeof item.defaultBranch === "string" && item.defaultBranch.trim()
+				? { defaultBranch: item.defaultBranch.trim() }
+				: {}),
 			briefSummary:
 				typeof item.briefSummary === "string" && item.briefSummary.trim() ? item.briefSummary.trim() : null,
 			isGlobal: item.isGlobal === true,
@@ -478,12 +486,17 @@ export function buildCompanyInterfacesSection(
 		lines.push(`Cross-company tools: ${tools.join("; ")}.`);
 	}
 	for (const iface of ctx.interfaces.slice(0, 48)) {
+		const subpath = iface.repositorySubpath?.replace(/^\/+|\/+$/g, "") || "";
 		const pathLabel =
 			iface.sourceKind === "code_repo" && iface.repositoryKey
-				? `/company/code/${iface.repositoryKey.replace(/^\/+|\/+$/g, "")}`
+				? `/company/code/${iface.repositoryKey.replace(/^\/+|\/+$/g, "")}${subpath ? `/${subpath}` : ""}`
 				: iface.folderRoot
 					? `/company/${iface.folderRoot.replace(/^\/+|\/+$/g, "")}`
 					: "ops";
+		const branchNote =
+			iface.sourceKind === "code_repo" && iface.defaultBranch && iface.defaultBranch !== "main"
+				? ` (branch: ${iface.defaultBranch})`
+				: "";
 		const starterNote =
 			iface.sourceKind === "folder" && iface.folderRoot && iface.folderExists === false
 				? " (starter — folder created on first publish)"
@@ -491,7 +504,7 @@ export function buildCompanyInterfacesSection(
 		const currentTag = options.currentSlug && iface.slug === options.currentSlug ? " · **current**" : "";
 		const summary = iface.briefSummary ? ` — ${iface.briefSummary.replace(/\s+/g, " ").slice(0, 180)}` : "";
 		lines.push(
-			`- **${iface.title}** (\`${iface.slug}\` · ${iface.archetype}/${iface.kind}${currentTag}) — \`${pathLabel}\`${starterNote}${summary}`,
+			`- **${iface.title}** (\`${iface.slug}\` · ${iface.archetype}/${iface.kind}${currentTag}) — \`${pathLabel}\`${branchNote}${starterNote}${summary}`,
 		);
 	}
 	if (ctx.interfaces.length > 48) {
@@ -527,6 +540,8 @@ export interface SurfaceTurnBriefInput {
 	readonly briefMarkdown: string | null;
 	readonly fullPrompt?: string | null;
 	readonly repositoryKey?: string | null;
+	readonly repositorySubpath?: string | null;
+	readonly defaultBranch?: string | null;
 	readonly folderRoot?: string | null;
 	readonly explorationVariantLabel?: string | null;
 	readonly identityContext?: SurfaceIdentityContext | null;
@@ -611,9 +626,19 @@ export const SURFACE_STAGED_CODING_INSTRUCTIONS =
 export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 	const headerLines = [`# Surface Context: ${binding.surfaceTitle} (${binding.surfaceSlug})`];
 	const repositoryKey = binding.repositoryKey?.trim();
+	const repositorySubpath = binding.repositorySubpath?.trim().replace(/^\/+|\/+$/g, "");
+	const defaultBranch = binding.defaultBranch?.trim();
 	const folderRoot = binding.folderRoot?.trim();
 	const explorationVariantLabel = binding.explorationVariantLabel?.trim();
 	if (repositoryKey) headerLines.push(`Repository: code/${repositoryKey}`);
+	if (repositorySubpath) {
+		headerLines.push(
+			`Repository subfolder: ${repositorySubpath} (scope app edits, preview builds, and checks to this subfolder unless shared monorepo files require coordinated updates)`,
+		);
+	}
+	if (defaultBranch && defaultBranch !== "main") {
+		headerLines.push(`Upstream branch: ${defaultBranch} (local changes land on main)`);
+	}
 	if (folderRoot) headerLines.push(`Folder root: ${folderRoot}`);
 
 	const isFolderOnly = Boolean(folderRoot && !repositoryKey);

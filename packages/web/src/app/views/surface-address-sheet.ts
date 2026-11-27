@@ -1,3 +1,11 @@
+import type { BindSurfaceRepositoryInput } from "@qorpera/cloud-client/surfaces";
+import {
+	type CompanyCodeRepositorySummary,
+	isSurfaceDefaultBranch,
+	isSurfaceRepositoryKey,
+	isSurfaceRepositorySubpath,
+	normalizeSurfaceRepositorySubpath,
+} from "@qorpera/contracts";
 import { CloudRpcError } from "../../cloud/client.ts";
 import {
 	type CompanySiteHostingState,
@@ -28,6 +36,15 @@ export interface SurfaceSiteHosting {
 	readonly client: WebSiteHosting;
 }
 
+export interface SurfaceCodeSourceBinding {
+	readonly repositoryKey: string | null;
+	readonly repositorySubpath: string | null;
+	readonly defaultBranch: string;
+	readonly listRepositories: (signal?: AbortSignal) => Promise<readonly CompanyCodeRepositorySummary[]>;
+	readonly save: (input: BindSurfaceRepositoryInput) => Promise<boolean>;
+	readonly lastError?: () => string | undefined;
+}
+
 export interface SurfaceAddressSetup {
 	readonly container: HTMLElement;
 	readonly canManage: () => boolean;
@@ -36,6 +53,7 @@ export interface SurfaceAddressSetup {
 	readonly beforePublic?: () => Promise<boolean>;
 	readonly publicChanged?: (isPublic: boolean) => void;
 	readonly slugChanged?: (updated: UpdatedSiteSlug) => void;
+	readonly codeSource?: () => SurfaceCodeSourceBinding | undefined;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
@@ -50,12 +68,14 @@ interface Known {
 type Page =
 	| { readonly kind: "main" }
 	| { readonly kind: "edit" }
+	| { readonly kind: "source" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly hostname: string };
 
 type Shown =
 	| { readonly kind: "main" }
 	| { readonly kind: "edit" }
+	| { readonly kind: "source" }
 	| { readonly kind: "add"; readonly from?: string }
 	| { readonly kind: "domain"; readonly domain: SiteCustomDomain };
 
@@ -250,6 +270,37 @@ export class SurfaceAddress {
 		spellcheck: "false",
 		"data-key": "slug-field",
 	});
+	readonly #sourceRepoSelect = h("select", {
+		class: "surface-address-select",
+		"data-key": "source-repo-select",
+	});
+	readonly #sourceRepoField = h("input", {
+		type: "text",
+		class: "surface-address-input",
+		maxlength: "140",
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"data-key": "source-repo",
+	});
+	readonly #sourceSubpathField = h("input", {
+		type: "text",
+		class: "surface-address-input",
+		maxlength: "240",
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"data-key": "source-subpath",
+	});
+	readonly #sourceBranchField = h("input", {
+		type: "text",
+		class: "surface-address-input",
+		maxlength: "128",
+		autocomplete: "off",
+		autocapitalize: "none",
+		spellcheck: "false",
+		"data-key": "source-branch",
+	});
 	#target: SurfaceSiteHosting | undefined;
 	#liveUrl = "";
 	#syncedLiveUrl = "";
@@ -261,6 +312,11 @@ export class SurfaceAddress {
 	#armed = false;
 	#going = false;
 	#savingSlug = false;
+	#savingSource = false;
+	#sourceRepos: readonly CompanyCodeRepositorySummary[] = [];
+	#sourceReposLoaded = false;
+	#sourceCustomRepo = false;
+	#sourceBranchEdited = false;
 	#slugCheck: SlugCheckState = { kind: "idle" };
 	#slugTimer: ReturnType<typeof setTimeout> | undefined;
 	#slugCheckAbort: AbortController | undefined;
@@ -281,6 +337,17 @@ export class SurfaceAddress {
 		this.#field.placeholder = t("yourdomain.com");
 		this.#slugField.setAttribute("aria-label", t("Site address"));
 		this.#slugField.addEventListener("input", () => this.#onSlugInput());
+		this.#sourceRepoSelect.setAttribute("aria-label", t("Repository"));
+		this.#sourceRepoSelect.addEventListener("change", () => this.#onSourceRepoSelect());
+		this.#sourceRepoField.setAttribute("aria-label", t("Repository key"));
+		this.#sourceRepoField.placeholder = t("owner/repository");
+		this.#sourceSubpathField.setAttribute("aria-label", t("Subfolder (optional)"));
+		this.#sourceSubpathField.placeholder = t("e.g. packages/web");
+		this.#sourceBranchField.setAttribute("aria-label", t("Upstream branch"));
+		this.#sourceBranchField.placeholder = t("e.g. main");
+		this.#sourceBranchField.addEventListener("input", () => {
+			this.#sourceBranchEdited = true;
+		});
 		setup.container.append(this.#sheet);
 		setup.signal.addEventListener("abort", () => this.close(), { once: true });
 	}
@@ -290,7 +357,7 @@ export class SurfaceAddress {
 	}
 
 	get isWriting(): boolean {
-		return this.#writing > 0 || this.#going || this.#savingSlug;
+		return this.#writing > 0 || this.#going || this.#savingSlug || this.#savingSource;
 	}
 
 	get readFailed(): boolean {
@@ -313,6 +380,11 @@ export class SurfaceAddress {
 			this.#field.value = "";
 			this.#slugField.value = "";
 			this.#savingSlug = false;
+			this.#savingSource = false;
+			this.#sourceRepos = [];
+			this.#sourceReposLoaded = false;
+			this.#sourceCustomRepo = false;
+			this.#sourceBranchEdited = false;
 			this.#liveUrl = url;
 			this.#syncedLiveUrl = url;
 			if (next) void this.#read();
@@ -648,13 +720,19 @@ export class SurfaceAddress {
 						? this.#sheet.querySelector<HTMLElement>('[data-key="add"]')
 						: from.kind === "edit"
 							? this.#sheet.querySelector<HTMLElement>('[data-key="edit-slug"]')
-							: null;
+							: from.kind === "source"
+								? this.#sheet.querySelector<HTMLElement>('[data-key="code-source"]')
+								: null;
 		const target =
 			page.kind === "add" && this.#field.isConnected
 				? this.#field
 				: page.kind === "edit" && this.#slugField.isConnected
 					? this.#slugField
-					: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
+					: page.kind === "source" && this.#sourceRepoSelect.isConnected
+						? this.#sourceRepoSelect
+						: page.kind === "source" && this.#sourceRepoField.isConnected
+							? this.#sourceRepoField
+							: (back ?? this.#sheet.querySelector<HTMLElement>(".surface-address-back"));
 		(target ?? this.#sheet).focus();
 	}
 
@@ -1009,6 +1087,9 @@ export class SurfaceAddress {
 	#shown(): Shown {
 		const page = this.#page;
 		const known = this.#known;
+		if (page.kind === "source") {
+			return this.#setup.canManage() && this.#setup.codeSource?.() ? page : MAIN;
+		}
 		if (!known) return MAIN;
 		if (page.kind === "edit") return this.#canEditSlug() ? page : MAIN;
 		if (page.kind === "add")
@@ -1025,6 +1106,7 @@ export class SurfaceAddress {
 
 	#paintKey(): string {
 		const known = this.#known;
+		const source = this.#setup.codeSource?.();
 		return JSON.stringify([
 			this.#liveUrl,
 			this.#setup.canManage(),
@@ -1033,6 +1115,11 @@ export class SurfaceAddress {
 			this.#page,
 			this.#armed,
 			this.#going,
+			this.#savingSource,
+			this.#sourceCustomRepo,
+			this.#sourceReposLoaded,
+			this.#sourceRepos.map((repo) => [repo.repositoryKey, repo.sourceBranch]),
+			source ? [source.repositoryKey ?? "", source.repositorySubpath ?? "", source.defaultBranch] : null,
 			known === undefined
 				? "unknown"
 				: known === null
@@ -1090,15 +1177,17 @@ export class SurfaceAddress {
 			},
 			...(shown.kind === "edit"
 				? this.#editPage()
-				: shown.kind === "add"
-					? this.#addPage(shown.from)
-					: shown.kind === "domain"
-						? securing(shown.domain)
-							? this.#securingPage(shown.domain)
-							: verified(shown.domain)
-								? this.#managePage(shown.domain)
-								: this.#handPage(shown.domain)
-						: this.#mainPage()),
+				: shown.kind === "source"
+					? this.#sourcePage()
+					: shown.kind === "add"
+						? this.#addPage(shown.from)
+						: shown.kind === "domain"
+							? securing(shown.domain)
+								? this.#securingPage(shown.domain)
+								: verified(shown.domain)
+									? this.#managePage(shown.domain)
+									: this.#handPage(shown.domain)
+							: this.#mainPage()),
 		);
 		replace(this.#sheet, page);
 		this.#sheet.hidden = false;
@@ -1174,8 +1263,10 @@ export class SurfaceAddress {
 							: known.hosting.publicEnabled
 								? this.#goButton()
 								: this.#quietLine(t(REFUSALS.PUBLIC_SITES_DISABLED!));
+		const source = manage ? this.#setup.codeSource?.() : undefined;
+		const sourceRow = source ? this.#sourceRow(source) : null;
 		const head = h("div", { class: "surface-address-head" }, nameRow, under, this.#problemLine());
-		if (!known) return [head];
+		if (!known) return [head, sourceRow ? this.#group(sourceRow) : null];
 		const domains = known.domains.map((domain) => this.#domainRow(domain, manage));
 		if (domains.length === 0 && manage)
 			domains.push(
@@ -1192,6 +1283,7 @@ export class SurfaceAddress {
 			head,
 			known.isPublic ? this.#group(this.#openRow(), this.#copyRow()) : null,
 			domains.length > 0 ? this.#group(...domains) : null,
+			sourceRow ? this.#group(sourceRow) : null,
 			known.isPublic && manage
 				? this.#group(
 						this.#row({
@@ -1203,6 +1295,225 @@ export class SurfaceAddress {
 						}),
 					)
 				: null,
+		];
+	}
+
+	#sourceRow(source: SurfaceCodeSourceBinding): HTMLElement {
+		const repo = source.repositoryKey?.trim() || t("Not connected yet");
+		const summary = source.repositorySubpath ? `${repo}/${source.repositorySubpath}` : repo;
+		return this.#row({
+			key: "code-source",
+			glyph: "code",
+			label: t("Code source"),
+			end: h(
+				"span",
+				{ class: "surface-address-row-end surface-address-source-summary", title: summary },
+				summary,
+				icon("chevron"),
+			),
+			press: () => this.#openSource(source),
+		});
+	}
+
+	#openSource(source: SurfaceCodeSourceBinding): void {
+		if (!this.#setup.canManage()) return;
+		this.#sourceRepoField.value = source.repositoryKey ?? "";
+		this.#sourceSubpathField.value = source.repositorySubpath ?? "";
+		this.#sourceBranchField.value = source.defaultBranch || "main";
+		this.#sourceBranchEdited = Boolean(source.defaultBranch && source.defaultBranch !== "main");
+		this.#syncSourceSelectOptions();
+		this.#go({ kind: "source" });
+		if (!this.#sourceReposLoaded) {
+			const target = this.#target;
+			void source
+				.listRepositories(this.#setup.signal)
+				.then((list) => {
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#sourceRepos = list;
+					this.#sourceReposLoaded = true;
+					this.#syncSourceSelectOptions();
+					if (this.#open && this.#page.kind === "source") this.#paint();
+				})
+				.catch(() => {
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#sourceReposLoaded = true;
+				});
+		}
+	}
+
+	#syncSourceSelectOptions(): void {
+		const list = this.#sourceRepos;
+		if (list.length === 0) {
+			this.#sourceCustomRepo = true;
+			return;
+		}
+		const currentKey = this.#sourceRepoField.value.trim().toLowerCase();
+		const matched = list.find((item) => item.repositoryKey.toLowerCase() === currentKey);
+		this.#sourceRepoSelect.replaceChildren(
+			...list.map((item) => {
+				const label =
+					item.sourceBranch && item.sourceBranch !== "main"
+						? `${item.repositoryKey} (${item.sourceBranch})`
+						: item.repositoryKey;
+				return h("option", { value: item.repositoryKey }, label);
+			}),
+			h("option", { value: "__custom__" }, t("Other repository…")),
+		);
+		if (matched) {
+			this.#sourceRepoSelect.value = matched.repositoryKey;
+			this.#sourceCustomRepo = false;
+		} else if (currentKey) {
+			this.#sourceRepoSelect.value = "__custom__";
+			this.#sourceCustomRepo = true;
+		} else {
+			this.#sourceRepoSelect.value = list[0]!.repositoryKey;
+			this.#sourceCustomRepo = false;
+		}
+	}
+
+	#onSourceRepoSelect(): void {
+		const custom = this.#sourceRepoSelect.value === "__custom__";
+		this.#sourceCustomRepo = custom;
+		if (!custom) {
+			const picked = this.#sourceRepos.find((item) => item.repositoryKey === this.#sourceRepoSelect.value);
+			if (picked) {
+				this.#sourceRepoField.value = picked.repositoryKey;
+				if (!this.#sourceBranchEdited && picked.sourceBranch) {
+					this.#sourceBranchField.value = picked.sourceBranch;
+				}
+			}
+		}
+		if (this.#open && this.#page.kind === "source") {
+			this.#paint();
+			if (custom && this.#sourceRepoField.isConnected) this.#sourceRepoField.focus();
+		}
+	}
+
+	#saveSource(): void {
+		const source = this.#setup.codeSource?.();
+		if (this.#savingSource || !source || !this.#setup.canManage()) return;
+		const rawRepo =
+			this.#sourceRepos.length > 0 && !this.#sourceCustomRepo
+				? this.#sourceRepoSelect.value
+				: this.#sourceRepoField.value.trim();
+		const repoKey = rawRepo.toLowerCase();
+		if (!isSurfaceRepositoryKey(repoKey)) {
+			this.#problem = t("Enter a repository like owner/name.");
+			this.#paint();
+			(this.#sourceCustomRepo || this.#sourceRepos.length === 0
+				? this.#sourceRepoField
+				: this.#sourceRepoSelect
+			).focus();
+			return;
+		}
+		const rawSubpath = this.#sourceSubpathField.value.trim();
+		const normalizedSubpath = normalizeSurfaceRepositorySubpath(rawSubpath);
+		if (rawSubpath && normalizedSubpath !== null && !isSurfaceRepositorySubpath(normalizedSubpath)) {
+			this.#problem = t("Use a relative subfolder like packages/web.");
+			this.#paint();
+			this.#sourceSubpathField.focus();
+			return;
+		}
+		const branch = this.#sourceBranchField.value.trim() || "main";
+		if (!isSurfaceDefaultBranch(branch)) {
+			this.#problem = t("Enter a valid branch name.");
+			this.#paint();
+			this.#sourceBranchField.focus();
+			return;
+		}
+		const target = this.#target;
+		const inside = this.#sheet.contains(document.activeElement);
+		this.#savingSource = true;
+		this.#problem = undefined;
+		this.#paint();
+		this.#setup.changed();
+		void source
+			.save({
+				repositoryKey: repoKey,
+				repositorySubpath: normalizedSubpath,
+				defaultBranch: branch,
+			})
+			.then(
+				(ok) => {
+					this.#savingSource = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (ok) {
+						this.#page = MAIN;
+						this.#changed();
+						if (inside && this.#open) this.#land({ kind: "source" });
+					} else {
+						this.#problem = source.lastError?.() ?? t("That didn't work. Try again.");
+						this.#changed();
+					}
+				},
+				() => {
+					this.#savingSource = false;
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = source.lastError?.() ?? t("That didn't work. Try again.");
+					this.#changed();
+				},
+			);
+	}
+
+	#sourcePage(): (HTMLElement | null)[] {
+		const hasRepos = this.#sourceRepos.length > 0;
+		const showCustom = !hasRepos || this.#sourceCustomRepo;
+		return [
+			this.#top(t("Code source"), MAIN),
+			h(
+				"form",
+				{
+					class: "surface-address-body",
+					autocomplete: "off",
+					onsubmit: (event: SubmitEvent) => {
+						event.preventDefault();
+						this.#saveSource();
+					},
+				},
+				hasRepos
+					? h(
+							"label",
+							{ class: "surface-address-field" },
+							h("span", null, t("Repository")),
+							this.#sourceRepoSelect,
+						)
+					: null,
+				showCustom
+					? h(
+							"label",
+							{ class: "surface-address-field" },
+							h("span", null, t("Repository key")),
+							this.#sourceRepoField,
+						)
+					: null,
+				h(
+					"label",
+					{ class: "surface-address-field" },
+					h("span", null, t("Subfolder (optional)")),
+					this.#sourceSubpathField,
+				),
+				h(
+					"label",
+					{ class: "surface-address-field" },
+					h("span", null, t("Upstream branch")),
+					this.#sourceBranchField,
+				),
+				h(
+					"div",
+					{ class: "surface-address-end" },
+					h(
+						"button",
+						{
+							type: "submit",
+							class: "surface-address-pill",
+							"data-key": "save-source",
+							disabled: this.#savingSource,
+						},
+						this.#savingSource ? t("Saving…") : t("Save"),
+					),
+				),
+				this.#problemLine(),
+			),
 		];
 	}
 

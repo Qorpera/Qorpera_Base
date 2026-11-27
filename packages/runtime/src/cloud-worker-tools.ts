@@ -458,7 +458,7 @@ export function cloudWorkerTools(
 							minLength: 1,
 							maxLength: 39,
 							description:
-								"On qorpera, a short lowercase area of the company's code, such as company. Never surfaces (Interface repos are updated via start_surface_session).",
+								"On qorpera, a short lowercase area such as company. Never surfaces or a repo bound whole to an Interface (use start_surface_session; monorepo subfolders leave other folders open).",
 						},
 						name: {
 							type: "string",
@@ -616,7 +616,7 @@ export function cloudWorkerTools(
 						}
 						if (repository.owner.toLowerCase() === "surfaces") {
 							throw new CloudToolArgumentRefusal(
-								"Repositories under surfaces/<slug> belong to a company Interface and must be changed through start_surface_session or steer_surface_session, not manage_worker.",
+								"Repositories under surfaces/<slug> (and repositories bound whole to a company Interface) belong to that Interface and must be changed through start_surface_session or steer_surface_session, not manage_worker.",
 							);
 						}
 					}

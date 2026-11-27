@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CloudCodingRepository } from "@qorpera/contracts";
+import { type CloudCodingRepository, isSurfaceRepositorySubpath } from "@qorpera/contracts";
 import {
 	CODE_AREA_IN_QORPERA_REF,
 	type CodeHostJob,
@@ -349,13 +349,6 @@ function parseChecksSiteFolder(text: string | null): string | null {
 	return codeSiteFolderValid(trimmed) ? trimmed : null;
 }
 
-async function readSurfaceChecksSiteFolder(
-	run: Run,
-	rootEntries: readonly ParsedGitTreeEntry[],
-): Promise<string | null> {
-	return parseChecksSiteFolder(await readSurfaceChecksText(run, rootEntries));
-}
-
 async function resolveFallbackWebTree(
 	run: Run,
 	entries: readonly ParsedGitTreeEntry[],
@@ -513,14 +506,120 @@ async function readSurfaceSiteTreeInRun(
 	return { files, manifestSha256: codeSiteManifest(files) };
 }
 
+function parseOptionalSurfaceSubpath(value: unknown): string | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value !== "string" || !isSurfaceRepositorySubpath(value)) throw new Error("INVALID_CODE_HOST_JOB");
+	return value;
+}
+
+function joinSubpath(subpath: string, relative: string): string {
+	return relative === "." ? subpath : `${subpath}/${relative}`;
+}
+
+function pathWithinSubpath(path: string, subpath: string): boolean {
+	return path === subpath || path.startsWith(`${subpath}/`);
+}
+
+async function resolveScopedChecksAndTree(
+	run: Run,
+	tree: string,
+	rootEntries: readonly ParsedGitTreeEntry[],
+	subpath: string | null,
+): Promise<{
+	readonly scopedTreeId: string;
+	readonly scopedEntries: readonly ParsedGitTreeEntry[];
+	readonly checksText: string | null;
+	readonly checksFromSubpath: boolean;
+}> {
+	if (!subpath) {
+		return {
+			scopedTreeId: tree,
+			scopedEntries: rootEntries,
+			checksText: await readSurfaceChecksText(run, rootEntries),
+			checksFromSubpath: false,
+		};
+	}
+	const scopedTreeId = await resolveTreeFolder(run, tree, subpath);
+	if (!scopedTreeId) {
+		throw new CodeSiteTreeInvalid({ code: "SITE_FOLDER_MISSING", path: subpath, variable: null });
+	}
+	const scopedTrees = await readObjects(run, "tree", [scopedTreeId], MAX_LISTING, () => subpath);
+	const scopedEntries = parseGitTreeEntries(scopedTrees.get(scopedTreeId) as Buffer, subpath);
+	const subpathChecks = await readSurfaceChecksText(run, scopedEntries);
+	if (subpathChecks !== null) {
+		return {
+			scopedTreeId,
+			scopedEntries,
+			checksText: subpathChecks,
+			checksFromSubpath: true,
+		};
+	}
+	return {
+		scopedTreeId,
+		scopedEntries,
+		checksText: await readSurfaceChecksText(run, rootEntries),
+		checksFromSubpath: false,
+	};
+}
+
+function resolveConfiguredSiteFolderForScope(
+	checksText: string | null,
+	subpath: string | null,
+	checksFromSubpath: boolean,
+): { readonly baseTreeMode: "root" | "scoped"; readonly folder: string | null } {
+	const configured = parseChecksSiteFolder(checksText);
+	if (!subpath) return { baseTreeMode: "root", folder: configured };
+	if (checksFromSubpath) return { baseTreeMode: "scoped", folder: configured };
+	if (configured && pathWithinSubpath(configured, subpath)) {
+		return { baseTreeMode: "root", folder: configured };
+	}
+	return { baseTreeMode: "scoped", folder: null };
+}
+
+function resolvePreviewRecipeForScope(
+	checksText: string | null,
+	subpath: string | null,
+	checksFromSubpath: boolean,
+): ReturnType<typeof readSurfacePreviewRecipe> {
+	const read = readSurfacePreviewRecipe(checksText);
+	if (read.kind !== "recipe" || !subpath) return read;
+	if (checksFromSubpath) {
+		return {
+			kind: "recipe",
+			recipe: {
+				...read.recipe,
+				cwd: joinSubpath(subpath, read.recipe.cwd),
+				folder: joinSubpath(subpath, read.recipe.folder),
+			},
+		};
+	}
+	if (pathWithinSubpath(read.recipe.cwd, subpath) || pathWithinSubpath(read.recipe.folder, subpath)) {
+		return read;
+	}
+	return { kind: "none" };
+}
+
 // WHY: Surface previews and publishes compose a full repository tree (including .qorpera/checks.json and non-web source files); filter to servable web assets under the resolved site folder while keeping cryptographic git object verification.
 export async function readSurfaceSiteTree(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<{ files: CodeSiteTreeFile[]; manifestSha256: string }> {
-	const input = closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {
@@ -538,18 +637,38 @@ export async function readSurfaceSiteTree(
 
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
-		const configuredFolder = await readSurfaceChecksSiteFolder(run, rootEntries);
-		return readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, configuredFolder);
+		const scoped = await resolveScopedChecksAndTree(run, tree, rootEntries, subpath);
+		const resolvedFolder = resolveConfiguredSiteFolderForScope(scoped.checksText, subpath, scoped.checksFromSubpath);
+		return readSurfaceSiteTreeInRun(
+			run,
+			repository,
+			resolvedFolder.baseTreeMode === "scoped" ? scoped.scopedTreeId : tree,
+			resolvedFolder.baseTreeMode === "scoped" ? scoped.scopedEntries : rootEntries,
+			resolvedFolder.folder,
+		);
 	});
 }
 
 export async function readSurfacePreviewPlan(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<SurfacePreviewPlan> {
-	const input = closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {
@@ -560,7 +679,8 @@ export async function readSurfacePreviewPlan(
 		}
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
-		const read = readSurfacePreviewRecipe(await readSurfaceChecksText(run, rootEntries));
+		const scoped = await resolveScopedChecksAndTree(run, tree, rootEntries, subpath);
+		const read = resolvePreviewRecipeForScope(scoped.checksText, subpath, scoped.checksFromSubpath);
 		if (read.kind === "none") return { kind: "static" };
 		if (read.kind === "invalid") return read;
 		let cwdEntries = rootEntries;
@@ -584,11 +704,24 @@ export type SurfacePreviewPlanAndTree =
 // WHY: Reads the preview plan and static site tree in one withJob pass so .qorpera/checks.json and the root git tree are never fetched twice.
 export async function readSurfacePreviewPlanAndTree(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string },
+	value: { repository: CloudCodingRepository; tree: string; subpath?: string | null },
 ): Promise<SurfacePreviewPlanAndTree> {
-	const input = closed(value, ["repository", "tree"]);
-	const repository = keptRepositoryOf(input.repository),
+	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
+	let rawRepo: unknown;
+	let tree: unknown;
+	let rawSubpath: unknown;
+	if (hasSubpath) {
+		const input = closed(value, ["repository", "tree", "subpath"]);
+		rawRepo = input.repository;
 		tree = input.tree;
+		rawSubpath = input.subpath;
+	} else {
+		const input = closed(value, ["repository", "tree"]);
+		rawRepo = input.repository;
+		tree = input.tree;
+	}
+	const repository = keptRepositoryOf(rawRepo);
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(rawSubpath) : null;
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	return withJob(job, repository, async (run) => {
 		if (job.preparedKeptArea !== run.area) {
@@ -599,8 +732,8 @@ export async function readSurfacePreviewPlanAndTree(
 		}
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
-		const checksText = await readSurfaceChecksText(run, rootEntries);
-		const read = readSurfacePreviewRecipe(checksText);
+		const scoped = await resolveScopedChecksAndTree(run, tree, rootEntries, subpath);
+		const read = resolvePreviewRecipeForScope(scoped.checksText, subpath, scoped.checksFromSubpath);
 		if (read.kind === "invalid") return read;
 		if (read.kind === "recipe") {
 			let cwdEntries = rootEntries;
@@ -618,8 +751,14 @@ export async function readSurfacePreviewPlanAndTree(
 				return { kind: "build", recipe: read.recipe };
 			}
 		}
-		const configuredFolder = parseChecksSiteFolder(checksText);
-		const siteTree = await readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, configuredFolder);
+		const resolvedFolder = resolveConfiguredSiteFolderForScope(scoped.checksText, subpath, scoped.checksFromSubpath);
+		const siteTree = await readSurfaceSiteTreeInRun(
+			run,
+			repository,
+			resolvedFolder.baseTreeMode === "scoped" ? scoped.scopedTreeId : tree,
+			resolvedFolder.baseTreeMode === "scoped" ? scoped.scopedEntries : rootEntries,
+			resolvedFolder.folder,
+		);
 		return { kind: "static", ...siteTree };
 	});
 }

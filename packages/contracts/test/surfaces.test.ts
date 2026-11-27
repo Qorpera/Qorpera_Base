@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
 	countOpenSurfaceChanges,
+	isSurfaceDefaultBranch,
 	isSurfaceOptionGroupKey,
+	isSurfaceRepositoryKey,
+	isSurfaceRepositorySubpath,
 	isSurfaceSupersedeKey,
 	nextSurfaceSessionLifecycleState,
+	normalizeSurfaceRepositorySubpath,
+	parseCompanyCodeRepositorySummary,
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
 	parseSurfacePreviewFrameState,
@@ -700,5 +705,80 @@ describe("surfaces contracts", () => {
 				changes: [{ ...baseChange, supersedeKey: "BAD!" }],
 			}),
 		).toThrow("session.changes[0].supersedeKey");
+	});
+
+	it("validates repositoryKey, repositorySubpath, defaultBranch, and code repository summaries", () => {
+		expect(isSurfaceRepositoryKey("Qorpera/Qorpera_Base")).toBe(true);
+		expect(isSurfaceRepositoryKey("surfaces/web-app")).toBe(true);
+		expect(isSurfaceRepositoryKey("bad/repo.git")).toBe(false);
+		expect(isSurfaceRepositoryKey("bad/.hidden")).toBe(false);
+		expect(isSurfaceRepositoryKey("acme/site.")).toBe(false);
+		expect(isSurfaceRepositoryKey("acme/site.web")).toBe(true);
+		expect(isSurfaceRepositoryKey("no-slash")).toBe(false);
+		expect(isSurfaceRepositoryKey("a/b/c")).toBe(false);
+
+		expect(normalizeSurfaceRepositorySubpath(" /packages/web/ ")).toBe("packages/web");
+		expect(normalizeSurfaceRepositorySubpath(".")).toBeNull();
+		expect(normalizeSurfaceRepositorySubpath("  ")).toBeNull();
+		expect(isSurfaceRepositorySubpath("packages/web")).toBe(true);
+		expect(isSurfaceRepositorySubpath("apps/site_v2")).toBe(true);
+		expect(isSurfaceRepositorySubpath("../escape")).toBe(false);
+		expect(isSurfaceRepositorySubpath(".qorpera")).toBe(false);
+		expect(isSurfaceRepositorySubpath("/leading")).toBe(false);
+		expect(isSurfaceRepositorySubpath("a//b")).toBe(false);
+
+		expect(isSurfaceDefaultBranch("main")).toBe(true);
+		expect(isSurfaceDefaultBranch("master")).toBe(true);
+		expect(isSurfaceDefaultBranch("release/v2")).toBe(true);
+		expect(isSurfaceDefaultBranch("qorpera")).toBe(false);
+		expect(isSurfaceDefaultBranch("qorpera/coding/abc")).toBe(false);
+		expect(isSurfaceDefaultBranch("Qorpera/internal")).toBe(false);
+		expect(isSurfaceDefaultBranch("bad..branch")).toBe(false);
+		expect(isSurfaceDefaultBranch("bad.lock")).toBe(false);
+		expect(isSurfaceDefaultBranch(".hidden")).toBe(false);
+
+		const repo = parseCompanyCodeRepositorySummary({
+			repositoryKey: "Qorpera/Qorpera_Base",
+			owner: "Qorpera",
+			name: "Qorpera_Base",
+			mainSha: "a".repeat(40),
+			sourceBranch: "master",
+			sourceUrl: "https://github.com/Qorpera/Qorpera_Base",
+			boundSurfaceSlugs: ["web-app"],
+			createdAt: "2026-11-27T10:00:00Z",
+			updatedAt: "2026-11-27T11:00:00Z",
+		});
+		expect(repo.repositoryKey).toBe("Qorpera/Qorpera_Base");
+		expect(repo.sourceBranch).toBe("master");
+		expect(repo.boundSurfaceSlugs).toEqual(["web-app"]);
+
+		const summary = parseSurfaceSummary({
+			id: randomUUID(),
+			slug: "web-app",
+			title: "Web App",
+			group: "products",
+			archetype: "live_build",
+			kind: "web_app",
+			status: "active",
+			icon: "figure:monitor",
+			sourceKind: "code_repo",
+			repositoryKey: "Qorpera/Qorpera_Base",
+			repositorySubpath: "packages/web",
+			defaultBranch: "master",
+			folderRoot: null,
+			siteSlug: "stifteren-web-app",
+			previewMode: "static_site",
+			autoPublish: false,
+			liveUrl: "https://stifteren-web-app.qorpera.site/",
+			hasUnpublishedChanges: false,
+			unpublishedChangeCount: 0,
+			activeSessionCount: 0,
+			runningSessionCount: 0,
+			pendingChangeCount: 0,
+			needsAttentionCount: 0,
+			sortOrder: 10,
+		});
+		expect(summary.repositorySubpath).toBe("packages/web");
+		expect(summary.defaultBranch).toBe("master");
 	});
 });

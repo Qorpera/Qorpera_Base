@@ -468,6 +468,18 @@ export class SurfaceView {
 				if (!surface) return;
 				host.store.noteSiteSlug(surface.id, slug, url);
 			},
+			codeSource: () => {
+				const surface = this.surface;
+				if (!surface || surface.sourceKind !== "code_repo") return undefined;
+				return {
+					repositoryKey: surface.repositoryKey,
+					repositorySubpath: surface.repositorySubpath ?? null,
+					defaultBranch: surface.defaultBranch ?? "main",
+					listRepositories: (signal) => host.store.listCodeRepositories(signal),
+					save: async (input) => Boolean(await host.store.bindSurfaceRepository(surface.id, input)),
+					lastError: () => host.store.state.error,
+				};
+			},
 			signal: lifetimeSignal,
 		});
 		this.#stage.append(this.#canvas, this.#drawer.el);
@@ -1369,6 +1381,9 @@ export class SurfaceView {
 			surface.archetype,
 			look.kind,
 			surface.liveUrl,
+			surface.repositoryKey,
+			surface.repositorySubpath ?? null,
+			surface.defaultBranch ?? "main",
 			surface.unpublishedChangeCount,
 			surface.hasUnpublishedChanges,
 			merging,

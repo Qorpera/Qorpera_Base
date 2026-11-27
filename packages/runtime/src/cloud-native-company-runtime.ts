@@ -2448,6 +2448,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 				briefMarkdown ?? (typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null),
 			fullPrompt: sessionTurnRaw.prompt,
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
+			...(typeof sessionTurnRaw.repositorySubpath === "string"
+				? { repositorySubpath: sessionTurnRaw.repositorySubpath }
+				: {}),
+			...(typeof sessionTurnRaw.defaultBranch === "string" ? { defaultBranch: sessionTurnRaw.defaultBranch } : {}),
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
 			explorationVariantLabel:
 				typeof sessionTurnRaw.explorationVariantLabel === "string" ? sessionTurnRaw.explorationVariantLabel : null,
@@ -2625,6 +2629,10 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			state: sessionTurnRaw.state === "reconciling" ? "reconciling" : "queued",
 			...(sessionTurnRaw.isInternal === true ? { isInternal: true } : {}),
 			repositoryKey: typeof sessionTurnRaw.repositoryKey === "string" ? sessionTurnRaw.repositoryKey : null,
+			...(typeof sessionTurnRaw.repositorySubpath === "string"
+				? { repositorySubpath: sessionTurnRaw.repositorySubpath }
+				: {}),
+			...(typeof sessionTurnRaw.defaultBranch === "string" ? { defaultBranch: sessionTurnRaw.defaultBranch } : {}),
 			folderRoot: typeof sessionTurnRaw.folderRoot === "string" ? sessionTurnRaw.folderRoot : null,
 			...(productFolderRoots.length > 0 ? { productFolderRoots } : {}),
 			briefSummary: typeof sessionTurnRaw.briefSummary === "string" ? sessionTurnRaw.briefSummary : null,

@@ -15,7 +15,7 @@ import {
 	type CodeHostShell,
 	startCodeArea,
 } from "../src/code-host-jobs.ts";
-import { readCodeSiteTree, readSurfaceSiteTree } from "../src/code-host-sites.ts";
+import { readCodeSiteTree, readSurfacePreviewPlan, readSurfaceSiteTree } from "../src/code-host-sites.ts";
 import { ensureSurfaceStarterRepository } from "../src/code-host-surfaces.ts";
 import {
 	SURFACE_CODE_HOST_RPCS,
@@ -1714,6 +1714,141 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 			p_job_id: publishJobId,
 			p_status: "published",
 			p_published_head_sha: freshSha,
+			p_lease_token: publishLease,
+		});
+	});
+
+	it("scopes preview plans, site reads, and publishing to monorepo repositorySubpath and defaultBranch", async () => {
+		const f = await createCodeHostFixture();
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const workerId = randomUUID();
+
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const wt = join(f.code, "worktrees", workerId);
+		await mkdir(join(wt, "packages/web/dist"), { recursive: true });
+		await mkdir(join(wt, "packages/web/.qorpera"), { recursive: true });
+		await mkdir(join(wt, "packages/docs"), { recursive: true });
+		await writeFile(join(wt, "index.html"), "<!doctype html><h1>Repo Root</h1>\n");
+		await writeFile(join(wt, "packages/docs/index.html"), "<!doctype html><h1>Other Package</h1>\n");
+		await writeFile(join(wt, "packages/web/package.json"), JSON.stringify({ name: "web-subapp" }));
+		await writeFile(join(wt, "packages/web/dist/index.html"), "<!doctype html><h1>Web Subapp</h1>\n");
+		await writeFile(join(wt, "packages/web/dist/app.js"), "console.log('subapp');\n");
+		await writeFile(
+			join(wt, "packages/web/.qorpera/checks.json"),
+			JSON.stringify({
+				checks: [{ name: "build", run: "npm run build" }],
+				site: { folder: "dist" },
+				preview: { run: "npm run build", cwd: ".", folder: "dist" },
+			}),
+		);
+		await f.git(wt, "add", ".");
+		await f.git(wt, "commit", "-m", "Add monorepo web subapp");
+		const mainSha = await f.git(wt, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", mainSha);
+		const mainTreeSha = await f.git(join(f.code, "repo.git"), "--git-dir=.", "rev-parse", `${mainSha}^{tree}`);
+
+		const plan = await readSurfacePreviewPlan(f.job, {
+			repository: f.repository,
+			tree: mainTreeSha,
+			subpath: "packages/web",
+		});
+		expect(plan.kind).toBe("build");
+		if (plan.kind === "build") {
+			expect(plan.recipe.cwd).toBe("packages/web");
+			expect(plan.recipe.folder).toBe("packages/web/dist");
+		}
+
+		const subTree = await readSurfaceSiteTree(f.job, {
+			repository: f.repository,
+			tree: mainTreeSha,
+			subpath: "packages/web",
+		});
+		expect(subTree.files.map((file) => file.path).sort()).toEqual(["app.js", "index.html"]);
+		expect(Buffer.from(subTree.files.find((file) => file.path === "index.html")!.content).toString("utf8")).toContain(
+			"Web Subapp",
+		);
+
+		await writeFile(
+			join(wt, "packages/web/.qorpera/checks.json"),
+			JSON.stringify({ checks: [{ name: "lint", run: "true" }], site: { folder: "dist" } }),
+		);
+		await f.git(wt, "add", "packages/web/.qorpera/checks.json");
+		await f.git(wt, "commit", "-m", "Static subapp output");
+		const staticMainSha = await f.git(wt, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", staticMainSha);
+
+		const publishJobId = randomUUID();
+		const publishLease = randomUUID();
+		const uploadedPaths: string[] = [];
+		const uploadedHtml: string[] = [];
+		const rpcCalls: { method: SurfaceCodeHostRpc; args: Record<string, unknown> }[] = [];
+		let claimedOnce = false;
+
+		const worker = new SurfaceCodeHostWorker({
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						if (claimedOnce) return { sessions: [], previews: [], merges: [], publishes: [], automations: [] };
+						claimedOnce = true;
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId: publishJobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: null,
+									leaseToken: publishLease,
+									repositoryKey: "thetaband/website",
+									repositorySubpath: "packages/web",
+									defaultBranch: "master",
+									siteId,
+									payload: { repositoryKey: "thetaband/website" },
+								},
+							],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_version_begin") {
+						return { state: "uploading", versionId: randomUUID(), siteId, siteSlug: "thetaband", listed: false };
+					}
+					if (method === "qorpera_surface_site_version_put") {
+						const parts = (args.p_parts as { parts: { path: string; contentBase64: string }[] }).parts;
+						for (const part of parts) {
+							uploadedPaths.push(part.path);
+							if (part.path === "index.html") {
+								uploadedHtml.push(Buffer.from(part.contentBase64, "base64").toString("utf8"));
+							}
+						}
+						return { state: "ok" };
+					}
+					return { state: "ok" };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const pass = await worker.pass(new AbortController().signal);
+		expect(pass).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(uploadedPaths.filter((p) => !p.includes("qorpera-")).sort()).toEqual(["app.js", "index.html"]);
+		expect(uploadedHtml.join("")).toContain("Web Subapp");
+		const complete = rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish");
+		expect(complete?.args).toMatchObject({
+			p_job_id: publishJobId,
+			p_status: "published",
+			p_published_head_sha: staticMainSha,
 			p_lease_token: publishLease,
 		});
 	});

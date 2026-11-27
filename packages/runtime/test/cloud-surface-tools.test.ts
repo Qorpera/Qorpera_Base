@@ -40,6 +40,7 @@ import {
 	createSteerSurfaceSessionTool,
 } from "../src/cloud-surface-tools.ts";
 import {
+	buildCompanyInterfacesSection,
 	buildSurfaceTurnBrief,
 	parseSurfaceTurnOpenChanges,
 	parseSurfaceTurnResolvedChanges,
@@ -4489,6 +4490,104 @@ describe("cloud surface runtime tools", () => {
 		expect(() => tool.parseArguments({ sessionId: "not-a-uuid", message: "Hi" })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "   " })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "Hi", changeId: "bad" })).toThrow();
+	});
+
+	it("threads repositorySubpath and defaultBranch through propose_surface, turn briefs, and Company Interfaces", async () => {
+		const proposeSurface = vi.fn().mockResolvedValue({
+			id: randomUUID(),
+			slug: "web-app",
+			title: "Web App",
+			status: "active",
+			archetype: "live_build",
+			sourceKind: "code_repo",
+		});
+		const tool = createProposeSurfaceTool({ proposeSurface });
+		const parsed = tool.parseArguments({
+			slug: "web-app",
+			title: "Web App",
+			group: "products",
+			archetype: "live_build",
+			sourceKind: "code_repo",
+			kind: "web_app",
+			repositoryKey: "qorpera/qorpera_base",
+			repositorySubpath: "/packages/web/",
+			defaultBranch: "master",
+		});
+		await tool.execute(parsed, toolContext());
+		expect(proposeSurface).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({
+				repositoryKey: "qorpera/qorpera_base",
+				repositorySubpath: "packages/web",
+				defaultBranch: "master",
+			}),
+			expect.any(Object),
+		);
+		expect(() =>
+			tool.parseArguments({
+				slug: "bad-sub",
+				title: "Bad Sub",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				repositorySubpath: "../escape",
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				slug: "bad-branch",
+				title: "Bad Branch",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				defaultBranch: "bad..branch",
+			}),
+		).toThrow();
+		expect(() =>
+			tool.parseArguments({
+				slug: "reserved-branch",
+				title: "Reserved Branch",
+				group: "products",
+				archetype: "live_build",
+				sourceKind: "code_repo",
+				defaultBranch: "qorpera/coding/abc",
+			}),
+		).toThrow();
+
+		const brief = buildSurfaceTurnBrief({
+			sessionId: randomUUID(),
+			briefMarkdown: null,
+			surfaceSlug: "web-app",
+			surfaceTitle: "Web App",
+			sourceKind: "code_repo",
+			repositoryKey: "qorpera/qorpera_base",
+			repositorySubpath: "packages/web",
+			defaultBranch: "master",
+		});
+		expect(brief).toContain("qorpera/qorpera_base");
+		expect(brief).toContain("packages/web");
+		expect(brief).toContain("Upstream branch: master (local changes land on main)");
+
+		const section = buildCompanyInterfacesSection({
+			interfaces: [
+				{
+					slug: "web-app",
+					title: "Web App",
+					kind: "web_app",
+					archetype: "live_build",
+					sourceKind: "code_repo",
+					repositoryKey: "qorpera/qorpera_base",
+					repositorySubpath: "packages/web",
+					defaultBranch: "master",
+					folderRoot: null,
+					briefSummary: "Main web application",
+					isGlobal: false,
+				},
+			],
+		});
+		expect(section).toContain("qorpera/qorpera_base");
+		expect(section).toContain("packages/web");
+		expect(section).toContain("master");
 	});
 
 	it("forwards supersedeKey, affectedPaths, and diffStats across Surface tools and parses git numstat output", async () => {
