@@ -1969,24 +1969,35 @@ export class SurfaceCodeHostWorker {
 					return { promotedLive: false };
 				}
 				if (verifyLiveFirst) {
-					try {
-						const claim = (await this.#control.call(
-							"qorpera_surface_app_deployment_mark_stopped",
-							{
-								p_deployment_id: deploymentId,
-								p_force: true,
-								p_claim_only: true,
-							},
-							AbortSignal.timeout(5_000),
-						)) as { claimed?: unknown; isLive?: unknown } | null;
-						if (claim?.isLive === true) {
-							return { promotedLive: true };
+					let claim: { claimed?: unknown; isLive?: unknown } | null = null;
+					let claimResolved = false;
+					for (let attempt = 0; attempt < 2; attempt += 1) {
+						try {
+							claim = (await this.#control.call(
+								"qorpera_surface_app_deployment_mark_stopped",
+								{
+									p_deployment_id: deploymentId,
+									p_force: true,
+									p_claim_only: true,
+								},
+								AbortSignal.timeout(5_000),
+							)) as { claimed?: unknown; isLive?: unknown } | null;
+							claimResolved = true;
+							break;
+						} catch {
+							if (attempt === 0) {
+								await new Promise((resolve) => setTimeout(resolve, 250));
+							}
 						}
-						if (claim?.claimed !== true) {
-							await recordUpstreamFallback();
-							return { promotedLive: false };
-						}
-					} catch {
+					}
+					if (!claimResolved) {
+						await recordUpstreamFallback();
+						return { promotedLive: false };
+					}
+					if (claim?.isLive === true) {
+						return { promotedLive: true };
+					}
+					if (claim?.claimed !== true) {
 						await recordUpstreamFallback();
 						return { promotedLive: false };
 					}

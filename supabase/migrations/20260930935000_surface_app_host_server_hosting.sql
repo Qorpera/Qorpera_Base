@@ -268,6 +268,12 @@ begin
 		)
 		returning * into v_dep;
 	else
+		if coalesce(p_promote_live, false)
+			and v_kind in ('server', 'hybrid')
+			and v_dep.state <> 'live'
+			and (v_dep.last_stop_attempt_at is not null or v_dep.state = 'stopped') then
+			raise exception 'DEPLOYMENT_STOP_CLAIMED' using errcode = '55000';
+		end if;
 		update public.qorpera_company_site_deployments
 		set
 			kind = v_kind,
@@ -530,8 +536,19 @@ begin
 			v_is_live := v_dep.state = 'live'
 				or v_dep.id = v_site.live_deployment_id
 				or (v_dep.version_id is not null and v_dep.version_id = v_site.current_version_id);
+			if (not v_is_live) and v_dep.kind in ('server', 'hybrid') and v_dep.state <> 'stopped' then
+				update public.qorpera_company_site_deployments
+				set last_stop_attempt_at = v_now
+				where id = v_dep.id;
+				return jsonb_build_object(
+					'claimed', true,
+					'stopped', false,
+					'isLive', false,
+					'deploymentId', p_deployment_id
+				);
+			end if;
 			return jsonb_build_object(
-				'claimed', (not v_is_live) and v_dep.kind in ('server', 'hybrid') and v_dep.state <> 'stopped',
+				'claimed', false,
 				'stopped', false,
 				'isLive', v_is_live,
 				'deploymentId', p_deployment_id

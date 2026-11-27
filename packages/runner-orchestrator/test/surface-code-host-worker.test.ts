@@ -2295,6 +2295,7 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
 		const appHostCalls: Array<{ url: string; body?: string }> = [];
 		let registerCount = 0;
+		let rollbackClaimAttempts = 0;
 
 		const worker = new SurfaceCodeHostWorker({
 			exportSource: async (_job, input) => ({ sourceDir: input.tree }),
@@ -2370,6 +2371,10 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					}
 					if (method === "qorpera_surface_app_deployment_mark_stopped" && args.p_claim_only === true) {
 						if (args.p_deployment_id === depId) {
+							rollbackClaimAttempts += 1;
+							if (rollbackClaimAttempts === 1) {
+								throw new Error("LOCK_TIMEOUT");
+							}
 							return { claimed: false, stopped: false, isLive: true, deploymentId: depId };
 						}
 						if (args.p_deployment_id === unclaimedDepId) {

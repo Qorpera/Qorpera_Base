@@ -268,6 +268,20 @@ begin
 		(v_stopped ->> 'claimed')::boolean = false and (v_stopped ->> 'isLive')::boolean = true,
 		'forced claim_only reports isLive=true for active live deployment: ' || v_stopped::text
 	);
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, null, true, false, true)', v_dep_prev_1));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'claimed')::boolean = true and (v_stopped ->> 'isLive')::boolean = false,
+		'forced claim_only claims non-live deployment and writes stop-claim marker: ' || v_stopped::text
+	);
+	begin
+		perform pg_temp.sahs_service(format(
+			$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 0, 0, false, true, %L, 'Late promote', 'server', %L, 3000, '/health', 900, 512, 1.0, '127.0.0.1:41002', '{"PORT":"3000"}'::jsonb)$q$,
+			v_surface, repeat('b', 40), repeat('a', 64), v_empty_manifest::text, repeat('2', 40), v_img_prev
+		));
+		raise exception 'expected DEPLOYMENT_STOP_CLAIMED when promoting after forced rollback claim';
+	exception when others then
+		perform pg_temp.sahs_assert(sqlerrm = 'DEPLOYMENT_STOP_CLAIMED', 'Expected DEPLOYMENT_STOP_CLAIMED, got: ' || sqlerrm);
+	end;
 	update public.qorpera_company_site_deployments set last_stop_attempt_at = null where id = v_dep_prev_1;
 
 	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
