@@ -18,6 +18,10 @@ end $$;
 alter table public.qorpera_surface_preview_builds
 	add column defer_settle boolean not null default false;
 
+alter table public.qorpera_company_site_deployments
+	add column updated_at timestamptz not null default now(),
+	add column last_stop_attempt_at timestamptz;
+
 create temp table sahs_before as
 select oid, to_jsonb(p) - 'prosrc' as fields
 from pg_proc p
@@ -71,7 +75,8 @@ create function public.qorpera_surface_site_deployment_register(
 	p_memory_mb integer default 512,
 	p_vcpu_limit numeric default 1.00,
 	p_upstream_addr text default null,
-	p_env_spec jsonb default '{}'::jsonb
+	p_env_spec jsonb default '{}'::jsonb,
+	p_check_public_promote boolean default false
 )
 returns jsonb
 language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
@@ -134,7 +139,9 @@ begin
 	if public.qorpera_company_deleting(v_site.profile_id) then
 		raise exception 'Company is deleting' using errcode = '55000';
 	end if;
-	if coalesce(p_promote_live, false) and v_site.is_public and coalesce(p_has_credential_inputs, false) then
+	if (coalesce(p_promote_live, false) or coalesce(p_check_public_promote, false))
+		and v_site.is_public
+		and coalesce(p_has_credential_inputs, false) then
 		raise exception 'SITE_CONTAINS_CREDENTIAL_INPUTS' using errcode = '22023';
 	end if;
 
@@ -232,7 +239,7 @@ begin
 			site_id, profile_id, version_number, version_id, kind, state,
 			manifest_sha256, manifest_json, file_count, total_bytes,
 			oci_image_ref, app_port, health_path, idle_timeout_sec, memory_mb, vcpu_limit,
-			has_credential_inputs, upstream_addr, change_number, main_sha, env_spec, live_at
+			has_credential_inputs, upstream_addr, change_number, main_sha, env_spec, live_at, updated_at, last_stop_attempt_at
 		) values (
 			v_site.id,
 			v_site.profile_id,
@@ -255,7 +262,9 @@ begin
 			v_version.change,
 			v_version.main_sha,
 			v_env_spec,
-			case when coalesce(p_promote_live, false) or v_site.current_version_id = v_version.id then v_now else null end
+			case when coalesce(p_promote_live, false) or v_site.current_version_id = v_version.id then v_now else null end,
+			v_now,
+			null
 		)
 		returning * into v_dep;
 	else
@@ -287,7 +296,9 @@ begin
 			stopped_at = case
 				when coalesce(p_promote_live, false) or v_site.current_version_id = v_version.id or state = 'stopped' then null
 				else stopped_at
-			end
+			end,
+			updated_at = v_now,
+			last_stop_attempt_at = null
 		where id = v_dep.id
 		returning * into v_dep;
 	end if;
@@ -370,7 +381,10 @@ begin
 	end if;
 
 	update public.qorpera_company_site_deployments
-	set upstream_addr = v_upstream
+	set
+		upstream_addr = v_upstream,
+		updated_at = clock_timestamp(),
+		last_stop_attempt_at = null
 	where id = p_deployment_id
 		and kind in ('server', 'hybrid')
 		and state <> 'stopped'
@@ -412,10 +426,11 @@ begin
 					'profileId', row.profile_id,
 					'upstreamAddr', row.upstream_addr
 				)
-				order by row.created_at asc, row.id asc
+				order by row.sort_at asc, row.id asc
 			)
 			from (
-				select dep.id, dep.site_id, dep.profile_id, dep.upstream_addr, dep.created_at
+				select dep.id, dep.site_id, dep.profile_id, dep.upstream_addr,
+					coalesce(dep.last_stop_attempt_at, dep.updated_at, dep.created_at) as sort_at
 				from public.qorpera_company_site_deployments dep
 				join public.qorpera_company_sites site on site.id = dep.site_id
 				where dep.kind in ('server', 'hybrid')
@@ -423,6 +438,7 @@ begin
 					and dep.upstream_addr is not null
 					and dep.id is distinct from site.live_deployment_id
 					and (dep.version_id is null or dep.version_id is distinct from site.current_version_id)
+					and (dep.last_stop_attempt_at is null or dep.last_stop_attempt_at < v_now - interval '5 minutes')
 					and not exists (
 						select 1
 						from public.qorpera_surface_previews sp
@@ -446,12 +462,15 @@ begin
 					)
 					and (
 						dep.version_id is null
-						or dep.created_at < v_now - interval '2 minutes'
+						or dep.updated_at < v_now - interval '2 minutes'
 						or exists (
 							select 1
 							from public.qorpera_surface_previews sp
 							where sp.site_version_id = dep.version_id
-								and (sp.expires_at <= v_now or sp.status in ('failed', 'conflicted'))
+								and (
+									(sp.expires_at <= v_now and sp.expires_at >= dep.updated_at)
+									or (sp.status in ('failed', 'conflicted') and sp.updated_at >= dep.updated_at)
+								)
 						)
 						or exists (
 							select 1
@@ -459,7 +478,7 @@ begin
 							where sf.site_id = dep.site_id and sf.status = 'archived'
 						)
 					)
-				order by dep.created_at asc, dep.id asc
+				order by coalesce(dep.last_stop_attempt_at, dep.updated_at, dep.created_at) asc, dep.id asc
 				limit v_limit
 			) as row
 		),
@@ -468,12 +487,16 @@ begin
 end $$;
 
 create function public.qorpera_surface_app_deployment_mark_stopped(
-	p_deployment_id uuid
+	p_deployment_id uuid,
+	p_expected_upstream_addr text default null,
+	p_force boolean default false,
+	p_stop_failed boolean default false
 )
 returns jsonb
 language plpgsql volatile security definer set search_path = '' set lock_timeout = '3s' as $$
 declare
 	v_dep public.qorpera_company_site_deployments%rowtype;
+	v_expected_upstream text := nullif(btrim(coalesce(p_expected_upstream_addr, '')), '');
 	v_now timestamptz := clock_timestamp();
 begin
 	if auth.role() is distinct from 'service_role' and session_user not in ('postgres', 'service_role') then
@@ -483,17 +506,84 @@ begin
 		raise exception 'Deployment id is required' using errcode = '22023';
 	end if;
 
+	if coalesce(p_stop_failed, false) then
+		update public.qorpera_company_site_deployments dep
+		set last_stop_attempt_at = v_now
+		from public.qorpera_company_sites site
+		where dep.id = p_deployment_id
+			and site.id = dep.site_id
+			and dep.kind in ('server', 'hybrid')
+			and dep.state <> 'live'
+			and dep.id is distinct from site.live_deployment_id
+			and (v_expected_upstream is null or dep.upstream_addr = v_expected_upstream)
+		returning dep.* into v_dep;
+
+		return jsonb_build_object(
+			'stopped', false,
+			'backedOff', v_dep.id is not null,
+			'deploymentId', p_deployment_id
+		);
+	end if;
+
 	update public.qorpera_company_site_deployments dep
 	set
 		state = 'stopped',
 		upstream_addr = null,
-		stopped_at = coalesce(dep.stopped_at, v_now)
+		stopped_at = coalesce(dep.stopped_at, v_now),
+		updated_at = v_now,
+		last_stop_attempt_at = null
 	from public.qorpera_company_sites site
 	where dep.id = p_deployment_id
 		and site.id = dep.site_id
 		and dep.kind in ('server', 'hybrid')
 		and dep.state <> 'live'
 		and dep.id is distinct from site.live_deployment_id
+		and (
+			coalesce(p_force, false)
+			or (
+				(v_expected_upstream is null or dep.upstream_addr = v_expected_upstream)
+				and (dep.version_id is null or dep.version_id is distinct from site.current_version_id)
+				and not exists (
+					select 1
+					from public.qorpera_surface_previews sp
+					where sp.site_version_id = dep.version_id
+						and sp.status in ('composing', 'building', 'ready')
+						and sp.expires_at > v_now
+				)
+				and not exists (
+					select 1
+					from public.qorpera_company_site_tickets tk
+					where tk.site_id = dep.site_id
+						and tk.version_id = dep.version_id
+						and tk.expires_at > v_now
+				)
+				and not exists (
+					select 1
+					from public.qorpera_company_site_member_passes mp
+					where mp.site_id = dep.site_id
+						and mp.version_id = dep.version_id
+						and mp.expires_at > v_now
+				)
+				and (
+					dep.version_id is null
+					or dep.updated_at < v_now - interval '2 minutes'
+					or exists (
+						select 1
+						from public.qorpera_surface_previews sp
+						where sp.site_version_id = dep.version_id
+							and (
+								(sp.expires_at <= v_now and sp.expires_at >= dep.updated_at)
+								or (sp.status in ('failed', 'conflicted') and sp.updated_at >= dep.updated_at)
+							)
+					)
+					or exists (
+						select 1
+						from public.qorpera_surfaces sf
+						where sf.site_id = dep.site_id and sf.status = 'archived'
+					)
+				)
+			)
+		)
 	returning dep.* into v_dep;
 
 	if v_dep.id is not null then
@@ -581,18 +671,18 @@ $new$		insert into public.qorpera_surface_preview_builds(
 end $$;
 
 revoke all on function
-	public.qorpera_surface_site_deployment_register(uuid, text, text, jsonb, integer, bigint, boolean, boolean, text, text, text, text, integer, text, integer, integer, numeric, text, jsonb),
+	public.qorpera_surface_site_deployment_register(uuid, text, text, jsonb, integer, bigint, boolean, boolean, text, text, text, text, integer, text, integer, integer, numeric, text, jsonb, boolean),
 	public.qorpera_surface_site_deployment_set_upstream(uuid, text),
 	public.qorpera_surface_stale_app_deployments_due(integer),
-	public.qorpera_surface_app_deployment_mark_stopped(uuid),
+	public.qorpera_surface_app_deployment_mark_stopped(uuid, text, boolean, boolean),
 	public.qorpera_surface_request_build(text, uuid, uuid, text, text, jsonb, text, boolean)
 	from public, anon, authenticated, service_role, qorpera_secret_broker, qorpera_site_relay;
 
 grant execute on function
-	public.qorpera_surface_site_deployment_register(uuid, text, text, jsonb, integer, bigint, boolean, boolean, text, text, text, text, integer, text, integer, integer, numeric, text, jsonb),
+	public.qorpera_surface_site_deployment_register(uuid, text, text, jsonb, integer, bigint, boolean, boolean, text, text, text, text, integer, text, integer, integer, numeric, text, jsonb, boolean),
 	public.qorpera_surface_site_deployment_set_upstream(uuid, text),
 	public.qorpera_surface_stale_app_deployments_due(integer),
-	public.qorpera_surface_app_deployment_mark_stopped(uuid),
+	public.qorpera_surface_app_deployment_mark_stopped(uuid, text, boolean, boolean),
 	public.qorpera_surface_request_build(text, uuid, uuid, text, text, jsonb, text, boolean)
 	to service_role;
 

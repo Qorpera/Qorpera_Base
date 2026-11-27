@@ -798,6 +798,7 @@ async function registerSurfaceNativeDeployment(
 		readonly mainSha: string;
 		readonly title: string | null;
 		readonly promoteLive: boolean;
+		readonly checkPublicPromote?: boolean;
 		readonly native: SurfacePreviewBuiltManifest;
 		readonly app?: SurfaceNativeAppDeploymentInput;
 	},
@@ -820,6 +821,9 @@ async function registerSurfaceNativeDeployment(
 		p_promote_live: input.promoteLive,
 		p_has_credential_inputs: input.native.hasCredentialInputs,
 	};
+	if (input.checkPublicPromote === true) {
+		args.p_check_public_promote = true;
+	}
 	if (input.app) {
 		args.p_kind = input.app.kind;
 		args.p_oci_image_ref = input.app.ociImageRef;
@@ -1229,6 +1233,10 @@ export class SurfaceCodeHostWorker {
 				if (signal.aborted) return;
 				if (!entry || typeof entry !== "object") continue;
 				const deploymentId = (entry as { deploymentId?: unknown }).deploymentId;
+				const upstreamAddr =
+					typeof (entry as { upstreamAddr?: unknown }).upstreamAddr === "string"
+						? (entry as { upstreamAddr: string }).upstreamAddr
+						: null;
 				if (typeof deploymentId !== "string" || !isUuid(deploymentId)) continue;
 				try {
 					await stopHostedAppDeployment({
@@ -1240,7 +1248,10 @@ export class SurfaceCodeHostWorker {
 					});
 					await this.#control.call(
 						"qorpera_surface_app_deployment_mark_stopped",
-						{ p_deployment_id: deploymentId },
+						{
+							p_deployment_id: deploymentId,
+							p_expected_upstream_addr: upstreamAddr,
+						},
 						signal,
 					);
 				} catch (error) {
@@ -1250,6 +1261,17 @@ export class SurfaceCodeHostWorker {
 						deploymentId,
 						error: error instanceof Error ? error.message : String(error),
 					});
+					await this.#control
+						.call(
+							"qorpera_surface_app_deployment_mark_stopped",
+							{
+								p_deployment_id: deploymentId,
+								p_expected_upstream_addr: upstreamAddr,
+								p_stop_failed: true,
+							},
+							signal,
+						)
+						.catch(() => undefined);
 				}
 			}
 		} catch (error) {
@@ -1876,7 +1898,7 @@ export class SurfaceCodeHostWorker {
 				envSpec,
 			};
 
-			// WHY: Register non-live first so a failing container startup/health check never replaces the current live deployment.
+			// WHY: Register non-live first (with public-promote refusals pre-checked) so startup failures never replace live.
 			const registered = await registerSurfaceNativeDeployment(
 				this.#control,
 				{
@@ -1885,6 +1907,7 @@ export class SurfaceCodeHostWorker {
 					mainSha: input.commitSha,
 					title: input.title,
 					promoteLive: false,
+					checkPublicPromote: input.promoteLive,
 					native,
 					app: { ...appMeta, upstreamAddr: null },
 				},
@@ -1909,37 +1932,77 @@ export class SurfaceCodeHostWorker {
 				signal,
 			});
 
+			const rollbackDeployedContainer = async (): Promise<void> => {
+				try {
+					await stopHostedAppDeployment({
+						appHostInternalUrl,
+						controlToken: appHostControlToken,
+						deploymentId,
+						fetchImpl: nativeEdge.appHostFetchImpl,
+						signal: AbortSignal.timeout(10_000),
+					});
+					await this.#control
+						.call(
+							"qorpera_surface_app_deployment_mark_stopped",
+							{ p_deployment_id: deploymentId, p_force: true },
+							AbortSignal.timeout(5_000),
+						)
+						.catch(() => undefined);
+				} catch {
+					await this.#control
+						.call(
+							"qorpera_surface_site_deployment_set_upstream",
+							{
+								p_deployment_id: deploymentId,
+								p_upstream_addr: deployed.upstreamAddr,
+							},
+							AbortSignal.timeout(5_000),
+						)
+						.catch(() => undefined);
+				}
+			};
+
 			if (input.promoteLive) {
-				const promoted = await registerSurfaceNativeDeployment(
-					this.#control,
+				try {
+					const promoted = await registerSurfaceNativeDeployment(
+						this.#control,
+						{
+							surfaceId: input.surfaceId,
+							treeSha: input.treeSha,
+							mainSha: input.commitSha,
+							title: input.title,
+							promoteLive: true,
+							native,
+							app: { ...appMeta, upstreamAddr: deployed.upstreamAddr },
+						},
+						signal,
+					);
+					return {
+						yielded: false,
+						versionId: promoted.versionId,
+						siteId: promoted.siteId,
+						siteSlug: promoted.siteSlug,
+						deploymentId: promoted.deploymentId ?? deploymentId,
+					};
+				} catch (error) {
+					await rollbackDeployedContainer();
+					throw error;
+				}
+			}
+
+			try {
+				await this.#control.call(
+					"qorpera_surface_site_deployment_set_upstream",
 					{
-						surfaceId: input.surfaceId,
-						treeSha: input.treeSha,
-						mainSha: input.commitSha,
-						title: input.title,
-						promoteLive: true,
-						native,
-						app: { ...appMeta, upstreamAddr: deployed.upstreamAddr },
+						p_deployment_id: deploymentId,
+						p_upstream_addr: deployed.upstreamAddr,
 					},
 					signal,
 				);
-				return {
-					yielded: false,
-					versionId: promoted.versionId,
-					siteId: promoted.siteId,
-					siteSlug: promoted.siteSlug,
-					deploymentId: promoted.deploymentId ?? deploymentId,
-				};
+			} catch (error) {
+				await rollbackDeployedContainer();
+				throw error;
 			}
-
-			await this.#control.call(
-				"qorpera_surface_site_deployment_set_upstream",
-				{
-					p_deployment_id: deploymentId,
-					p_upstream_addr: deployed.upstreamAddr,
-				},
-				signal,
-			);
 			return {
 				yielded: false,
 				versionId: registered.versionId,
@@ -2125,7 +2188,11 @@ export class SurfaceCodeHostWorker {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
 						const treeData = await this.#readTree(preparedJob, { repository, tree: compositeTreeSha });
-						const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+						const sharedAssets = await readSharedIdentityAssets(
+							preparedJob,
+							preparedJob.signal,
+							productFolderRoots,
+						);
 						return {
 							status: "app",
 							compositeCommitSha,
@@ -2659,7 +2726,11 @@ export class SurfaceCodeHostWorker {
 				if (plan.app.kind === "hybrid" && plan.app.recipe === null) {
 					try {
 						const treeData = await this.#readTree(preparedJob, { repository, tree: resolved.treeSha });
-						const sharedAssets = await readSharedIdentityAssets(preparedJob, preparedJob.signal, productFolderRoots);
+						const sharedAssets = await readSharedIdentityAssets(
+							preparedJob,
+							preparedJob.signal,
+							productFolderRoots,
+						);
 						return {
 							status: "app",
 							headSha: resolved.headSha,
@@ -2673,7 +2744,13 @@ export class SurfaceCodeHostWorker {
 							error instanceof CodeSiteTreeInvalid &&
 							(error.problem.code === "SITE_FOLDER_MISSING" || error.problem.code === "SITE_NO_INDEX")
 						) {
-							return { status: "app", headSha: resolved.headSha, treeSha: resolved.treeSha, app: plan.app, files: [] };
+							return {
+								status: "app",
+								headSha: resolved.headSha,
+								treeSha: resolved.treeSha,
+								app: plan.app,
+								files: [],
+							};
 						}
 						throw error;
 					}

@@ -71,10 +71,10 @@ declare
 	v_function text;
 begin
 	foreach v_function in array array[
-		'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb)',
+		'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)',
 		'public.qorpera_surface_site_deployment_set_upstream(uuid,text)',
 		'public.qorpera_surface_stale_app_deployments_due(integer)',
-		'public.qorpera_surface_app_deployment_mark_stopped(uuid)',
+		'public.qorpera_surface_app_deployment_mark_stopped(uuid,text,boolean,boolean)',
 		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text,boolean)'
 	] loop
 		perform pg_temp.sahs_assert(
@@ -244,12 +244,32 @@ begin
 		'unexpired preview and live deployment are not returned as stale: ' || v_due::text
 	);
 
+	update public.qorpera_company_site_deployments set updated_at = clock_timestamp() - interval '3 minutes' where id = v_dep_prev_1;
 	update public.qorpera_surface_previews set expires_at = clock_timestamp() - interval '1 minute' where id = v_p1;
 	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
 	perform pg_temp.sahs_assert(
 		exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_1)
 		and not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_live_2),
 		'expired preview deployment becomes due for stop while live deployment is excluded: ' || v_due::text
+	);
+
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L, false, true)', v_dep_prev_1, '127.0.0.1:41002'));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'stopped')::boolean = false and (v_stopped ->> 'backedOff')::boolean = true,
+		'failed stop attempt records backoff without marking stopped: ' || v_stopped::text
+	);
+	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
+	perform pg_temp.sahs_assert(
+		not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_1),
+		'backed-off failing stop is temporarily skipped by stale sweep: ' || v_due::text
+	);
+	update public.qorpera_company_site_deployments set last_stop_attempt_at = clock_timestamp() - interval '6 minutes' where id = v_dep_prev_1;
+
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L)', v_dep_prev_1, '127.0.0.1:9999'));
+	perform pg_temp.sahs_assert(
+		(v_stopped ->> 'stopped')::boolean = false
+		and (select state from public.qorpera_company_site_deployments where id = v_dep_prev_1) = 'ready',
+		'mark_stopped refuses mismatched expected upstream_addr'
 	);
 
 	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L)', v_dep_live_2));
@@ -259,7 +279,7 @@ begin
 		'mark_stopped refuses to stop the active live deployment'
 	);
 
-	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L)', v_dep_prev_1));
+	v_stopped := pg_temp.sahs_service(format('select public.qorpera_surface_app_deployment_mark_stopped(%L, %L)', v_dep_prev_1, '127.0.0.1:41002'));
 	perform pg_temp.sahs_assert(
 		(v_stopped ->> 'stopped')::boolean = true
 		and (select state = 'stopped' and upstream_addr is null from public.qorpera_company_site_deployments where id = v_dep_prev_1),
@@ -284,6 +304,23 @@ begin
 		and (select state = 'ready' and upstream_addr = '127.0.0.1:41009' and stopped_at is null from public.qorpera_company_site_deployments where id = v_dep_prev_1),
 		're-registering a previously stopped preview deployment reactivates it cleanly'
 	);
+	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
+	perform pg_temp.sahs_assert(
+		not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_1),
+		'freshly re-registered preview deployment gets a new 2-minute grace window despite old expired preview'
+	);
+
+	begin
+		update public.qorpera_company_sites set is_public = true where id = v_site.id;
+		perform pg_temp.sahs_service(format(
+			$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 1, 64, true, false, %L, null, 'hybrid', %L, 3000, '/health', 900, 512, 1.0, null, '{"PORT":"3000"}'::jsonb, true)$q$,
+			v_surface, repeat('e', 40), repeat('f', 64), v_manifest::text, repeat('4', 40), v_img_2
+		));
+		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS on p_check_public_promote pre-check';
+	exception when others then
+		perform pg_temp.sahs_assert(sqlerrm = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'pre-check refused with: ' || sqlerrm);
+	end;
+	update public.qorpera_company_sites set is_public = false where id = v_site.id;
 
 	update public.qorpera_company_site_deployments set version_id = null where id = v_dep_prev_1;
 	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
