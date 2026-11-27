@@ -31,7 +31,7 @@ Offer "Yes, research it" and "Change the plan". Their yes is a hard blocker by r
 - Then as long as the evidence needs and no longer: plain sentences, a chart or table where figures are compared, a mark after every sentence a source backs.
 - Say what this changes: which page, which line on it, what that line says now.
 - Say how the answer was found: when, how many sources, which kinds count as firm, what was left out.
-- Give the post its theme, a cover picture of its main finding, and the posts it relates to.
+- Give the post its theme, a cover picture of its main finding, and the posts it relates to. Its home is the page's `library`, under that theme: name a new theme there first. No `library` yet: add one on a Research tab.
 
 ## 5. The check, before the founder sees anything
 A second reader who has seen none of your reasoning opens every source again and checks each number and name against it. Its whole brief is the research-check skill (`read_skill`).

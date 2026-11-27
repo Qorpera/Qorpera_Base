@@ -348,14 +348,14 @@ describe("The strategy starter on the layout renderer", () => {
 		const ask = vi.fn<Ask>(async () => undefined);
 		const plan = draw({}, "plan", ask);
 		const tabs = texts(plan.root.querySelectorAll(".studio-tab"));
-		expect(tabs).toEqual(["Grand plan", "Economics", "Market", "Hypotheses", "Breakdowns", "Deep dives"]);
+		expect(tabs).toEqual(["Grand plan", "Economics", "Market", "Hypotheses", "Breakdowns", "Research"]);
 		const empty = [...plan.root.querySelectorAll<HTMLElement>(".studio-tab.is-empty")];
 		expect(empty.map((tab) => tab.dataset.tab)).toEqual([
 			"economics",
 			"market",
 			"hypotheses",
 			"breakdowns",
-			"reports",
+			"research",
 		]);
 		const plays = plan.root.querySelector('[data-block="plays"]')!;
 		expect(text(plays.querySelector(".studio-section-head h2"))).toBe("Competing plays");
@@ -381,7 +381,7 @@ describe("The strategy starter on the layout renderer", () => {
 		const files = strategyFiles();
 		const filled = draw(files, "plan");
 		const empty = [...filled.root.querySelectorAll<HTMLElement>(".studio-tab.is-empty")];
-		expect(empty.map((tab) => tab.dataset.tab)).toEqual(["breakdowns", "reports"]);
+		expect(empty.map((tab) => tab.dataset.tab)).toEqual(["breakdowns", "research"]);
 		expect(filled.root.querySelector('[data-block="plays"] .studio-plays-grid')).not.toBeNull();
 		filled.done();
 		for (const [tab, kind] of STRATEGY_TABS) {
@@ -394,7 +394,7 @@ describe("The strategy starter on the layout renderer", () => {
 		setLanguagePreference("da");
 		const danish = draw({}, "plan");
 		const tabs = texts(danish.root.querySelectorAll(".studio-tab"));
-		expect(tabs).toEqual(["Stor plan", "Økonomi", "Marked", "Hypoteser", "Gennemgange", "Dybdegående"]);
+		expect(tabs).toEqual(["Stor plan", "Økonomi", "Marked", "Hypoteser", "Gennemgange", "Research"]);
 		const lead = text(danish.root.querySelector(".studio-strategy-empty strong"));
 		expect(lead).toBe("Ingen strategier på bordet endnu");
 		danish.done();

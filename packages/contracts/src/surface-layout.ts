@@ -1,3 +1,8 @@
+import {
+	SURFACE_LIBRARY_DEFAULT_FILE,
+	SURFACE_LIBRARY_DEFAULT_MATCH,
+	SURFACE_LIBRARY_FORMAT,
+} from "./surface-library.ts";
 import { SURFACE_REPORT_FORMAT } from "./surface-report.ts";
 import { WireValueError } from "./wire-values.ts";
 
@@ -99,6 +104,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"landscape",
 	"chart",
 	"report",
+	"library",
 	"explainer",
 	"artifacts",
 	"module",
@@ -296,6 +302,13 @@ export interface SurfaceReportMatchBlock extends SurfaceBlockBase {
 
 export type SurfaceReportBlock = SurfaceReportFileBlock | SurfaceReportMatchBlock;
 
+export interface SurfaceLibraryBlock extends SurfaceBlockBase {
+	readonly type: "library";
+	readonly from: SurfaceSource;
+	readonly match: string;
+	readonly heading?: string;
+}
+
 export interface SurfaceExplainerFileBlock extends SurfaceBlockBase {
 	readonly type: "explainer";
 	readonly from: string;
@@ -341,6 +354,7 @@ export type SurfaceBlock =
 	| SurfaceLandscapeBlock
 	| SurfaceChartBlock
 	| SurfaceReportBlock
+	| SurfaceLibraryBlock
 	| SurfaceExplainerBlock
 	| SurfaceArtifactsBlock
 	| SurfaceModuleBlock;
@@ -580,6 +594,16 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 				accepts: [".json", ".html", ".htm", ".pdf"],
 			},
 			{ name: "match", kind: "glob", required: false, note: "matching posts" },
+			HEADING_FIELD,
+		],
+	},
+	{
+		type: "library",
+		family: "library",
+		summary: "the one home of research posts: themes, a featured post, all posts, a page per theme and post",
+		fields: [
+			{ name: "from", kind: "source", required: false, note: SURFACE_LIBRARY_DEFAULT_FILE },
+			{ name: "match", kind: "glob", required: false, note: SURFACE_LIBRARY_DEFAULT_MATCH },
 			HEADING_FIELD,
 		],
 	},
@@ -1252,6 +1276,10 @@ function finishBlock(type: SurfaceBlockType, block: Record<string, unknown>, lab
 			block.skip ??= [];
 		}
 	}
+	if (type === "library") {
+		block.from ??= SURFACE_LIBRARY_DEFAULT_FILE;
+		block.match ??= SURFACE_LIBRARY_DEFAULT_MATCH;
+	}
 	if (type === "report" && (block.from !== undefined) === (block.match !== undefined)) {
 		fail(label, "report needs from or match, exactly one of them");
 	}
@@ -1781,7 +1809,6 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					from: "plays.json",
 					heading: "Competing plays",
 				},
-				{ type: "report", id: "plan-posts", match: "plan/**/*.report.json", heading: "Briefings & posts" },
 				{
 					type: "artifacts",
 					id: "sketches",
@@ -1812,7 +1839,6 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					heading: "How the money works",
 				},
 				{ type: "economics", id: "model", from: "economics.json", heading: "Unit economics" },
-				{ type: "report", id: "economics-posts", match: "economics/**/*.report.json", heading: "Financial memos" },
 			],
 		},
 		{
@@ -1826,7 +1852,6 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 					from: ["landscape.json", "market.json"],
 					heading: "Competitive landscape",
 				},
-				{ type: "report", id: "market-reports", match: "market/**/*.report.json", heading: "Market research" },
 				{
 					type: "artifacts",
 					id: "market-visuals",
@@ -1853,18 +1878,19 @@ const STRATEGY_STARTER_LAYOUT: SurfaceLayout = {
 			title: "Breakdowns",
 			blocks: [
 				{ type: "explainer", id: "breakdowns", match: "breakdowns/**/scenes.js", heading: "Video breakdowns" },
-				{
-					type: "report",
-					id: "breakdown-posts",
-					match: "breakdowns/**/*.report.json",
-					heading: "Written breakdowns",
-				},
 			],
 		},
 		{
-			id: "reports",
-			title: "Deep dives",
-			blocks: [{ type: "report", id: "deep-dives", match: "**/*.report.json" }],
+			id: "research",
+			title: "Research",
+			blocks: [
+				{
+					type: "library",
+					id: "library",
+					from: SURFACE_LIBRARY_DEFAULT_FILE,
+					match: SURFACE_LIBRARY_DEFAULT_MATCH,
+				},
+			],
 		},
 	],
 };
@@ -2017,7 +2043,7 @@ const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DE
 const SURFACE_TOKENS_FORMAT =
 	'The company look is /identity/tokens.json: {"colors":{"<name>":"#rrggbb"},"typography":{"<role>":"<family>"},"radii":{"<name>":"<length>"},"spacing":{"<name>":"<length>"}}. /identity/tokens.css is compiled from it (--q-color-*, --q-font-*, --q-radius-*, --q-space-*); never write it by hand.';
 
-const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>> = {
+const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string | readonly string[]>>> = {
 	stage_3d: SURFACE_OBJECT_FORMAT,
 	palette: SURFACE_TOKENS_FORMAT,
 	type_specimen: SURFACE_TOKENS_FORMAT,
@@ -2027,6 +2053,7 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	landscape: SURFACE_LANDSCAPE_FORMAT,
 	chart: SURFACE_CHART_FORMAT,
 	report: SURFACE_REPORT_FORMAT,
+	library: [SURFACE_REPORT_FORMAT, SURFACE_LIBRARY_FORMAT],
 	module: SURFACE_TOKENS_FORMAT,
 };
 
@@ -2042,8 +2069,8 @@ export function describeSurfaceFormats(layout: SurfaceLayoutRead): string[] {
 	);
 	const notes: string[] = [];
 	for (const type of SURFACE_BLOCK_TYPES) {
-		const note = SURFACE_BLOCK_FORMATS[type];
-		if (note && used.has(type) && !notes.includes(note)) notes.push(note);
+		if (!used.has(type)) continue;
+		for (const note of [SURFACE_BLOCK_FORMATS[type] ?? []].flat()) if (!notes.includes(note)) notes.push(note);
 	}
 	return [...notes, SURFACE_ASK_FORMAT, SURFACE_COLORS_FORMAT];
 }

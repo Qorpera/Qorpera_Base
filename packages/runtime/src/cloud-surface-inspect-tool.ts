@@ -15,6 +15,7 @@ import {
 	parseStrategyPlaysDocument,
 	parseSurfaceChartDocument,
 	readSurfaceLayout,
+	readSurfaceLibrary,
 	resolveSurfaceSource,
 	SURFACE_LAYOUT_PATH,
 	type SurfaceAskSource,
@@ -31,6 +32,7 @@ import {
 	surfaceCompanyPath,
 	surfaceGlobMatches,
 	surfaceLegacyModelKey,
+	surfaceLibraryThemeKey,
 } from "@qorpera/contracts";
 import { decodeInspectImageOutput } from "./cloud-coding-image-inspect.ts";
 import { cloudControlPause } from "./cloud-control-errors.ts";
@@ -1554,6 +1556,53 @@ function renderBlockHtml(
 				})
 				.join("");
 			return wrap(title, `<div class="pv-grid">${items}</div>`, true);
+		}
+		case "library": {
+			const title = block.heading ?? "Research";
+			const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
+			const read = reader.readSource(block.from);
+			const library = readSurfaceLibrary(read.found ? read.value : undefined);
+			const posts = Object.keys(snapshot.files)
+				.filter(
+					(p) =>
+						p.startsWith(rootPrefix) &&
+						/\.report\.json$/i.test(p) &&
+						surfaceGlobMatches(block.match, block.match.startsWith("/") ? `/${p}` : p.slice(rootPrefix.length)),
+				)
+				.sort()
+				.flatMap((p) => {
+					try {
+						const parsed = JSON.parse(snapshot.files[p] ?? "") as Record<string, unknown>;
+						const headline = typeof parsed.headline === "string" ? parsed.headline : (p.split("/").pop() ?? p);
+						return [{ headline, theme: typeof parsed.theme === "string" ? parsed.theme.trim() : "" }];
+					} catch {
+						return [];
+					}
+				});
+			const themes = new Map(library.themes.map((theme) => [surfaceLibraryThemeKey(theme.name), theme.name]));
+			for (const post of posts)
+				if (post.theme && !themes.has(surfaceLibraryThemeKey(post.theme)))
+					themes.set(surfaceLibraryThemeKey(post.theme), post.theme);
+			if (posts.length === 0 && themes.size === 0)
+				return wrap(title, `<div class="pv-empty">No research posts staged yet</div>`, false);
+			const pills = [...themes]
+				.map(([key, name]) => {
+					const count = posts.filter((post) => surfaceLibraryThemeKey(post.theme) === key).length;
+					return `<span class="pv-pill">${escapeHtml(name)} · ${count === 0 ? "no post yet" : count === 1 ? "1 post" : `${count} posts`}</span>`;
+				})
+				.join("");
+			const cards = posts
+				.slice(0, 12)
+				.map(
+					(post) =>
+						`<article class="pv-card"><strong>${escapeHtml(post.headline)}</strong>${post.theme ? `<p>${escapeHtml(post.theme)}</p>` : ""}</article>`,
+				)
+				.join("");
+			return wrap(
+				title,
+				`${library.line ? `<p class="pv-sub">${escapeHtml(library.line)}</p>` : ""}<div class="pv-pills">${pills}</div><div class="pv-grid">${cards}</div>`,
+				posts.length > 0,
+			);
 		}
 		case "explainer": {
 			const title = block.heading ?? "Explainer";

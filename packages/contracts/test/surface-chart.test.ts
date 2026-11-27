@@ -168,7 +168,7 @@ describe("parseSurfaceChartDocument", () => {
 		expect(SURFACE_CHART_KINDS).toHaveLength(9);
 	});
 
-	it("accepts chart blocks in SurfaceLayout and keeps describeSurfaceBlocks within 3584 bytes", () => {
+	it("accepts chart blocks in SurfaceLayout and keeps describeSurfaceBlocks within 3840 bytes", () => {
 		expect(SURFACE_BLOCK_TYPES).toContain("chart");
 		const parsed = parseSurfaceLayout({
 			schema: SURFACE_LAYOUT_SCHEMA,
@@ -197,6 +197,6 @@ describe("parseSurfaceChartDocument", () => {
 			caption: "Verified ledger + forecast",
 			height: 360,
 		});
-		expect(Buffer.byteLength(describeSurfaceBlocks(), "utf8")).toBeLessThanOrEqual(3584);
+		expect(Buffer.byteLength(describeSurfaceBlocks(), "utf8")).toBeLessThanOrEqual(3840);
 	});
 });

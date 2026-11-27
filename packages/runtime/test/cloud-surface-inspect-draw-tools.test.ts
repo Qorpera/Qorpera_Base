@@ -721,6 +721,64 @@ describe("Studio visual inspect & draw tools", () => {
 		}
 	});
 
+	it("previews the Strategy starter's Research tab: the library's line, its themes with their posts, and each post", () => {
+		const post = (headline: string, theme?: string) => JSON.stringify({ headline, ...(theme ? { theme } : {}) });
+		const library = JSON.stringify({
+			line: "What we have found out, and what we still have to.",
+			themes: [{ name: "Hardware" }, { name: "Hair" }],
+		});
+		const snapshot = {
+			surfaceTitle: "Strategy",
+			folderRoot: "surfaces/strategy",
+			starter: "strategy" as const,
+			files: {
+				"surfaces/strategy/research.json": library,
+				"surfaces/strategy/research/1-band.report.json": post(
+					"Nothing on sale does what our band must",
+					"hardware",
+				),
+				"surfaces/strategy/research/2-maker.report.json": post("Our name makes us its maker", "Hardware"),
+				"surfaces/strategy/research/3-prepay.report.json": post("No money before it ships", "Selling"),
+				"surfaces/strategy/plan/old.report.json": post("Where <299> kr goes"),
+				"surfaces/strategy/research/notes.json": post("Not a post"),
+				"surfaces/other/research/4-elsewhere.report.json": post("Another interface's post", "Hardware"),
+			},
+			binaries: {},
+		};
+		const rendered = renderStudioPreviewHtml({ snapshot, tabId: "research", theme: "light" });
+		expect(rendered.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: true }]);
+		expect(rendered.warnings).toEqual([]);
+		expect(rendered.html).toContain('<p class="pv-sub">What we have found out, and what we still have to.</p>');
+		expect([...rendered.html.matchAll(/<span class="pv-pill">([^<]*)<\/span>/g)].map((match) => match[1])).toEqual([
+			"Hardware · 2 posts",
+			"Hair · no post yet",
+			"Selling · 1 post",
+		]);
+		expect(
+			[...rendered.html.matchAll(/<article class="pv-card"><strong>([^<]*)<\/strong>/g)].map((match) => match[1]),
+		).toEqual([
+			"Where &#60;299&#62; kr goes",
+			"Nothing on sale does what our band must",
+			"Our name makes us its maker",
+			"No money before it ships",
+		]);
+
+		const empty = renderStudioPreviewHtml({
+			snapshot: { ...snapshot, files: {} },
+			tabId: "research",
+			theme: "light",
+		});
+		expect(empty.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: false }]);
+		expect(empty.html).toContain("No research posts staged yet");
+		const named = renderStudioPreviewHtml({
+			snapshot: { ...snapshot, files: { "surfaces/strategy/research.json": library } },
+			tabId: "research",
+			theme: "light",
+		});
+		expect(named.renderedBlocks).toEqual([{ type: "library", heading: "Research", filled: false }]);
+		expect(named.html).toContain("Hair · no post yet");
+	});
+
 	it("inspect_surface renders Studio preview HTML, bounds commands under 16KB even with 2MB PNGs, and reports scroll pagination", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-test-"));
 		try {

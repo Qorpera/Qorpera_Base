@@ -16,6 +16,7 @@ export * from "./surface-chart.ts";
 export * from "./surface-colors.ts";
 export * from "./surface-economics.ts";
 export * from "./surface-layout.ts";
+export * from "./surface-library.ts";
 export * from "./surface-merge.ts";
 export * from "./surface-report.ts";
 export * from "./surface-shared-assets.ts";
