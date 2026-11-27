@@ -1084,7 +1084,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect(columnTexts(["Total", 12, ""], true).numeric).toBe(false);
 		expect(columnTexts([12, "", null], true).numeric).toBe(true);
 		expect(columnTexts([null, ""], true).numeric).toBe(false);
-		expect(columnTexts([8088, 12536.5], false).texts).toEqual(["8,088.00", "12,536.50"]);
+		expect(columnTexts([8088, 12536.5], false).texts).toEqual(["8,088.0", "12,536.5"]);
 		expect(columnTexts([8088, 12536, "12.5"], false)).toEqual({
 			texts: ["8088", "12536", undefined],
 			numeric: false,
@@ -1130,7 +1130,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 						[`${ROOT}/plan.json`]: JSON.stringify({
 							months: [
 								{ month: "Jan", year: 2027, target: 8088 },
-								{ month: "Feb", year: 2027, target: 12536.5 },
+								{ month: "Feb", year: 2027, target: 12536.25 },
 							],
 						}),
 					},
@@ -1167,7 +1167,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 			[...plan.querySelectorAll("tbody tr")].map((row) => [...row.children].map((cell) => cell.textContent)),
 		).toEqual([
 			["Jan", "2027", "8,088.00"],
-			["Feb", "2027", "12,536.50"],
+			["Feb", "2027", "12,536.25"],
 		]);
 		life.abort();
 	});
