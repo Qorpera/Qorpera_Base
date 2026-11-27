@@ -65,14 +65,20 @@ const ANALYTICS: Page = { surfaceSlug: "numbers", surfaceKind: "dashboard", surf
 const BY_SLUG: Page = { surfaceSlug: "analytics", surfaceKind: "custom", surfaceIcon: "star" };
 const CUSTOM: Page = { surfaceSlug: "field-notes", surfaceKind: "custom", surfaceIcon: "star" };
 const STRATEGY: Page = { surfaceSlug: "strategy", surfaceKind: "strategy", surfaceIcon: "figure:lighthouse" };
+const PRODUCT: Page = { surfaceSlug: "sandstone", surfaceKind: "product", surfaceIcon: "box" };
+const REPORT: Page = { surfaceSlug: "journal", surfaceKind: "report", surfaceIcon: "book" };
 const RECONCILING: Page = { ...ANALYTICS, reconciling: true };
+const CUSTOM_RECONCILING: Page = { ...CUSTOM, reconciling: true };
 
 const CASES: readonly (readonly [string, Page, boolean])[] = [
 	["an Analytics page", ANALYTICS, true],
 	["a page named analytics", BY_SLUG, true],
-	["a Custom page", CUSTOM, false],
-	["Strategy", STRATEGY, false],
+	["a Custom page, for its numbers tab", CUSTOM, true],
+	["Strategy, for its numbers tab", STRATEGY, true],
+	["a Product page, for its numbers tab", PRODUCT, true],
+	["a reading page, which has no layout", REPORT, false],
 	["an Analytics page's background reconciliation", RECONCILING, false],
+	["a Custom page's background reconciliation", CUSTOM_RECONCILING, false],
 ];
 
 describe("which Studio sessions may save a named question", () => {

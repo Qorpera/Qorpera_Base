@@ -790,4 +790,98 @@ describe("2D studio playback in the shell", () => {
 		expect(canvas.width).toBe(0);
 		expect(canvas.height).toBe(0);
 	});
+	it("paints and revives cleanly after the artwork cache evicts and zeroes earlier source canvases", async () => {
+		const rendered = new Map<string, HTMLCanvasElement>();
+		const evictingArtwork: FigureArtwork = {
+			faces: artwork.faces,
+			prepare: vi.fn(),
+			drawable: (id, color) => {
+				const key = id + color;
+				const hit = rendered.get(key);
+				if (hit) {
+					rendered.delete(key);
+					rendered.set(key, hit);
+					return hit;
+				}
+				if (rendered.size >= 48) {
+					const oldest = rendered.keys().next().value;
+					if (oldest !== undefined) {
+						const evicted = rendered.get(oldest);
+						rendered.delete(oldest);
+						if (evicted) evicted.width = evicted.height = 0;
+					}
+				}
+				const canvas = document.createElement("canvas");
+				canvas.width = canvas.height = 512;
+				rendered.set(key, canvas);
+				return canvas;
+			},
+			colorOnDark: artwork.colorOnDark,
+		};
+		vi.mocked(context.drawImage!).mockImplementation((image: CanvasImageSource) => {
+			if (image instanceof HTMLCanvasElement && (image.width === 0 || image.height === 0)) {
+				throw new DOMException(
+					"The image argument is a canvas element with a width or height of 0.",
+					"InvalidStateError",
+				);
+			}
+		});
+		try {
+			const targetColor = "#e22538";
+			const firstHost = document.createElement("span");
+			document.body.append(firstHost);
+			const firstRig = mountFigureMotion(firstHost, "crown", targetColor, evictingArtwork, {
+				identity: "evicted-first",
+			});
+			await settle();
+			const targetSource = rendered.get(`crown${targetColor}`)!;
+			expect(targetSource.width).toBe(512);
+			firstRig.dispose();
+			firstHost.remove();
+			for (let idx = 1; idx <= 25; idx++) {
+				const color = `#10${String(idx).padStart(4, "0")}`;
+				const host = document.createElement("span");
+				document.body.append(host);
+				const rig = mountFigureMotion(host, "crown", color, evictingArtwork, { identity: `evict-churn-${idx}` });
+				await settle();
+				rig.dispose();
+				host.remove();
+			}
+			expect(targetSource.width).toBe(0);
+			expect(targetSource.height).toBe(0);
+			vi.stubGlobal("devicePixelRatio", 2);
+			const revivedHost = document.createElement("span");
+			document.body.append(revivedHost);
+			mounted.push(
+				mountFigureMotion(revivedHost, "crown", targetColor, evictingArtwork, { identity: "evicted-revived" }),
+			);
+			expect(revivedHost.querySelector("canvas")!.hidden).toBe(false);
+			expect(revivedHost.dataset.motionUnavailable).toBeUndefined();
+		} finally {
+			vi.mocked(context.drawImage!).mockReset();
+		}
+	});
+	it("falls back without throwing when synchronous initial paint fails", async () => {
+		const color = "#87674c";
+		const firstHost = document.createElement("span");
+		document.body.append(firstHost);
+		const firstRig = mountFigureMotion(firstHost, "crown", color, artwork, { identity: "sync-fail-warm" });
+		await settle();
+		firstRig.dispose();
+		firstHost.remove();
+		vi.mocked(context.drawImage!).mockImplementationOnce(() => {
+			throw new DOMException("Canvas draw failed", "InvalidStateError");
+		});
+		const host = document.createElement("span");
+		document.body.append(host);
+		const rig = mountFigureMotion(host, "crown", color, artwork, { identity: "sync-fail-remount" });
+		mounted.push(rig);
+		const canvas = host.querySelector("canvas")!;
+		expect(canvas.hidden).toBe(true);
+		expect(canvas.width).toBe(0);
+		expect(canvas.height).toBe(0);
+		expect(host.querySelector<HTMLImageElement>(".figure-fallback")!.hidden).toBe(false);
+		expect(host.dataset.motionUnavailable).toBe("true");
+		expect(() => rig.dispose()).not.toThrow();
+	});
 });

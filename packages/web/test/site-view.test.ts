@@ -908,3 +908,60 @@ describe("the site door", () => {
 		expect(parent.postMessage).toHaveBeenCalledTimes(6);
 	});
 });
+
+describe("site view parking and reload recovery", () => {
+	it("aborts in-flight open on park, reloads with a fresh pass on activate, and recovers from a reloaded door frame", async () => {
+		const { view, host } = open();
+		await settle();
+		door();
+		shown();
+		const glass = document.querySelector(".site-glass")!;
+		expect(glass.classList.contains("is-shown")).toBe(true);
+
+		view.park();
+		expect(glass.classList.contains("is-shown")).toBe(false);
+		expect(glass.classList.contains("is-opening")).toBe(false);
+		expect(frame().getAttribute("src")).toBeNull();
+
+		view.activate();
+		expect(glass.classList.contains("is-opening")).toBe(true);
+		await settle();
+		expect(host.pass).toHaveBeenCalledTimes(2);
+		expect(frame().getAttribute("src")).toBe(SITE_DOOR_URL);
+		door();
+		shown();
+		expect(glass.classList.contains("is-shown")).toBe(true);
+
+		const reloadedWindow = { postMessage: vi.fn() } as unknown as Window;
+		Object.defineProperty(frame(), "contentWindow", { configurable: true, get: () => reloadedWindow });
+		const readyEvent = new MessageEvent("message", { data: { type: SITE_DOOR_READY }, origin: location.origin });
+		Object.defineProperty(readyEvent, "source", { value: reloadedWindow });
+		window.dispatchEvent(readyEvent);
+		expect(glass.classList.contains("is-shown")).toBe(false);
+		expect(glass.classList.contains("is-opening")).toBe(true);
+		await settle();
+		expect(host.pass).toHaveBeenCalledTimes(3);
+	});
+
+	it("aborts an in-flight pass request when parked before pass resolution", async () => {
+		const pending = deferred<SiteMemberPass>();
+		let aborted = false;
+		const { view } = open(
+			{},
+			{
+				pass: vi.fn((_site, signal) => {
+					signal.addEventListener("abort", () => {
+						aborted = true;
+					});
+					return pending.promise;
+				}),
+			},
+		);
+		view.park();
+		expect(aborted).toBe(true);
+		pending.resolve(pass(0));
+		await settle();
+		expect(frame().getAttribute("src")).toBeNull();
+		expect(posted).toEqual([]);
+	});
+});

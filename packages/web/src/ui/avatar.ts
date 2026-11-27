@@ -282,7 +282,11 @@ export function reviveFigures(root: ParentNode): void {
 		const spec = parked.get(host);
 		if (!spec) return;
 		parked.delete(host);
-		mountFigure(host, spec.figure, spec.color, spec.options);
+		try {
+			mountFigure(host, spec.figure, spec.color, spec.options);
+		} catch (error) {
+			console.error("figure revive failed:", error);
+		}
 	};
 	if (root instanceof HTMLElement && root.dataset.figureDisposed === "true") reviveOne(root);
 	for (const host of root.querySelectorAll<HTMLElement>("[data-figure-disposed]")) reviveOne(host);

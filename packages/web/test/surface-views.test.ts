@@ -1414,7 +1414,8 @@ describe("the surface page", () => {
 			view.park();
 			await vi.advanceTimersByTimeAsync(15_000);
 			expect(mintPreviewPass).toHaveBeenCalledTimes(1);
-			expect(view.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).not.toBeNull();
+			expect(view.el.querySelector("iframe.surface-frame")).toBeNull();
+			expect(view.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).toBeNull();
 
 			view.activate();
 			await vi.advanceTimersByTimeAsync(50);
@@ -2962,5 +2963,226 @@ describe("removing an agent from the Changes list", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+
+	it("reloads a detached warm preview SurfaceView with a fresh pass instead of showing a blank frame", async () => {
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			return {
+				previewId,
+				doorActionUrl: `https://thetaband--p0.qorpera.site/__qorpera/member`,
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const ws = () =>
+			workspace([session(["staged"])], {
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({
+						previewId: PREVIEW_IDS[0],
+						doorActionUrl: "https://thetaband--p0.qorpera.site/__qorpera/member",
+						memberPass: null,
+					}),
+					compareFrames: [],
+				},
+			});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws()), mintPreviewPass }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		const unsub = store.store.subscribe(() => view.update());
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		expect(mintPreviewPass).toHaveBeenCalledTimes(1);
+		const firstFrame = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(firstFrame).not.toBeNull();
+		const firstPosted = spyFrameMessages(firstFrame);
+		sendFromFrame(firstFrame, { type: SITE_DOOR_READY });
+		expect(firstPosted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: `${VALID_PASS.slice(0, -1)}1` });
+		sendFromFrame(firstFrame, { type: SITE_DOOR_SHOWN });
+		expect(view.el.querySelector("iframe.is-shown")).toBe(firstFrame);
+		expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
+
+		view.park();
+		view.el.remove();
+
+		document.body.append(view.el);
+		expect(view.el.querySelector("iframe.is-shown")).toBeNull();
+		view.activate();
+		expect(view.el.querySelector("iframe.is-shown")).toBeNull();
+		expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(false);
+		await flush();
+		view.update();
+
+		expect(mintPreviewPass).toHaveBeenCalledTimes(2);
+		const secondFrame = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(secondFrame).not.toBeNull();
+		expect(secondFrame).not.toBe(firstFrame);
+		const secondPosted = spyFrameMessages(secondFrame);
+		sendFromFrame(secondFrame, { type: SITE_DOOR_READY });
+		expect(secondPosted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: `${VALID_PASS.slice(0, -1)}2` });
+		sendFromFrame(secondFrame, { type: SITE_DOOR_SHOWN });
+		expect(view.el.querySelector("iframe.is-shown")).toBe(secondFrame);
+		expect(view.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(true);
+
+		unsub();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("ignores null-source messages while detached and recovers on rapid mid-handshake re-activation", async () => {
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			return {
+				previewId,
+				doorActionUrl: "https://thetaband--p0.qorpera.site/__qorpera/member",
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const ws = () =>
+			workspace([session(["staged"])], {
+				previewState: {
+					surfaceId: SURFACE,
+					mode: "single",
+					primary: previewFrame({
+						previewId: PREVIEW_IDS[0],
+						doorActionUrl: "https://thetaband--p0.qorpera.site/__qorpera/member",
+						memberPass: null,
+					}),
+					compareFrames: [],
+				},
+			});
+		const store = storeWith(fakeClient({ getSurfaceWorkspace: vi.fn(async () => ws()), mintPreviewPass }));
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "website");
+		const unsub = store.store.subscribe(() => view.update());
+		document.body.append(view.el);
+		await flush();
+		view.update();
+
+		const firstFrame = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(firstFrame);
+		sendFromFrame(firstFrame, { type: SITE_DOOR_READY });
+
+		view.park();
+		view.el.remove();
+		const nullEvent = new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, origin: location.origin });
+		Object.defineProperty(nullEvent, "source", { value: null });
+		window.dispatchEvent(nullEvent);
+		expect(view.el.querySelector("iframe.is-shown")).toBeNull();
+
+		document.body.append(view.el);
+		view.activate();
+		await flush();
+		view.update();
+
+		expect(mintPreviewPass).toHaveBeenCalledTimes(2);
+		const recovered = view.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		expect(recovered).not.toBeNull();
+		const posted = spyFrameMessages(recovered);
+		sendFromFrame(recovered, { type: SITE_DOOR_READY });
+		expect(posted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: `${VALID_PASS.slice(0, -1)}2` });
+		sendFromFrame(recovered, { type: SITE_DOOR_SHOWN });
+		expect(view.el.querySelector("iframe.is-shown")).toBe(recovered);
+
+		unsub();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("recovers SurfaceDoorStage when an active or sent staging door reloads and ignores stale remint failures", async () => {
+		const consumed = new Set<string>();
+		const remints: { previewId: string; stalePass?: string }[] = [];
+		const remintDeferreds: ReturnType<typeof deferred<boolean>>[] = [];
+		const controller = new AbortController();
+		const stage = new SurfaceDoorStage(controller.signal, {
+			isPassUsable: (_previewId, pass) => !consumed.has(pass),
+			onPassSent: (_previewId, pass) => consumed.add(pass),
+			onNeedFreshPass: (previewId, stalePass) => {
+				remints.push({ previewId, stalePass });
+				const d = deferred<boolean>();
+				remintDeferreds.push(d);
+				return d.promise;
+			},
+		});
+		document.body.append(stage.el);
+
+		const pass1 = VALID_PASS;
+		const pass2 = `${VALID_PASS.slice(0, -1)}2`;
+		const pass3 = `${VALID_PASS.slice(0, -1)}3`;
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass1 }), "Preview");
+		const first = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		spyFrameMessages(first);
+		sendFromFrame(first, { type: SITE_DOOR_READY });
+		sendFromFrame(first, { type: SITE_DOOR_SHOWN });
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(first);
+
+		sendFromFrame(first, { type: SITE_DOOR_READY });
+		expect(stage.el.querySelector("iframe.is-shown")).toBeNull();
+		expect(stage.el.querySelector<HTMLElement>(".surface-frame.is-waiting")?.hidden).toBe(false);
+		expect(remints).toHaveLength(1);
+		expect(remints[0]).toEqual({ previewId: PREVIEW_IDS[0], stalePass: pass1 });
+
+		stage.resetRetryState();
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: null }), "Preview");
+		expect(remints).toHaveLength(2);
+		remintDeferreds[0]!.resolve(false);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(stage.el.querySelector(".surface-frame.is-waiting .surface-state.is-failed")).toBeNull();
+
+		remintDeferreds[1]!.resolve(true);
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass2 }), "Preview");
+		const second = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		stage.el.remove();
+		const nullReady = new MessageEvent("message", { data: { type: SITE_DOOR_READY }, origin: location.origin });
+		Object.defineProperty(nullReady, "source", { value: null });
+		window.dispatchEvent(nullReady);
+		expect(consumed.has(pass2)).toBe(false);
+		document.body.append(stage.el);
+		spyFrameMessages(second);
+		sendFromFrame(second, { type: SITE_DOOR_READY });
+		sendFromFrame(second, { type: SITE_DOOR_READY });
+		expect(stage.el.querySelector("iframe.is-staging")).toBeNull();
+		expect(remints).toHaveLength(3);
+
+		stage.sync(previewFrame({ previewId: PREVIEW_IDS[0], memberPass: pass3 }), "Preview");
+		const third = stage.el.querySelector<HTMLIFrameElement>("iframe.is-staging")!;
+		const thirdPosted = spyFrameMessages(third);
+		sendFromFrame(third, { type: SITE_DOOR_READY });
+		expect(thirdPosted[0]?.message).toMatchObject({ type: SITE_DOOR_PASS, pass: pass3 });
+		sendFromFrame(third, { type: SITE_DOOR_SHOWN });
+		expect(stage.el.querySelector("iframe.is-shown")).toBe(third);
+
+		controller.abort();
+	});
+
+	it("prevents an earlier openSurface call from clobbering activeSurfaceId after switching away", async () => {
+		const enabled = deferred<boolean>();
+		const web = summary({ id: SURFACE, slug: "website", title: "Website" });
+		const app = summary({ id: "22222222-2222-4222-8222-222222222223", slug: "web-app", title: "Web App" });
+		const getSurfaceWorkspace = vi.fn(async (id: string) => workspace([], { surface: id === app.id ? app : web }));
+		const store = storeWith(
+			fakeClient({
+				isSurfacesEnabled: vi.fn(() => enabled.promise),
+				listSurfaces: vi.fn(async () => [web, app]),
+				getSurfaceWorkspace,
+			}),
+		);
+
+		const firstOpen = store.openSurface("website");
+		const secondOpen = store.openSurface("web-app");
+		enabled.resolve(true);
+		await Promise.all([firstOpen, secondOpen]);
+
+		expect(store.isActiveSurface(app.id)).toBe(true);
+		expect(store.isActiveSurface(web.id)).toBe(false);
+		expect(getSurfaceWorkspace).toHaveBeenCalledTimes(1);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(app.id, expect.any(AbortSignal));
+		store.dispose();
 	});
 });

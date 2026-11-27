@@ -770,8 +770,7 @@ export async function prepareSurfaceCodingWorkspace(options: {
 							mode: "surface_worker",
 							writableRoots,
 							stagedRoots,
-							savesQuestions:
-								!isInternalReconciliation && view.page === "layout" && view.starter === "analytics",
+							savesQuestions: !isInternalReconciliation && view.page === "layout",
 						},
 						...(turnReadOverlay ? { previewOverlay: turnReadOverlay } : {}),
 					}).filter((tool) => STUDIO_FOLDER_TOOLS.has(tool.name))
