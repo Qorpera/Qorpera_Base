@@ -266,6 +266,7 @@ describe("the platform's own numbers (database qorpera)", () => {
 		};
 		expect(described.database).toBe("qorpera");
 		expect(described.words).toContain("never with sql");
+		expect(described.words).toContain("Not connected:");
 		expect(described.questions.map((one) => one.question)).toEqual([
 			"money-now",
 			"money-balance",

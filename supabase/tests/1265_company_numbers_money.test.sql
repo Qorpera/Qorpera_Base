@@ -166,26 +166,17 @@ begin
 		where name = 'qorpera_run_company_numbers'), 'folder standard', 'the native host''s list');
 end $$;
 
--- 2. No bank: money-now is one row, state none, numbers null; the other questions have no rows. Each answer has the
---    gateway's five keys, an etag of 32 hex and an asOf that is a time.
 do $$
-declare v jsonb := pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-now');
+declare v_question text;
 begin
-	perform pg_temp.n_same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'asOf,columns,etag,more,rows',
-		'the answer''s keys');
-	perform pg_temp.n_json(v -> 'columns', '["state","bank","balance","available","reserved","as_of","paused_since"]',
-		'money-now''s columns');
-	perform pg_temp.n_json(v -> 'rows', '[["none",null,null,null,null,null,null]]', 'no bank');
-	perform pg_temp.n_same(v ->> 'more', 'false', 'more');
-	perform pg_temp.n_same(((v ->> 'etag') ~ '^[0-9a-f]{32}$')::text, 'true', 'the etag');
-	perform pg_temp.n_same((abs(extract(epoch from (v ->> 'asOf')::timestamptz - clock_timestamp())) < 60)::text, 'true',
-		'asOf is now');
-	perform pg_temp.n_same((v ->> 'asOf' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$')::text, 'true',
-		'asOf in ISO, UTC');
-	perform pg_temp.n_json(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-balance') -> 'rows', '[]',
-		'no bank, no balance');
-	perform pg_temp.n_json(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-kinds') -> 'columns',
-		'["direction","kind","amount","count"]', 'money-kinds''s columns');
+	foreach v_question in array array['money-now', 'money-balance', 'money-expected', 'money-months', 'money-kinds'] loop
+		perform pg_temp.n_same(pg_temp.n_refused('92400000-0000-4000-8000-000000000001', v_question),
+			'55000 Not connected: the bank''s numbers come once the company connects its bank', 'no bank: ' || v_question);
+	end loop;
+	perform pg_temp.n_same(pg_temp.n_refused('92400000-0000-4000-8000-000000000001', 'money-balance', '{"since":"2026-11-01"}'),
+		'22023 The question takes no :since', 'no bank, a parameter it does not take');
+	perform pg_temp.n_same(pg_temp.n_refused('92400000-0000-4000-8000-000000000001', 'money-balance', '{"from":"2026-02-31"}'),
+		'22023 :from is a day as YYYY-MM-DD', 'no bank, a bad day');
 end $$;
 
 -- 3. A bank connected (the trigger makes the sync): waiting until the vault records a summary.
@@ -195,11 +186,27 @@ values ('92400000-0000-4000-8000-0000000000b1', '92400000-0000-4000-8000-0000000
 	'92400000-0000-4000-8000-000000000020', '92400000-0000-4000-8000-0000000000d1', 'company', 'bank', 'primary',
 	'Company bank', 1, '92400000-0000-4000-8000-000000000001', '••6243');
 do $$
+declare v jsonb := pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-now');
 begin
-	perform pg_temp.n_json(pg_temp.n_rows(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-now')),
-		'[["waiting",null,null,null,null,null,null]]', 'waiting');
+	perform pg_temp.n_same((select string_agg(k, ',' order by k) from jsonb_object_keys(v) k), 'asOf,columns,etag,more,rows',
+		'the answer''s keys');
+	perform pg_temp.n_json(v -> 'columns', '["state","bank","balance","available","reserved","as_of","paused_since"]',
+		'money-now''s columns');
+	perform pg_temp.n_json(v -> 'rows', '[["waiting",null,null,null,null,null,null]]', 'waiting');
+	perform pg_temp.n_same(v ->> 'more', 'false', 'more');
+	perform pg_temp.n_same(((v ->> 'etag') ~ '^[0-9a-f]{32}$')::text, 'true', 'the etag');
+	perform pg_temp.n_same((abs(extract(epoch from (v ->> 'asOf')::timestamptz - clock_timestamp())) < 60)::text, 'true',
+		'asOf is now');
+	perform pg_temp.n_same((v ->> 'asOf' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$')::text, 'true',
+		'asOf in ISO, UTC');
 	perform pg_temp.n_json(pg_temp.n_rows(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-months')), '[]',
 		'waiting, no months');
+	perform pg_temp.n_json(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-balance') -> 'rows', '[]',
+		'waiting, no balance');
+	perform pg_temp.n_json(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-kinds') -> 'columns',
+		'["direction","kind","amount","count"]', 'money-kinds''s columns');
+	perform pg_temp.n_json(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-kinds') -> 'rows', '[]',
+		'waiting, no kinds');
 end $$;
 select pg_temp.n_record('92400000-0000-4000-8000-000000000010', pg_temp.n_summary());
 
@@ -336,10 +343,10 @@ begin
 	where id = '92400000-0000-4000-8000-0000000000b1';
 	perform pg_temp.n_same((select status from public.qorpera_bank_syncs
 		where profile_id = '92400000-0000-4000-8000-000000000010'), 'disconnected', 'the sync follows the disconnect');
-	perform pg_temp.n_json(pg_temp.n_rows(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-now')),
-		'[["none",null,null,null,null,null,null]]', 'disconnected');
-	perform pg_temp.n_json(pg_temp.n_rows(pg_temp.n_member('92400000-0000-4000-8000-000000000001', 'money-kinds')), '[]',
-		'disconnected, no kinds');
+	perform pg_temp.n_same(pg_temp.n_refused('92400000-0000-4000-8000-000000000001', 'money-now'),
+		'55000 Not connected: the bank''s numbers come once the company connects its bank', 'disconnected');
+	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('money-kinds')$s$),
+		'55000 Not connected: the bank''s numbers come once the company connects its bank', 'disconnected, to a run');
 end $$;
 rollback to savepoint n_states;
 select pg_temp.base_claims('service_role');
@@ -431,15 +438,16 @@ begin
 	perform pg_temp.base_claims('service_role');
 end $$;
 
--- 13. The site questions answer (20260930768000, test 1266) any member or run; any other question is not there,
---     in the same words as one the caller may not read; a name of another shape is refused.
 do $$
 declare v_question text; o constant uuid := '92400000-0000-4000-8000-000000000001';
 begin
-	foreach v_question in array array['sites', 'site-now', 'site-hours', 'site-days', 'site-pages'] loop
-		perform pg_temp.n_same(pg_temp.n_refused(o, v_question), 'ok', v_question);
+	perform pg_temp.n_same(pg_temp.n_refused(o, 'sites'), 'ok', 'sites');
+	foreach v_question in array array['site-now', 'site-hours', 'site-days', 'site-pages'] loop
+		perform pg_temp.n_same(pg_temp.n_refused(o, v_question),
+			'55000 Not connected: visits count once the company publishes a website', v_question);
 	end loop;
-	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('site-now')$s$), 'ok', 'a run''s site-now');
+	perform pg_temp.n_same(pg_temp.n_state($s$select pg_temp.n_run('site-now')$s$),
+		'55000 Not connected: visits count once the company publishes a website', 'a run''s site-now');
 	foreach v_question in array array['money-days', 'money', 'stock-now', 'balance'] loop
 		perform pg_temp.n_same(pg_temp.n_refused(o, v_question),
 			format('P0002 No question qorpera/%s that you may read', v_question), v_question);

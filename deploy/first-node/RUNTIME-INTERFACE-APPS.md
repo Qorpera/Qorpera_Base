@@ -1112,7 +1112,9 @@ Rules:
   plain cloud call
   (`qorpera_member_company_numbers`, supabase/CLIENT-CONTRACT.md "The company's numbers"), so they work without a
   member gateway too, and the cloud answers only a member who may read `bank/summary.json` (money). The answer has the
-  databases' shape, `{columns, rows, more, asOf}`. A watch is not held by any gateway: the web asks a watched
+  databases' shape, `{columns, rows, more, asOf}`. A question whose source the company has not connected (no bank, no
+  published website, no Stripe hook and no order) is refused with words that start `Not connected:` (55000,
+  migration `20260930929000`), never zero rows. A watch is not held by any gateway: the web asks a watched
   question again on its own clock while the tab is shown (`site-now` every 15 s, other site questions every minute,
   money every 5 minutes; a question whose time passed while the tab was hidden at once when it is shown), and sends
   the page an answer only when its etag changed (`CompanyNumbers`). A watch costs one call when it starts, as for the
