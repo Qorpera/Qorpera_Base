@@ -213,7 +213,7 @@ function addressList(value: JsonValue | undefined, label: string): string[] {
 	return list;
 }
 
-function headerValue(value: string): string {
+export function headerValue(value: string): string {
 	if (/[\x00-\x1f\x7f]/.test(value))
 		throw new ConnectorRequestError("invalid_request", "Header lines cannot contain control characters.");
 	if (/^[\x20-\x7e]*$/.test(value)) return value;

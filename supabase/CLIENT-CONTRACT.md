@@ -1060,6 +1060,33 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   message a member sent themself carries `member` (`{userId, name?}`; the name is theirs in the company now, absent
   once they have left) and no `staffAgent`; in `qorpera_member_mail_threads` a thread whose newest message is such
   an email carries `sentBy`, the same shape.
+- Google mail in the Mailbox (20260930927000_google_mailboxes): an owner or admin calls
+  `qorpera_begin_google_mailbox(p_environment_id, p_mailbox_id?)`, which answers the same ticket as
+  `qorpera_begin_cloud_secret_capture` for connector `gmail`, marked for the Mailbox; the web starts and confirms it on
+  the broker as any connector sign-in. Owners and admins can also call
+  `qorpera_connect_existing_google_mailbox(p_environment_id, p_secret_id)` to link an already-active company Gmail
+  connection from Settings → Company connections directly without a second Google OAuth redirect, returning either
+  `qorpera.google-mailbox-connected/v1` (`outcome: "linked" | "relinked"`, `mailboxId`, `hookId`, `address`, `secretId`)
+  or `qorpera.google-mailbox-refused/v1` (`reason: "address_taken"`). On OAuth confirm the broker reads the Google
+  account's address and creates the Google mailbox, or re-links the one with that address (sign in again;
+  `p_mailbox_id`, the mailbox's `hookId`, names it). A refused confirm answers 403
+  `qorpera.cloud-connector-oauth-failed/v1` with `reason` `address_taken` (another company brings the address in) or
+  `wrong_account` (with `address`, the one to sign in with, and `message`), and the usual `declined`, `expired`,
+  `browser_mismatch`, `state_unknown`. A confirmed one answers `mailbox: {mailboxId, address, outcome}` beside
+  `accountLabel`. In `qorpera_member_mail_addresses` every entry carries `kind` (`qorpera` or `google`); a Google entry
+  also carries `google: {state, broughtIn, total, capped, lastWeek}`, `state` one of `bringing_in`, `live`,
+  `sign_in_again`, `paused`; `total` is the number of messages Gmail holds for the account (sent mail and drafts
+  included, never below `broughtIn`). `capped` is true when the first import stopped at its 50,000 limit with more mail
+  at Google; a reconnect's import of the mail from while the address was removed keeps it, since the older mail is still
+  missing. Show "The newest 50,000 messages are here." when `state` is `live` and `capped`.
+  `qorpera_pause_google_mailbox(p_mailbox_id, p_paused)` takes the entry's `hookId` and stops or restarts bringing mail
+  in. Remove is `qorpera_set_event_hook_status(hookId, 'removed')`: a mailbox-owned Google sign-in ends while a linked
+  Settings company Gmail connection stays active, and the mail brought in stays;
+  when the same company connects the same address again, the same mailbox comes back (confirm `outcome: "relinked"`,
+  same `hookId`) and brings in the mail of the time it was removed, then finishes any import Remove interrupted (`state`
+  stays `bringing_in` until both are done). Sending from a Google address leaves through Gmail; while the state is
+  `sign_in_again` a send answers 0A000 "Google asked you to sign in again."; a Google address carries no attachments.
+  All three member RPCs answer 42501 to a member who is not an owner or admin (`not_allowed`).
 
 
 ### Digital Post (20260930529000_digital_post_sync)

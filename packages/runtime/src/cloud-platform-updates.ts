@@ -552,6 +552,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Company email addresses use the bare handle",
 		text: "The company email address card now creates the bare company handle directly, such as acme@… instead of hello.acme@…, and lets founders edit the handle inline with live availability checks anywhere the card appears. Additional addresses created in Mailbox or with manage_hook stay <box>.<handle>, such as sales.acme@…, under a handle the company already owns. Never tell founders their main address starts with hello. or assume a hello. prefix.",
 	},
+	{
+		id: "google-mailboxes",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "A member's Google mail in the Mailbox",
+		text: "An owner or admin can now bring their Google mail straight into the company's Mailbox (either by signing in at Google from Inbox or reusing a Gmail account already connected in Settings → Company connections). Their address then shows among the mailboxes (list_hooks), and its mail reaches you as any company mail does: new mail starts the routines that listen to that mailbox, while the older mail brought in at the start never does. Email you send from that address leaves through Gmail from the member's own address and shows in their Gmail. It carries no attached files, and while Google asks the member to sign in again it is refused: tell them to sign in again in the Mailbox.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
