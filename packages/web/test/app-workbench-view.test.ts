@@ -5,7 +5,7 @@ import type {
 	SurfaceSession,
 	SurfaceSessionArtifact,
 } from "@qorpera/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isAppWorkbenchSurface } from "../src/app/surface-kinds.ts";
 import { SurfaceRail } from "../src/app/views/surface-rail.ts";
 import { SurfaceView } from "../src/app/views/surface-view.ts";
@@ -102,9 +102,28 @@ function planArtifact(overrides: Partial<SurfaceSessionArtifact> = {}): SurfaceS
 }
 
 describe("AppWorkbenchView", () => {
+	const {
+		showModal: originalShowModal,
+		show: originalShow,
+		close: originalClose,
+	} = HTMLDialogElement.prototype;
+
+	beforeEach(() => {
+		HTMLDialogElement.prototype.showModal = function (this: HTMLDialogElement) {
+			this.setAttribute("open", "");
+		};
+		HTMLDialogElement.prototype.show = HTMLDialogElement.prototype.showModal;
+		HTMLDialogElement.prototype.close = function (this: HTMLDialogElement) {
+			this.removeAttribute("open");
+		};
+	});
+
 	afterEach(() => {
 		document.body.replaceChildren();
 		localStorage.clear();
+		HTMLDialogElement.prototype.showModal = originalShowModal;
+		HTMLDialogElement.prototype.show = originalShow;
+		HTMLDialogElement.prototype.close = originalClose;
 		vi.restoreAllMocks();
 	});
 

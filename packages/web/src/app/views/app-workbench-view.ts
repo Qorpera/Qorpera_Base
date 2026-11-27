@@ -2231,7 +2231,11 @@ export class AppWorkbenchView {
 				viewer = h(
 					"div",
 					{ class: "workbench-artifact-unframed" },
-					h("p", { class: "workbench-artifact-unframed-note" }, t("This page can't be shown live, so its source is shown.")),
+					h(
+						"p",
+						{ class: "workbench-artifact-unframed-note" },
+						t("This page can't be shown live, so its source is shown."),
+					),
 					h("pre", { class: "workbench-artifact-pre" }, resolved.contentText),
 				);
 			}
@@ -2309,7 +2313,9 @@ export class AppWorkbenchView {
 				h("span", { class: "workbench-artifact-rev" }, t("v{revision}", { revision: resolved.revision })),
 				h("time", { class: "workbench-msg-time", datetime: resolved.updatedAt }, fmtTime(resolved.updatedAt)),
 			),
-			resolved.summary ? h("p", { class: "workbench-artifact-lead", title: resolved.summary }, resolved.summary) : null,
+			resolved.summary
+				? h("p", { class: "workbench-artifact-lead", title: resolved.summary }, resolved.summary)
+				: null,
 			h("div", { class: "workbench-artifact-stage" }, viewer),
 		);
 	}
@@ -2339,7 +2345,11 @@ export class AppWorkbenchView {
 			);
 			body = this.#dialogMockupFrame.frame;
 		} else if (artifact.contentFormat === "markdown") {
-			body = h("div", { class: "workbench-artifact-dialog-body workbench-artifact-markdown" }, cachedMarkdown(artifact.contentText));
+			body = h(
+				"div",
+				{ class: "workbench-artifact-dialog-body workbench-artifact-markdown" },
+				cachedMarkdown(artifact.contentText),
+			);
 		} else if (artifact.contentFormat === "json") {
 			body = h("pre", { class: "workbench-artifact-dialog-body workbench-artifact-pre" }, artifact.contentText);
 		} else {
