@@ -382,7 +382,7 @@ begin
 		v_old_secret := v_google.secret_id;
 		update public.qorpera_google_mailboxes
 		set secret_id = v_secret.id,
-			secret_owned = false,
+			secret_owned = case when secret_id = v_secret.id then secret_owned else false end,
 			state = case when state = 'sign_in_again' then case when imported_at is null then 'bringing_in' else 'live' end
 				else state end,
 			due_at = case when paused then null else clock_timestamp() end,

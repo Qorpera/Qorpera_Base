@@ -726,6 +726,28 @@ select pg_temp.base_assert((pg_temp.g_box('team@example.org')).mailbox_id::text 
 		and not (pg_temp.g_box('team@example.org')).secret_owned,
 	'Reviving via an existing company Gmail secret keeps the mailbox row and enters the reconnect gap walk');
 
+select set_config('qorpera_test.g_own_t', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
+select set_config('qorpera_test.g_own_c', pg_temp.g_complete(current_setting('qorpera_test.g_own_t')::jsonb,
+	'owned@example.org')::text, true) \g /dev/null
+update public.qorpera_google_mailboxes set state = 'sign_in_again', due_at = null
+where address = 'owned@example.org';
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select pg_temp.base_assert(public.qorpera_connect_existing_google_mailbox(
+		'92400000-0000-4000-8000-000000000020',
+		(current_setting('qorpera_test.g_own_c')::jsonb ->> 'secretId')::uuid) ->> 'outcome' = 'relinked',
+	'Relinking an owned waiting mailbox to its own secret succeeds');
+select pg_temp.base_claims('service_role');
+select pg_temp.base_assert((pg_temp.g_box('owned@example.org')).secret_owned
+		and (pg_temp.g_box('owned@example.org')).state = 'bringing_in',
+	'Relinking an owned mailbox to its own secret keeps secret_owned true');
+select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
+select public.qorpera_set_event_hook_status((pg_temp.g_box('owned@example.org')).hook_id, 'removed') \g /dev/null
+select pg_temp.base_claims('service_role');
+select pg_temp.base_assert((select secret.status = 'revoked' from public.qorpera_cloud_secrets as secret
+		where secret.id = (current_setting('qorpera_test.g_own_c')::jsonb ->> 'secretId')::uuid),
+	'Removing that owned mailbox still revokes its own secret');
+
 do $$
 declare v_function text;
 begin
