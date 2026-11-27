@@ -3168,12 +3168,13 @@ describe("multi-batch boundary commits", () => {
 
 	it("reuses a single-chunk upload intent on stage and falls back cleanly when metadata changes or intent lapses", async () => {
 		const { core, open } = await fixture();
-		core.checkViewPossession = true;
+		const sealSpy = vi.spyOn(core, "sealUpload");
 		const view = await open();
 		await write(view, "plain.md", "# Title\n");
 		expect(core.intents.size).toBe(1);
 		const firstId = [...core.intents.keys()][0]!;
-		expect(core.sealedIntents.has(firstId)).toBe(true);
+		expect(sealSpy).toHaveBeenCalledTimes(1);
+		expect(sealSpy).toHaveBeenLastCalledWith(ENV, expect.anything(), firstId);
 		expect((await view.publish()).paths).toEqual([{ path: "plain.md", outcome: "saved" }]);
 		expect(core.entries.get("plain.md")?.mediaType).toBe("text/markdown");
 

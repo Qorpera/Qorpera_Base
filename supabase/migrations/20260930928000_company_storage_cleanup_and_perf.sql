@@ -8,7 +8,6 @@ do $$ begin
 		or to_regprocedure('public.qorpera_folder_object_release(uuid,text[])') is null
 		or to_regprocedure('public.qorpera_folder_gc_company(uuid)') is null
 		or to_regprocedure('public.qorpera_folder_object_rooted(uuid,text,uuid)') is null
-		or to_regprocedure('public.qorpera_code_care_holder(uuid,text,text)') is null
 		or to_regprocedure('public.qorpera_code_care_step(text,text,uuid,text,text,uuid,text)') is null
 		or to_regprocedure('public.qorpera_company_file_json(public.qorpera_company_files)') is null
 		or to_regprocedure('public.qorpera_surface_archive_coding_workers(uuid[],text)') is null
@@ -50,6 +49,12 @@ declare
 	v_expires timestamptz[] := '{}';
 	v_swept integer := 0;
 	v_queued integer := 0;
+	v_skipped integer := 0;
+	v_fallback boolean := false;
+	v_id uuid;
+	v_intent public.qorpera_folder_upload_intents%rowtype;
+	v_item_queued integer;
+	v_fallback_limit integer;
 begin
 	if p_limit is null or p_limit < 1 or p_limit > 10000 then
 		raise exception 'p_limit must be between 1 and 10000' using errcode = '22023';
@@ -58,7 +63,15 @@ begin
 		raise exception 'Folder intent sweep needs read committed isolation' using errcode = '25000';
 	end if;
 	if not pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended('qorpera.folder-intent-sweep', 0)) then
-		return jsonb_build_object('schema', 'qorpera.folder-intent-sweep/v1', 'busy', true, 'swept', 0, 'queued', 0, 'more', false);
+		return jsonb_build_object(
+			'schema', 'qorpera.folder-intent-sweep/v1',
+			'busy', true,
+			'fallback', false,
+			'swept', 0,
+			'queued', 0,
+			'skipped', 0,
+			'more', false
+		);
 	end if;
 	begin
 		select coalesce(array_agg(locked.id), '{}'::uuid[]) into v_intent_ids
@@ -71,7 +84,15 @@ begin
 			for update skip locked
 		) locked;
 		if cardinality(v_intent_ids) = 0 then
-			return jsonb_build_object('schema', 'qorpera.folder-intent-sweep/v1', 'busy', false, 'swept', 0, 'queued', 0, 'more', false);
+			return jsonb_build_object(
+				'schema', 'qorpera.folder-intent-sweep/v1',
+				'busy', false,
+				'fallback', false,
+				'swept', 0,
+				'queued', 0,
+				'skipped', 0,
+				'more', false
+			);
 		end if;
 		select
 			coalesce(array_agg(cand.profile_id order by cand.profile_id, cand.sha256 collate "C"), '{}'::uuid[]),
@@ -107,14 +128,66 @@ begin
 			select count(*)::integer into v_queued from inserted;
 		end if;
 	exception when lock_not_available or deadlock_detected or foreign_key_violation then
-		return jsonb_build_object('schema', 'qorpera.folder-intent-sweep/v1', 'busy', true, 'swept', 0, 'queued', 0, 'more', true);
+		v_fallback := true;
+		v_swept := 0;
+		v_queued := 0;
+		v_skipped := 0;
+		v_fallback_limit := least(p_limit, 100);
+		for v_id in
+			select i.id
+			from public.qorpera_folder_upload_intents i
+			where i.expires_at < clock_timestamp() - interval '1 hour'
+			order by i.expires_at, i.id
+			limit v_fallback_limit
+		loop
+			begin
+				select * into v_intent
+				from public.qorpera_folder_upload_intents
+				where id = v_id and expires_at < clock_timestamp() - interval '1 hour'
+				for update skip locked;
+				if not found then
+					continue;
+				end if;
+				v_shas := '{}';
+				if public.qorpera_folder_gc_company(v_intent.profile_id) then
+					select coalesce(array_agg(o.sha256 order by o.sha256 collate "C"), '{}'::text[])
+					into v_shas
+					from public.qorpera_folder_upload_intent_objects o
+					where o.intent_id = v_intent.id;
+				end if;
+				delete from public.qorpera_folder_upload_intents where id = v_intent.id;
+				if cardinality(v_shas) > 0 then
+					with inserted as (
+						insert into public.qorpera_folder_object_gc(profile_id, sha256, unreferenced_since)
+						select v_intent.profile_id, s.sha256, v_intent.expires_at
+						from unnest(v_shas) as s(sha256)
+						where exists (
+							select 1 from public.qorpera_profile_objects po
+							where po.profile_id = v_intent.profile_id and po.sha256 = s.sha256
+						)
+							and not public.qorpera_folder_object_rooted(v_intent.profile_id, s.sha256, null)
+						order by s.sha256 collate "C"
+						on conflict (profile_id, sha256) do update
+						set unreferenced_since = greatest(public.qorpera_folder_object_gc.unreferenced_since, excluded.unreferenced_since)
+						returning 1
+					)
+					select count(*)::integer into v_item_queued from inserted;
+					v_queued := v_queued + v_item_queued;
+				end if;
+				v_swept := v_swept + 1;
+			exception when lock_not_available or deadlock_detected or foreign_key_violation then
+				v_skipped := v_skipped + 1;
+			end;
+		end loop;
 	end;
 	return jsonb_build_object(
 		'schema', 'qorpera.folder-intent-sweep/v1',
 		'busy', false,
+		'fallback', v_fallback,
 		'swept', v_swept,
 		'queued', v_queued,
-		'more', v_swept = p_limit
+		'skipped', v_skipped,
+		'more', case when v_fallback then (v_swept + v_skipped) = v_fallback_limit or v_skipped > 0 else v_swept = p_limit end
 	);
 end $$;
 
@@ -143,7 +216,7 @@ end $$;
 
 create function public.qorpera_code_checkout_path(p_key text)
 returns boolean language sql immutable strict set search_path = '' as $$
-	select p_key ~ '^code/[^/]+/[^/]+/(worktrees|main|repo\.git/worktrees)/.+$'
+	select left(p_key, 5) = 'code/' and p_key ~ '^code/[^/]+/[^/]+/(worktrees|main|repo\.git/worktrees)/.+$'
 $$;
 
 create table public.qorpera_code_checkout_prune_cursor (
@@ -331,26 +404,6 @@ begin
 		'jobs', jsonb_build_array(v_step, v_clean));
 end $$;
 
-create or replace function public.qorpera_code_care_holder(p_environment_id uuid, p_owner text, p_machine_id_sha256 text)
-returns boolean language sql stable security definer set search_path = '' as $$
-	select exists (
-		select 1
-		from (
-			select executor.owner, executor.nas_machine_id_sha256
-			from public.qorpera_coding_executors executor
-			where executor.environment_id = p_environment_id and executor.enabled
-			order by executor.owner collate "C" asc
-			limit 1
-		) primary_executor
-		where primary_executor.owner = p_owner
-			and coalesce(primary_executor.nas_machine_id_sha256 = p_machine_id_sha256, false)
-	)
-$$;
-
-update public.qorpera_code_repositories
-set gc_enabled = true
-where not gc_enabled;
-
 select pg_temp.cscp_patch('public.qorpera_code_care_step(text,text,uuid,text,text,uuid,text)'::regprocedure, array[
 $old$				and session.archived_at <= v_now - interval '168 hours' and session.attached_machine_id is null
 				and worker.state <> 'active'$old$,
@@ -376,7 +429,8 @@ $new$				and (
 				and worker.state <> 'active'$new$
 ]);
 
-do $$
+create function public.qorpera_surface_backfill_discarded_cleanups()
+returns integer language plpgsql volatile security definer set search_path = '' as $$
 declare
 	v_session_ids uuid[];
 	v_session_id uuid;
@@ -408,7 +462,10 @@ begin
 			perform public.qorpera_surface_enqueue_session_cleanup(v_session_id, null);
 		end loop;
 	end if;
+	return coalesce(cardinality(v_session_ids), 0);
 end $$;
+
+select public.qorpera_surface_backfill_discarded_cleanups();
 
 select pg_temp.cscp_patch('public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure, array[
 $old$		'retained_storage_bytes', coalesce((
@@ -455,7 +512,8 @@ revoke all on function
 	public.qorpera_code_checkout_path(text),
 	public.qorpera_code_checkout_version_held(uuid, text),
 	public.qorpera_code_checkout_prune(integer),
-	public.qorpera_schedule_code_checkout_prune()
+	public.qorpera_schedule_code_checkout_prune(),
+	public.qorpera_surface_backfill_discarded_cleanups()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 do $$
@@ -467,7 +525,6 @@ begin
 		select distinct pg_get_userbyid(proowner)
 		from pg_proc
 		where oid = any(array[
-			'public.qorpera_code_care_holder(uuid,text,text)'::regprocedure,
 			'public.qorpera_code_care_step(text,text,uuid,text,text,uuid,text)'::regprocedure,
 			'public.qorpera_company_file_json(public.qorpera_company_files)'::regprocedure
 		])
@@ -493,7 +550,7 @@ drop function pg_temp.cscp_patch(regprocedure, text[]);
 drop table cscp_before;
 
 comment on function public.qorpera_folder_sweep_upload_intents_cron(integer) is
-	'20260930928000: set-based pg_cron sweeper for expired folder upload intents and unreferenced object GC queueing.';
+	'20260930928000: set-based pg_cron sweeper for expired folder upload intents with per-intent contention fallback.';
 comment on function public.qorpera_schedule_folder_intent_sweep() is
 	'20260930928000: schedules the per-minute folder upload intent sweeper and daily job log cleanup.';
 comment on function public.qorpera_code_checkout_path(text) is
@@ -504,10 +561,10 @@ comment on function public.qorpera_code_checkout_prune(integer) is
 	'20260930928000: prunes superseded/deleted code checkout and main path versions older than 7 days and releases unrooted objects.';
 comment on function public.qorpera_schedule_code_checkout_prune() is
 	'20260930928000: schedules the 5-minute code checkout history pruner and daily job log cleanup.';
-comment on function public.qorpera_code_care_holder(uuid, text, text) is
-	'20260930928000: elects a deterministic primary enabled coding executor per environment for care, change records, releases, and hosting.';
 comment on function public.qorpera_code_care_step(text, text, uuid, text, text, uuid, text) is
 	'20260930928000: retires clean worktrees for 7-day archived sessions and 24-hour closed completed surface sessions.';
+comment on function public.qorpera_surface_backfill_discarded_cleanups() is
+	'20260930928000: archives coding workers and enqueues cleanup_session for pre-migration discarded code_repo surface sessions.';
 comment on function public.qorpera_company_file_json(public.qorpera_company_files) is
 	'20260930928000: skips snapshot-v1 full-table object scans for folder-v2 companies while preserving all JSON keys.';
 

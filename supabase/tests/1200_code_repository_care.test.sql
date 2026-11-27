@@ -302,14 +302,11 @@ begin
 	update public.qorpera_coding_executors set enabled = false where environment_id = pg_temp.care_here();
 	perform pg_temp.base_assert(pg_temp.care_names() = '', 'the executor is switched off');
 	update public.qorpera_coding_executors set enabled = true where environment_id = pg_temp.care_here();
+	-- Two executors enabled for the company: neither cares for it. A second one switched off does not count.
 	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, nas_machine_id_sha256)
 	values (pg_temp.care_here(), 'exec-two', true, array['codex'], repeat('6', 64));
-	perform pg_temp.base_assert(pg_temp.care_names() = 'shop,site' and pg_temp.care_names('exec-two', repeat('6', 64)) = '',
-		'two executors: primary holds care');
-	update public.qorpera_coding_executors set enabled = false where owner = 'exec-1170';
-	perform pg_temp.base_assert(pg_temp.care_names() = '' and pg_temp.care_names('exec-two', repeat('6', 64)) = 'shop,site',
-		'two executors: failover to secondary');
-	update public.qorpera_coding_executors set enabled = true where owner = 'exec-1170';
+	perform pg_temp.base_assert(pg_temp.care_names() = '' and pg_temp.care_names('exec-two', repeat('6', 64)) = '',
+		'two executors');
 	update public.qorpera_coding_executors set enabled = false where owner = 'exec-two';
 	perform pg_temp.base_assert(pg_temp.care_names() = 'shop,site'
 		and pg_temp.care_names('exec-two', repeat('6', 64)) = '', 'the second is off');
@@ -403,11 +400,8 @@ begin
 	perform pg_temp.base_assert(pg_temp.care_step(v_token, 'fsck') = v_not_due, 'the company is being deleted in a run');
 	delete from public.qorpera_company_deletions where profile_id = '92400000-0000-4000-8000-000000000010';
 	update public.qorpera_coding_executors set enabled = true where owner = 'exec-two';
-	perform pg_temp.base_assert(pg_temp.care_step(v_token, 'fsck') ->> 'state' = 'go', 'secondary executor does not preempt primary');
-	insert into public.qorpera_coding_executors(environment_id, owner, enabled, harnesses, nas_machine_id_sha256)
-	values (pg_temp.care_here(), 'exec-0000', true, array['codex'], repeat('7', 64));
-	perform pg_temp.base_assert(pg_temp.care_step(v_token, 'fsck') = v_not_due, 'higher-precedence primary preempts in a run');
-	delete from public.qorpera_coding_executors where owner in ('exec-two', 'exec-0000');
+	perform pg_temp.base_assert(pg_temp.care_step(v_token, 'fsck') = v_not_due, 'a second executor in a run');
+	delete from public.qorpera_coding_executors where owner = 'exec-two';
 	update public.qorpera_coding_executors set enabled = false where environment_id = pg_temp.care_here();
 	perform pg_temp.base_assert(pg_temp.care_step(v_token, 'fsck') = v_not_due, 'the executor is switched off in a run');
 	update public.qorpera_coding_executors set enabled = true where environment_id = pg_temp.care_here();
