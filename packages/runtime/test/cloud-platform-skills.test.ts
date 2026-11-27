@@ -4,6 +4,7 @@ import { SURFACE_BLOCK_TYPES, SURFACE_STARTER_KINDS, UUID_PATTERN } from "@qorpe
 import { describe, expect, it } from "vitest";
 import { CLOUD_PLATFORM_SKILLS, PLATFORM_SKILL_FILES, SURFACE_STARTER_SKILLS } from "../src/cloud-platform-skills.ts";
 import { cloudStudioSkill } from "../src/cloud-skill-tools.ts";
+import { SURFACE_ESCALATION_WAKE_PROTOCOL } from "../src/cloud-surface-escalation-wake.ts";
 
 const SKILLS = new URL("../skills/", import.meta.url);
 const STUDIO_TOOLS = [
@@ -36,9 +37,32 @@ describe("the platform's skills", () => {
 		expect([...CLOUD_PLATFORM_SKILLS.keys()]).toEqual(names);
 	});
 
-	it("give every Studio starter its own skill, and ship no other", () => {
+	it("give every Studio starter its own skill, and ship two more: the research writer's and its second reader's", () => {
 		expect(Object.keys(SURFACE_STARTER_SKILLS).sort()).toEqual([...SURFACE_STARTER_KINDS].sort());
-		expect(Object.values(SURFACE_STARTER_SKILLS).sort()).toEqual([...CLOUD_PLATFORM_SKILLS.keys()]);
+		expect([...Object.values(SURFACE_STARTER_SKILLS), "research-check", "research-posts"].sort()).toEqual([
+			...CLOUD_PLATFORM_SKILLS.keys(),
+		]);
+	});
+
+	it("hand a research question from Strategy to the writer, and the writer's draft to a second reader", () => {
+		const strategy = PLATFORM_SKILL_FILES["strategy-studio"] as string;
+		const writer = PLATFORM_SKILL_FILES["research-posts"] as string;
+		expect(strategy).toContain("Read the company's vision first, whole");
+		expect(strategy).toContain("ask the founder with `surface_ask`, as open questions");
+		expect(strategy).toContain("`read_skill` research-posts");
+		expect(strategy).not.toMatch(/light and scannable|Never pause to ask/);
+		expect(writer).toContain("the research-check skill (`read_skill`)");
+		expect(writer).toContain("A run on GPT has no helpers: read alone");
+		expect(writer).toContain(
+			"Set a source's checked day only from the second reader's line for it, never on your own",
+		);
+		for (const start of ['"Research plan:"', '"Second reader needed:"']) {
+			expect(writer, start).toContain(start);
+			expect(SURFACE_ESCALATION_WAKE_PROTOCOL, start).toContain(start);
+		}
+		expect(SURFACE_ESCALATION_WAKE_PROTOCOL).toContain("the research-check skill (read_skill)");
+		for (const name of ["research-posts", "research-check"])
+			expect(CLOUD_PLATFORM_SKILLS.get(name)?.description, name).toBeTruthy();
 	});
 
 	it("are short skill files that name no file, path or tool a Studio session does not have", () => {

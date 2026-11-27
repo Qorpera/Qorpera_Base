@@ -1,3 +1,4 @@
+import { osPath } from "@qorpera/cloud-client/company-state-files";
 import {
 	readSurfaceFolderFiles,
 	type SurfaceFolderContents,
@@ -98,6 +99,7 @@ const MAX_STUDIO_TEXT_READ_BYTES = 262_144;
 const MAX_STAGED_LAYOUT_READ_BYTES = 1024 * 1024;
 const MAX_FAILURE_REPLY_CHARS = 500;
 const READ_ONLY_FOLDER_TOOLS = new Set(["company_read", "company_list"]);
+const COMPANY_VISION_PATH = osPath("vision/vision.md");
 
 const IDENTITY_ASSET_BYTE_LIMITS: Readonly<Record<(typeof IDENTITY_SHARED_ASSET_PATHS)[number], number>> = {
 	[IDENTITY_BRIEF_PATH]: MAX_IDENTITY_BRIEF_BYTES,
@@ -762,11 +764,13 @@ export function buildFolderSurfaceInstructions(
 		`Change files in ${folderRoot}/ only with stage_surface_patch (write_text, merge_json, delete; paths relative to ${folderRoot}/), calling stage_surface_patch once per independent deliverable (one change per report, blog post, article, or distinct section update — never bundle multiple deliverables into one change). ` +
 		"When a follow-up revises an existing open change in this session, pass its changeId to stage_surface_patch to update it in place instead of creating a duplicate change (use replaceAll: true only when replacing the whole change from scratch, and createNew: true only when adding a separate new deliverable). " +
 		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
+		"A question that needs evidence is answered as a research post: read_skill research-posts (scope platform) before you research, and research-check is its second reader's brief. " +
 		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.` +
 		(options?.hasMakePicture
 			? " Use make_picture to generate bespoke PNG visuals (hero scenes, product concepts, illustrations) directly into Preview as staged changes, inspect each image inline, and pass changeId if regenerating to update it in place."
 			: "") +
+		` The company's vision, the text its founders approved, is ${COMPANY_VISION_PATH}: read it whole with company_read before work that rests on why the company exists or who it is for.` +
 		"\n\n" +
 		describeStudioPage(view, folderRoot, input.voiceModel, input.voiceName) +
 		describeStudioSkill(view, skill)

@@ -1,36 +1,42 @@
 ---
 name: strategy-studio
-description: How to run the Strategy surface: grand plan, narrated voice tours, explainer videos, competing plays, financial and market visuals, posts, and hypotheses. Use in every Strategy session.
+description: How to run the Strategy surface: start from the company's vision, then the grand plan, competing plays, financial and market visuals, hypotheses, narrated tours, and research posts. Use in every Strategy session.
 ---
 
 # Strategy surface
 
-The Strategy surface is the company's living war room for planning, sketching, and testing how this business wins. Product surfaces hold what customers touch; this surface holds the bets, market reality, unit math, and tests deciding what gets built and why.
+The Strategy surface is the company's war room for how this business wins: the bets, market reality, unit math, and tests deciding what gets built and why.
 
-## Freedom with tabs, media, and guided voice tours
-- Treat the starter tabs (Grand plan, Economics, Market, Hypotheses, Breakdowns, Deep dives) as a starting canvas, never a cage. Use `compose_surface_layout` to reshape tabs and add `chart`, `report`, `explainer`, `artifacts`, or `module` blocks anywhere.
-- Lead visually: use native `chart` blocks (line, bar, area, scatter, pie, sankey, radar, funnel, heatmap), `stage_surface_artifact` for visuals rendered on the machine, and narrated `explainer` videos (`narrate_explainer`). Call `inspect_surface` to audit the rendered page visually before finishing.
-- Add a guided Studio voice tour whose spoken beats switch tabs, scroll, trigger scenarios, and spotlight sections, then record its clips with `narrate_explainer`.
-- Keep copy light and scannable: one-line theses, crisp numbers, and only two or three primary levers in `economics` so secondary assumptions stay tucked away.
+## Start from the vision
+- Read the company's vision first, whole: the text its founders approved. Why the company exists, who it is for and what it refuses come from there in the founders' own words, never from your reading of the market.
+- Where the vision is silent on something the plan rests on (money they will put in, what may give way, who they already know), ask the founder with `surface_ask`, as open questions, before you build on it. Only they know it, so it is a hard blocker, not a preference. Never draft their reason for them to confirm.
+
+## Tabs, media, and voice tours
+- Treat the starter tabs as a starting canvas, never a cage. Use `compose_surface_layout` to reshape tabs and add `chart`, `report`, `explainer`, `artifacts`, or `module` blocks anywhere.
+- Lead visually: native `chart` blocks, `stage_surface_artifact` for visuals rendered on the machine, and narrated `explainer` videos (`narrate_explainer`). Call `inspect_surface` to audit the page before finishing.
+- Add a guided voice tour whose spoken beats switch tabs, scroll, trigger scenarios and spotlight sections, and record its clips with `narrate_explainer`.
+- Keep the tabs to few words and two or three primary levers in `economics`. Depth lives in posts, not on tabs.
+
+## Posts are research
+- A question that needs evidence becomes a research post: `read_skill` research-posts and follow it, from the plan the founder approves to the second reader's check. One question per post.
+- Never write a post from memory, or one that restates numbers already on a tab. A number no post or company file backs is a question to research, and says so until it is.
 
 ## Play the real game of capitalism
-- Start from the market board, not an internal worksheet. Research real incumbents, direct rivals, substitutes, and pricing before recommending a move; record real names, prices, strengths, weaknesses, and our sharpest wedge in `landscape`.
-- Compare two to four genuinely opposing plays side by side in `plays` (different payers, channels, pricing models, or wedges). Commit to one recommended play and state plainly why the others lose.
-- Expose broken math loudly. Model revenue, payment fees, statutory taxes and VAT, fulfillment time, acquisition cost, fixed overhead, and team capacity in `economics`, with explicit capacity constraints and a break-even curve. Call out broken plays in the verdict and show the structural fix as a scenario.
-- Be a candid partner: if the current framing has an incentive flaw (charging the side without budget, or selling manual labor at software prices), say so with numbers and show a stronger play beside it.
+- Start from the market, not an internal worksheet. Research real incumbents, rivals, substitutes, and pricing before recommending a move; record names, prices, strengths, weaknesses, and our sharpest wedge in `landscape`.
+- Compare two to four opposing plays in `plays` (different payers, channels, pricing models, or wedges). Commit to one and state plainly why the others lose.
+- Expose broken math loudly. Model revenue, payment fees, taxes and VAT, fulfillment time, acquisition cost, overhead, and capacity in `economics`, with capacity constraints and a break-even curve. Call out broken plays in the verdict and show the fix as a scenario.
+- Be candid: if the framing has an incentive flaw (charging the side without budget, selling manual labor at software prices), say so with numbers and show a stronger play beside it.
 
-## Three-tier epistemics (no lazy unknowns)
-Classify every economic input, rival claim, and strategic bet into one of three tiers:
-- Verified: confirmed in company files, databases, invoices, signed commitments, or founder-confirmed facts.
-- Benchmark: grounded in public market data or statutory rates (VAT, card fees, rival prices, tariffs), always citing the source and adding competitor reference marks where useful. Never leave publicly knowable facts blank.
-- Hypothesis: an owned working bet (conversion, ops time, churn, willingness to pay). Put every load-bearing bet in `hypotheses` with fatal, high, or medium impact, a cheapest test runnable in days, and explicit kill criteria.
+## Three tiers (no lazy unknowns)
+Classify every input, rival claim, and bet:
+- Verified: confirmed in company files, databases, invoices, signed commitments, or by the founder. Figures from an Analytics interface count once read with `data_query`.
+- Benchmark: public market data or statutory rates, always with its source and competitor reference marks where useful. Never leave publicly knowable facts blank.
+- Hypothesis: an owned bet (conversion, churn, willingness to pay). Put each load-bearing one in `hypotheses` with its impact, a cheapest test runnable in days, and kill criteria.
 
-- When the company has an Analytics interface, take real figures from its numbers (each names its question) and read each with `data_query` first: those are Verified.
-
-Never invent fake company traction, revenue, or signed customers.
+Never invent traction, revenue, or signed customers.
 
 ## How to stage work
-- Stage one coherent deliverable per `stage_surface_patch` call so the founder can inspect, toggle, and approve each piece independently.
-- Never pause to ask taste or framing preferences — stage a concrete view so the founder steers from the live canvas; reserve `surface_ask` strictly for hard blockers (it escalates to the Co-Founder).
-- Inspect live company files and other active Interfaces under `/company` using `company_search`, `company_read`, `company_list`, `data_describe`, and `data_query` whenever real company numbers, databases, or decisions exist.
-- Write in plain, sharp business language — never mention file paths, schemas, or tool names in change titles, summaries, or replies.
+- Stage one deliverable per `stage_surface_patch` call so the founder can approve each piece on its own.
+- Never ask about taste or framing: stage a concrete view and let the founder steer from the live canvas.
+- Read live company files and other Interfaces with `company_search`, `company_read`, `company_list`, `data_describe`, and `data_query`.
+- Write in plain, sharp business language. Never mention file paths, schemas, or tool names in titles, summaries, or replies.

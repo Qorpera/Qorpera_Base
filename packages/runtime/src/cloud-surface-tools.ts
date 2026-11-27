@@ -15,6 +15,7 @@ import {
 	parseSha256Hex,
 	parseStudioPatchOps,
 	parseSurfaceLayoutText,
+	parseSurfaceReportEvidence,
 	parseSurfaceSessionArtifact,
 	parseSurfaceSessionChecksSummary,
 	parseSurfaceSessionProgressStep,
@@ -42,6 +43,7 @@ import {
 	SURFACE_PREVIEW_MODES,
 	SURFACE_PROGRESS_STEP_STATUSES,
 	SURFACE_PUBLISH_STATUSES,
+	SURFACE_REPORT_RESEARCH_KEYS,
 	SURFACE_SESSION_ARTIFACT_FORMATS,
 	SURFACE_SESSION_ARTIFACT_KEY_PATTERN,
 	SURFACE_SESSION_ARTIFACT_KINDS,
@@ -65,6 +67,8 @@ import {
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
+	surfaceReportMarkedKey,
+	WireValueError,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
@@ -1773,6 +1777,15 @@ function validateReportMetrics(metrics: unknown, path: string): void {
 	}
 }
 
+function checkReportEvidence(report: Readonly<Record<string, unknown>>, path: string): void {
+	try {
+		parseSurfaceReportEvidence(report, { path });
+	} catch (error) {
+		if (error instanceof WireValueError) throw reportRefusal(path, error.message);
+		throw error;
+	}
+}
+
 export function checkStagedSurfaceDeliverables(
 	ops: readonly StudioPatchOp[],
 	options?: { readonly allowMultipleDeliverables?: boolean },
@@ -1799,6 +1812,7 @@ export function checkStagedSurfaceDeliverables(
 				}
 				if (parsed.keyMetrics !== undefined) validateReportMetrics(parsed.keyMetrics, op.path);
 				validateReportSections(parsed.sections, op.path);
+				checkReportEvidence(parsed, op.path);
 			} else if (op.op === "merge_json") {
 				const patch = op.patch;
 				if (patch.headline !== undefined && !nonEmptyString(patch.headline)) {
@@ -1806,6 +1820,30 @@ export function checkStagedSurfaceDeliverables(
 				}
 				if (patch.keyMetrics !== undefined) validateReportMetrics(patch.keyMetrics, op.path);
 				if (patch.sections !== undefined) validateReportSections(patch.sections, op.path);
+				const whole = SURFACE_REPORT_RESEARCH_KEYS.filter((key) => patch[key] !== undefined);
+				if (whole.length > 0) {
+					throw reportRefusal(
+						op.path,
+						`${whole.join(", ")} cannot be merged: a research post's question, short answer, sources, method and not-found list are written whole, with write_text`,
+					);
+				}
+				if (patch.theme === null) {
+					throw reportRefusal(
+						op.path,
+						"theme cannot be removed by a merge: a research post needs it; write the post whole, with write_text",
+					);
+				}
+				const marked = surfaceReportMarkedKey(patch);
+				if (marked !== undefined) {
+					throw reportRefusal(
+						op.path,
+						`${marked} carries a source mark in a merge: a mark is read against the post's sources, so a post with marks is written whole, with write_text`,
+					);
+				}
+				checkReportEvidence(
+					Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== null)),
+					op.path,
+				);
 			}
 		} else if (STANDALONE_HTML_FILE_RE.test(op.path) && !MODULE_PATH_RE.test(normalized)) {
 			deliverablePaths.add(normalized);
