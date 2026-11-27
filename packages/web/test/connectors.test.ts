@@ -214,6 +214,29 @@ describe("connector client", () => {
 		).rejects.toThrow("cannot be finished here");
 	});
 
+	it("captures a typed GitHub token at the company's broker with the company in the query", async () => {
+		const cloud = cloudWith(() => ticket);
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({}));
+		const connectors = createWebConnectors(cloud, profile, fetch);
+		await connectors.captureToken("github", " github_pat_value ", undefined);
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_begin_cloud_secret_capture",
+			expect.objectContaining({ p_owner_kind: "company", p_owner_user_id: null, p_connector_id: "github" }),
+		);
+		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/captures/${id(20)}?company=${id(10)}`);
+		expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toMatchObject({
+			schema: "qorpera.cloud-secret-capture-request/v1",
+			fields: { access_token: "github_pat_value" },
+		});
+		await expect(connectors.captureToken("github", "bad token", undefined)).rejects.toThrow(
+			"That does not look like a token.",
+		);
+		await expect(connectors.captureToken("gmail", "ya29.token", undefined)).rejects.toThrow(
+			"This service only connects by signing in.",
+		);
+		expect(cloud.rpc).toHaveBeenCalledTimes(1);
+	});
+
 	it("refuses a ticket whose id is not a UUID before any request leaves", async () => {
 		const cloud = cloudWith(() => ({ ...ticket, ticketId: "../../v1/operations" }));
 		const fetch = vi.fn<typeof globalThis.fetch>();
