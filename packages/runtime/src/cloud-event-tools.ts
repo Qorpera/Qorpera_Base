@@ -2,6 +2,8 @@ import { parseCloudCompanyPath } from "@qorpera/cloud-client/company-path-schema
 import { type JsonValue, UUID_ANY_CASE_PATTERN as UUID } from "@qorpera/contracts";
 import type { CloudCompanyFolderClient, CloudCompanyFolderHookRequest } from "./cloud-company-folder-client.ts";
 import type { CloudCompanyPathControl } from "./cloud-company-path-gateway.ts";
+import { CloudCompanyPathRpcRefusal } from "./cloud-company-path-refusal.ts";
+import { CloudControlRpcRefused } from "./cloud-control-errors.ts";
 import {
 	type CloudNativeToolBinding,
 	type CloudNativeToolIdentity,
@@ -43,6 +45,56 @@ const MANAGE_MAIL_ACTIONS = new Set([
 	"list_blocked",
 ]);
 const THREAD_BULK_ACTIONS = new Set(["trash", "restore", "archive", "unarchive", "star", "unstar"]);
+const MANAGE_MAIL_REFUSALS: ReadonlyMap<string, string> = new Map(
+	(
+		[
+			[
+				"42501",
+				"Mailto unsubscribe target does not match the sender domain",
+				"Mailto unsubscribe target does not match the sender domain; use the web link or block the sender instead",
+			],
+			[
+				"42501",
+				"Account verification mail cannot be unsubscribed",
+				"Account verification mail cannot be unsubscribed",
+			],
+			["42501", "Unsubscribe target cannot be a company mailbox", "Unsubscribe target cannot be a company mailbox"],
+			["42501", "The mailbox is no longer active", "The mailbox is no longer active"],
+			["22023", "No mail thread of this company has that id", "No mail thread of this company has that id"],
+			[
+				"22023",
+				"No received email of this company has that delivery id",
+				"No received email of this company has that delivery id",
+			],
+			["22023", "This message has no unsubscribe information", "This message has no unsubscribe information"],
+			[
+				"22023",
+				"This conversation has no unsubscribe information",
+				"This conversation has no unsubscribe information",
+			],
+			["22023", "Sender must be a valid email address or domain", "Sender must be a valid email address or domain"],
+			["0A000", "Sending company mail is switched off", "Sending company mail is switched off"],
+			[
+				"0A000",
+				"The mailbox is paused; resume it to unsubscribe by email",
+				"The mailbox is paused; resume it to unsubscribe by email",
+			],
+			[
+				"54000",
+				"The company has reached its email sending limit",
+				"The company has reached its email sending limit",
+			],
+		] as const
+	).map(([code, detail, text]) => [`${code} ${detail}`, text] as const),
+);
+
+function rethrowManageMailRefusal(error: unknown): never {
+	if (error instanceof CloudControlRpcRefused || error instanceof CloudCompanyPathRpcRefusal) {
+		const refusal = MANAGE_MAIL_REFUSALS.get(`${error.code} ${error.detail}`);
+		if (refusal) throw new CloudToolRefusal(refusal);
+	}
+	throw error;
+}
 /** An instant with its offset, as the database reads it. */
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?(Z|[+-]\d{2}:?\d{2})$/;
 const FIND_WAIT_SECONDS = 120;
@@ -800,15 +852,20 @@ export function cloudEventTools(
 			assertContext(context);
 			const req = value as Record<string, JsonValue>;
 			if (req.action !== "unsubscribe") return value;
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call(
-						"qorpera_manage_agent_mail",
-						{ p_binding: admitted, p_call_id: context.callId, p_request: { ...req, preview: true } },
-						requestSignal,
-					),
-				context.signal,
-			);
+			let result: unknown;
+			try {
+				result = await cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_manage_agent_mail",
+							{ p_binding: admitted, p_call_id: context.callId, p_request: { ...req, preview: true } },
+							requestSignal,
+						),
+					context.signal,
+				);
+			} catch (error) {
+				rethrowManageMailRefusal(error);
+			}
 			const r = result as Record<string, unknown> | null;
 			if (
 				!r ||
@@ -838,15 +895,20 @@ export function cloudEventTools(
 			if (request.action === "unsubscribe" && typeof raw.resolvedDeliveryId === "string" && !request.deliveryId) {
 				request.deliveryId = raw.resolvedDeliveryId;
 			}
-			const result = await cloudToolRequest(
-				(requestSignal) =>
-					control.call(
-						"qorpera_manage_agent_mail",
-						{ p_binding: admitted, p_call_id: context.callId, p_request: request },
-						requestSignal,
-					),
-				context.signal,
-			);
+			let result: unknown;
+			try {
+				result = await cloudToolRequest(
+					(requestSignal) =>
+						control.call(
+							"qorpera_manage_agent_mail",
+							{ p_binding: admitted, p_call_id: context.callId, p_request: request },
+							requestSignal,
+						),
+					context.signal,
+				);
+			} catch (error) {
+				rethrowManageMailRefusal(error);
+			}
 			const r = result as Record<string, unknown> | null;
 			if (!r || typeof r !== "object" || r.schema !== "qorpera.agent-mail-action/v1" || r.runId !== admitted.runId)
 				throw new Error("Mail action receipt differs");

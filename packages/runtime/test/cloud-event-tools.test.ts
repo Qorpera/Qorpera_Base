@@ -4,7 +4,8 @@ import {
 	type CloudCompanyFolderSignedHooks,
 } from "@qorpera/runtime/cloud-company-folder-client";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
-import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudCompanyFolderRpcError, CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
+import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -1241,6 +1242,43 @@ describe("agent event tools", () => {
 				expect(f.call).not.toHaveBeenCalled();
 			} finally {
 				f.run.close();
+			}
+		});
+
+		it("surfaces known unsubscribe SQL refusals in prepare as REFUSED instead of TOOL_UNAVAILABLE", async () => {
+			const cases = [
+				[
+					"r1",
+					new CloudControlRpcRefused("42501", "Mailto unsubscribe target does not match the sender domain"),
+					"REFUSED: Mailto unsubscribe target does not match the sender domain; use the web link or block the sender instead",
+				],
+				[
+					"r2",
+					new CloudCompanyPathRpcRefusal("Account verification mail cannot be unsubscribed"),
+					"REFUSED: Account verification mail cannot be unsubscribed",
+				],
+				[
+					"r3",
+					new CloudControlRpcRefused("22023", "This conversation has no unsubscribe information"),
+					"REFUSED: This conversation has no unsubscribe information",
+				],
+			] as const;
+			for (const [callId, err, expected] of cases) {
+				const f = await fixture(() => {
+					throw err;
+				});
+				try {
+					const reply = await f.boundary.invoke(callId, "qorpera", "manage_mail", {
+						action: "unsubscribe",
+						threadId,
+					});
+					expect(reply.success).toBe(false);
+					const envelope = JSON.parse(reply.contentItems[0]!.text) as CloudToolResult;
+					expect(envelope.status).toBe("denied");
+					expect(envelope.content).toMatchObject({ kind: "text", text: expected });
+				} finally {
+					f.run.close();
+				}
 			}
 		});
 	});
