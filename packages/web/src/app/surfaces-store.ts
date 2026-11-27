@@ -435,6 +435,7 @@ export interface SurfacesState {
 	readonly selectedTrackId: Readonly<Record<string, string | null>>;
 	readonly sessionArtifacts: Readonly<Record<string, SurfaceSessionArtifact>>;
 	readonly loadingArtifacts: Readonly<Record<string, true>>;
+	readonly failedArtifacts: Readonly<Record<string, number>>;
 	readonly undo?: SurfaceUndo;
 	readonly busy: Readonly<Record<string, true>>;
 	readonly error?: string;
@@ -1628,6 +1629,14 @@ export class SurfacesStore {
 	#localSeq = 0;
 	readonly #imageReads = new Map<string, string>();
 	readonly #artifactReads = new Map<string, Promise<SurfaceSessionArtifact | undefined>>();
+	readonly #pendingTrackPreview = new Map<
+		string,
+		{
+			readonly sessionId?: string | null;
+			readonly combineSessionIds?: readonly string[] | null;
+			readonly activeRoute?: string;
+		}
+	>();
 	readonly #binaryReads = new Map<string, { readonly read: Promise<Uint8Array>; readonly bytes: number }>();
 	readonly #reconciliationRequested = new Set<string>();
 	#loaded: Promise<void> | undefined;
@@ -1671,6 +1680,7 @@ export class SurfacesStore {
 			selectedTrackId: {},
 			sessionArtifacts: {},
 			loadingArtifacts: {},
+			failedArtifacts: {},
 			busy: {},
 		});
 		if (options.signal.aborted) this.#visitAbort.abort();
@@ -4290,6 +4300,18 @@ export class SurfacesStore {
 			this.store.set((state) => ({
 				selectedTrackId: { ...state.selectedTrackId, [surfaceId]: session.id },
 			}));
+			const preview = workspace?.previewState;
+			if (
+				preview &&
+				(preview.selectedSessionId !== session.id ||
+					preview.previewScope === "explicit" ||
+					preview.primary.status !== "live_baseline")
+			) {
+				void this.selectTrackPreview(surfaceId, {
+					sessionId: session.id,
+					activeRoute: preview.primary.activeRoute || "/",
+				});
+			}
 		}
 		void this.refreshWorkspace(surfaceId);
 		return session;
@@ -5917,7 +5939,7 @@ export class SurfacesStore {
 					return;
 				}
 			}
-			const sessionId = preview.selectedSessionId ?? this.selectedTrackOf(surfaceId);
+			const sessionId = this.selectedTrackOf(surfaceId);
 			await this.selectTrackPreview(surfaceId, { sessionId, activeRoute });
 			return;
 		}
@@ -6176,21 +6198,35 @@ export class SurfacesStore {
 		} = {},
 	): Promise<SurfacePreviewCompositionState | undefined> {
 		if (isLocalSurfaceId(surfaceId)) return undefined;
-		const previewState = await this.#run(`track-preview:${surfaceId}`, async (client) => {
-			if (!client.selectSurfaceTrackPreview) throw new Error(this.#options.unavailableMessage);
-			return await client.selectSurfaceTrackPreview(surfaceId, options);
-		});
-		if (!previewState) return undefined;
-		const workspace = this.workspace(surfaceId);
-		if (workspace) {
-			this.#putWorkspace({ ...workspace, previewState }, true, { fromPreviewSync: true });
+		if (!this.#options.client?.selectSurfaceTrackPreview) return undefined;
+		const busyKey = `track-preview:${surfaceId}`;
+		if (this.state.busy[busyKey]) {
+			this.#pendingTrackPreview.set(surfaceId, options);
+			return undefined;
 		}
-		if (options.sessionId) {
-			this.store.set((state) => ({
-				selectedTrackId: { ...state.selectedTrackId, [surfaceId]: options.sessionId! },
-			}));
+		let next: typeof options | undefined = options;
+		let latest: SurfacePreviewCompositionState | undefined;
+		while (next) {
+			const current = next;
+			next = undefined;
+			const previewState = await this.#run(busyKey, async (client) => {
+				if (!client.selectSurfaceTrackPreview) return undefined;
+				return await client.selectSurfaceTrackPreview(surfaceId, current);
+			});
+			if (previewState) {
+				latest = previewState;
+				const workspace = this.workspace(surfaceId);
+				if (workspace) {
+					this.#putWorkspace({ ...workspace, previewState }, true, { fromPreviewSync: true });
+				}
+			}
+			const queued = this.#pendingTrackPreview.get(surfaceId);
+			if (queued) {
+				this.#pendingTrackPreview.delete(surfaceId);
+				next = queued;
+			}
 		}
-		return previewState;
+		return latest;
 	}
 
 	async shipTrack(sessionId: string, publish = false): Promise<SurfaceSession | undefined> {
@@ -6262,6 +6298,7 @@ export class SurfacesStore {
 	async loadSessionArtifact(
 		artifactId: string,
 		expectedRevision?: number,
+		options?: { readonly force?: boolean },
 	): Promise<SurfaceSessionArtifact | undefined> {
 		const cached = this.state.sessionArtifacts[artifactId];
 		if (
@@ -6271,24 +6308,46 @@ export class SurfacesStore {
 		) {
 			return cached;
 		}
+		const failedRev = this.state.failedArtifacts[artifactId];
+		if (
+			!options?.force &&
+			failedRev !== undefined &&
+			(expectedRevision === undefined || failedRev >= expectedRevision)
+		) {
+			return cached;
+		}
 		const client = this.#options.client;
 		if (!client?.getSurfaceSessionArtifact) return cached;
 		const key = `${artifactId}:${expectedRevision ?? ""}`;
 		const inFlight = this.#artifactReads.get(key);
 		if (inFlight) return inFlight;
-		this.store.set((state) => ({
-			loadingArtifacts: { ...state.loadingArtifacts, [artifactId]: true },
-		}));
+		this.store.set((state) => {
+			const failedArtifacts = { ...state.failedArtifacts };
+			delete failedArtifacts[artifactId];
+			return {
+				loadingArtifacts: { ...state.loadingArtifacts, [artifactId]: true },
+				failedArtifacts,
+			};
+		});
 		const promise = (async (): Promise<SurfaceSessionArtifact | undefined> => {
 			try {
 				const loaded = await client.getSurfaceSessionArtifact!(artifactId, this.#options.signal);
 				if (this.#options.signal.aborted) return undefined;
+				const satisfied = Boolean(
+					loaded &&
+						(loaded.contentText !== null || loaded.contentFormat === "image_ref") &&
+						(expectedRevision === undefined || loaded.revision >= expectedRevision),
+				);
 				this.store.set((state) => {
 					const loadingArtifacts = { ...state.loadingArtifacts };
 					delete loadingArtifacts[artifactId];
+					const failedArtifacts = { ...state.failedArtifacts };
+					if (satisfied) delete failedArtifacts[artifactId];
+					else failedArtifacts[artifactId] = expectedRevision ?? 0;
 					return {
-						sessionArtifacts: { ...state.sessionArtifacts, [artifactId]: loaded },
+						...(loaded ? { sessionArtifacts: { ...state.sessionArtifacts, [artifactId]: loaded } } : {}),
 						loadingArtifacts,
+						failedArtifacts,
 					};
 				});
 				return loaded;
@@ -6299,6 +6358,7 @@ export class SurfacesStore {
 						delete loadingArtifacts[artifactId];
 						return {
 							loadingArtifacts,
+							failedArtifacts: { ...state.failedArtifacts, [artifactId]: expectedRevision ?? 0 },
 							error: isMissingSurfaceRpcError(error) ? this.#options.unavailableMessage : describe(error),
 						};
 					});

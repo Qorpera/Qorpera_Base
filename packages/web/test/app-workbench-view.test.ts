@@ -431,6 +431,8 @@ describe("AppWorkbenchView", () => {
 		expect(mockupFrame).not.toBeNull();
 		expect(mockupFrame.getAttribute("sandbox")).toBe("");
 		expect(mockupFrame.getAttribute("referrerpolicy")).toBe("no-referrer");
+		expect(mockupFrame.srcdoc).toContain("Content-Security-Policy");
+		expect(mockupFrame.srcdoc).toContain("default-src 'none'");
 		expect(mockupFrame.srcdoc).toContain("Mockup Hero");
 
 		view.el.querySelector<HTMLButtonElement>(`[data-act="open-artifact"][data-artifact="${ARTIFACT_PLAN}"]`)!.click();
@@ -491,6 +493,120 @@ describe("AppWorkbenchView", () => {
 		view.update();
 		expect(view.el.classList.contains("is-workbench")).toBe(true);
 
+		view.dispose();
+		store.dispose();
+	});
+
+	it("stops automatic artifact retries on failure, re-points preview on track switch, and keeps parked workbench inactive in full preview", async () => {
+		const webApp = appSummary();
+		const trackA = session(["staged"], {
+			id: SESSION,
+			surfaceId: webApp.id,
+			title: "Track A",
+			artifacts: [mockupArtifact()],
+		});
+		const trackB = session([], {
+			id: SESSION_2,
+			surfaceId: webApp.id,
+			title: "Track B",
+			changes: [],
+			openChangeCount: 0,
+		});
+		const previewFor = (sessionId: string | null): SurfacePreviewCompositionState => ({
+			surfaceId: webApp.id,
+			mode: "single",
+			selectedSessionId: sessionId,
+			previewScope: "track",
+			primary: {
+				previewId: sessionId === SESSION ? PREVIEW_IDS[0] : PREVIEW_IDS[1],
+				status: sessionId === SESSION ? "ready" : "live_baseline",
+				doorActionUrl:
+					sessionId === SESSION ? "https://stifteren-web-app--p0.qorpera.site/__qorpera_preview_door" : null,
+				memberPass: sessionId === SESSION ? VALID_PASS : null,
+				activeRoute: "/",
+				toggledChangeIds: sessionId === SESSION ? [CHANGES[0]] : [],
+				conflictReport: null,
+				errorDetail: null,
+			},
+			compareFrames: [],
+		});
+		let currentPreview = previewFor(SESSION);
+		const getSurfaceSessionArtifact = vi.fn(async () => {
+			throw new Error("Artifact offline");
+		});
+		const selectSurfaceTrackPreview = vi.fn(async (_surfaceId: string, opts?: { sessionId?: string | null }) => {
+			currentPreview = previewFor(opts?.sessionId ?? null);
+			return currentPreview;
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [webApp]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([trackA, trackB], { surface: webApp, previewState: currentPreview }),
+			),
+			getSurfaceSessionArtifact,
+			selectSurfaceTrackPreview,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "web-app");
+		document.body.append(view.el);
+		const unsub = store.store.subscribe(() => view.update());
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Isolated track preview");
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="full-preview"]')!.click();
+		view.update();
+		view.park();
+		view.activate();
+		await flush();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".workbench")?.hidden).toBe(true);
+		expect(view.el.querySelector(".workbench iframe.surface-frame")).toBeNull();
+		view.el.querySelector<HTMLButtonElement>('[data-act="back-to-workbench"]')!.click();
+		view.update();
+		expect(view.el.querySelector<HTMLElement>(".workbench")?.hidden).toBe(false);
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION_2}"]`)!.click();
+		view.update();
+		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Live baseline");
+		expect(view.el.querySelector(".workbench iframe.surface-frame")).toBeNull();
+		await flush();
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledWith(SURFACE, { sessionId: SESSION_2, activeRoute: "/" });
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION}"]`)!.click();
+		await flush();
+		view.update();
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, { sessionId: SESSION, activeRoute: "/" });
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="new-track"]')!.click();
+		await flush();
+		expect(selectSurfaceTrackPreview).toHaveBeenLastCalledWith(SURFACE, { sessionId: null, activeRoute: "/" });
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION}"]`)!.click();
+		await flush();
+		view.update();
+		view.el
+			.querySelector<HTMLButtonElement>(`[data-act="open-artifact"][data-artifact="${ARTIFACT_MOCKUP}"]`)!
+			.click();
+		await flush();
+		view.update();
+		await flush();
+		view.update();
+		store.clearError();
+		await flush();
+		view.update();
+		expect(getSurfaceSessionArtifact).toHaveBeenCalledTimes(1);
+		const retryBtn = view.el.querySelector<HTMLButtonElement>('[data-act="retry-artifact"]')!;
+		expect(retryBtn).not.toBeNull();
+		retryBtn.click();
+		await flush();
+		expect(getSurfaceSessionArtifact).toHaveBeenCalledTimes(2);
+
+		unsub();
 		view.dispose();
 		store.dispose();
 	});

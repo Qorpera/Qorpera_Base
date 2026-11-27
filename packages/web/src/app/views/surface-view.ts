@@ -889,7 +889,6 @@ export class SurfaceView {
 		this.#primaryDoor.resetRetryState();
 		for (const entry of this.#compareDoors.values()) entry.stage.resetRetryState();
 		this.#framesShown = "";
-		this.#workbench?.activate();
 		void this.#host.store.openSurface(this.slug);
 		this.update();
 	}
@@ -1038,6 +1037,7 @@ export class SurfaceView {
 				this.el.append(this.#workbench.el);
 			}
 			this.#workbench.el.hidden = false;
+			this.#workbench.activate();
 			this.#workbench.update(surface);
 			return;
 		}
@@ -2508,7 +2508,6 @@ export class SurfaceView {
 		switch (act) {
 			case "back-to-workbench":
 				this.#workbenchFullPreview = false;
-				this.#workbench?.activate();
 				this.update();
 				return;
 			case "mode": {

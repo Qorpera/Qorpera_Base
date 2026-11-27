@@ -39,7 +39,21 @@ const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 920;
 const PANEL_MAX_SHARE = 0.62;
 const MARKDOWN_CACHE_MAX = 96;
+const MOCKUP_CSP_POLICY = [
+	"default-src 'none'",
+	"img-src data: blob:",
+	"style-src 'unsafe-inline'",
+	"font-src data:",
+].join("; ");
+const MOCKUP_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${MOCKUP_CSP_POLICY}">`;
 const parsedMarkdownCache = new Map<string, HTMLElement>();
+
+function sandboxedMockupSrcdoc(html: string): string {
+	if (/<head\b[^>]*>/i.test(html)) {
+		return html.replace(/<head\b[^>]*>/i, (match) => `${match}${MOCKUP_CSP_META}`);
+	}
+	return `${MOCKUP_CSP_META}${html}`;
+}
 
 function cachedMarkdown(text: string): HTMLElement {
 	const cached = parsedMarkdownCache.get(text);
@@ -274,6 +288,7 @@ export class AppWorkbenchView {
 	#selectedMockupId: string | null = null;
 	#selectedPlanId: string | null = null;
 	#combining = false;
+	#explicitCombineActive = false;
 	#searchQuery = "";
 	#armedKey: string | null = null;
 	#armTimer: ReturnType<typeof setTimeout> | undefined;
@@ -479,6 +494,7 @@ export class AppWorkbenchView {
 		const look = store.lookOf(surface);
 		if (switchingSurface) {
 			this.#combining = false;
+			this.#explicitCombineActive = false;
 			this.#combineSelected.clear();
 			this.#selectedMockupId = null;
 			this.#selectedPlanId = null;
@@ -1766,8 +1782,9 @@ export class AppWorkbenchView {
 			this.#routeInput.value = route;
 		}
 
-		const showDoor = Boolean(primary && primary.status !== "live_baseline");
-		const scopeLabel = this.#previewScopeLabel(preview, workspace, selected);
+		const previewMatches = this.#previewMatchesSelection(preview, selected);
+		const showDoor = Boolean(primary && primary.status !== "live_baseline" && previewMatches);
+		const scopeLabel = this.#previewScopeLabel(preview, workspace, selected, previewMatches);
 		const liveHref = safeExternalUrl(surface.liveUrl);
 		const previewKey = JSON.stringify([
 			surface.id,
@@ -1776,6 +1793,7 @@ export class AppWorkbenchView {
 			this.#previewDevice,
 			liveHref,
 			showDoor,
+			previewMatches,
 			primary?.previewId ?? null,
 			primary?.status ?? "none",
 			primary?.activeRoute ?? "/",
@@ -1885,12 +1903,38 @@ export class AppWorkbenchView {
 		}
 	}
 
+	#previewMatchesSelection(
+		preview: SurfacePreviewCompositionState | undefined,
+		selected: SurfaceSession | undefined,
+	): boolean {
+		if (!preview || preview.primary.status === "live_baseline") return false;
+		if (preview.previewScope === "explicit") return this.#explicitCombineActive;
+		if (preview.previewScope === "track") return Boolean(selected && preview.selectedSessionId === selected.id);
+		return preview.selectedSessionId == null || Boolean(selected && preview.selectedSessionId === selected.id);
+	}
+
+	#syncPreviewToSelection(surface: SurfaceSummary, sessionId: string | null): void {
+		const store = this.#host.store;
+		const preview = store.workspace(surface.id)?.previewState;
+		if (!preview) return;
+		const route = this.#routeInput.value.trim() || preview.primary.activeRoute || "/";
+		const needsSync =
+			preview.previewScope === "explicit" ||
+			(sessionId === null
+				? preview.selectedSessionId != null || preview.primary.status !== "live_baseline"
+				: preview.selectedSessionId !== sessionId || preview.previewScope !== "track");
+		if (needsSync) {
+			void store.selectTrackPreview(surface.id, { sessionId, activeRoute: route });
+		}
+	}
+
 	#previewScopeLabel(
 		preview: SurfacePreviewCompositionState | undefined,
 		workspace: SurfaceWorkspace | undefined,
 		selected: SurfaceSession | undefined,
+		previewMatches: boolean,
 	): string {
-		if (!preview || preview.primary.status === "live_baseline") return t("Live baseline");
+		if (!preview || preview.primary.status === "live_baseline" || !previewMatches) return t("Live baseline");
 		if (preview.previewScope === "explicit") {
 			const toggled = new Set(preview.primary.toggledChangeIds);
 			const trackCount = (workspace?.activeSessions ?? []).filter((session) =>
@@ -1898,7 +1942,7 @@ export class AppWorkbenchView {
 			).length;
 			return trackCount >= 2 ? t("Combined preview ({count} tracks)", { count: trackCount }) : t("Combined preview");
 		}
-		if (preview.previewScope === "track" || (selected && preview.selectedSessionId === selected.id)) {
+		if (preview.previewScope === "track" && selected && preview.selectedSessionId === selected.id) {
 			return t("Isolated track preview");
 		}
 		return t("Preview");
@@ -1935,13 +1979,15 @@ export class AppWorkbenchView {
 		const store = this.#host.store;
 		const cached = store.state.sessionArtifacts[current.id];
 		const loading = Boolean(store.state.loadingArtifacts[current.id]);
+		const failedRev = store.state.failedArtifacts[current.id];
+		const loadFailed = failedRev !== undefined && failedRev >= current.revision;
 		const resolved =
 			cached &&
 			cached.revision >= current.revision &&
 			(cached.contentText !== null || cached.contentFormat === "image_ref")
 				? cached
 				: current;
-		if (resolved.contentText === null && resolved.contentFormat !== "image_ref" && !loading) {
+		if (resolved.contentText === null && resolved.contentFormat !== "image_ref" && !loading && !loadFailed) {
 			void store.loadSessionArtifact(current.id, current.revision);
 		}
 		const paneKey = JSON.stringify([
@@ -1954,6 +2000,7 @@ export class AppWorkbenchView {
 			resolved.contentText !== null ? resolved.contentText.length : null,
 			resolved.updatedAt,
 			loading,
+			loadFailed,
 			items.map((item) => [item.id, item.title, item.revision]),
 		]);
 		if ((group === "mockup" ? this.#mockupPaneKey : this.#planPaneKey) === paneKey) return;
@@ -1970,7 +2017,7 @@ export class AppWorkbenchView {
 							referrerpolicy: "no-referrer",
 							title: resolved.title,
 						}) as HTMLIFrameElement;
-						iframe.srcdoc = resolved.contentText;
+						iframe.srcdoc = sandboxedMockupSrcdoc(resolved.contentText);
 						return iframe;
 					})()
 				: resolved.contentFormat === "markdown" && resolved.contentText !== null
@@ -1979,7 +2026,22 @@ export class AppWorkbenchView {
 						? h("pre", { class: "workbench-artifact-pre" }, resolved.contentText)
 						: resolved.contentFormat === "image_ref"
 							? h("div", { class: "workbench-pane-empty" }, h("p", null, resolved.summary || resolved.title))
-							: h("div", { class: "workbench-pane-empty" }, h("p", null, t("Artifact content is unavailable.")));
+							: h(
+									"div",
+									{ class: "workbench-pane-empty" },
+									h("p", null, t("Artifact content is unavailable.")),
+									h(
+										"button",
+										{
+											type: "button",
+											class: "btn btn-small",
+											"data-act": "retry-artifact",
+											"data-artifact": current.id,
+											"data-revision": String(current.revision),
+										},
+										t("Retry"),
+									),
+								);
 
 		replace(
 			container,
@@ -2391,34 +2453,25 @@ export class AppWorkbenchView {
 			}
 			case "new-track":
 				this.#combining = false;
+				this.#explicitCombineActive = false;
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, null);
+				this.#syncPreviewToSelection(surface, null);
 				this.update(surface);
 				this.focus();
 				return;
 			case "select-track": {
 				const sessionId = target.dataset.session;
 				if (!sessionId) return;
+				this.#combining = false;
+				this.#explicitCombineActive = false;
+				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, sessionId);
 				this.#selectedMockupId = null;
 				this.#selectedPlanId = null;
-				const preview = store.workspace(surface.id)?.previewState;
-				const nextSession = store.session(sessionId);
-				if (
-					this.#panelOpen &&
-					this.#panelTab === "preview" &&
-					preview?.previewScope === "track" &&
-					preview.selectedSessionId !== sessionId &&
-					nextSession &&
-					sessionOpenChanges(nextSession).length > 0
-				) {
-					void store.selectTrackPreview(surface.id, {
-						sessionId,
-						activeRoute: this.#routeInput.value.trim() || "/",
-					});
-				}
+				this.#syncPreviewToSelection(surface, sessionId);
 				this.update(surface);
 				return;
 			}
@@ -2441,6 +2494,7 @@ export class AppWorkbenchView {
 				if (ids.length < 2) return;
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
+				this.#explicitCombineActive = true;
 				await store.combineTracks(surface.id, ids, false);
 				this.update(surface);
 				return;
@@ -2452,6 +2506,7 @@ export class AppWorkbenchView {
 				const result = await store.combineTracks(surface.id, ids, true);
 				if (result) {
 					this.#combining = false;
+					this.#explicitCombineActive = false;
 					this.#combineSelected.clear();
 				}
 				this.update(surface);
@@ -2460,8 +2515,12 @@ export class AppWorkbenchView {
 			case "preview-track": {
 				const sessionId = target.dataset.session;
 				if (!sessionId) return;
+				this.#combining = false;
+				this.#explicitCombineActive = false;
+				this.#combineSelected.clear();
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
+				store.selectTrack(surface.id, sessionId);
 				await store.selectTrackPreview(surface.id, {
 					sessionId,
 					activeRoute: this.#routeInput.value.trim() || "/",
@@ -2517,8 +2576,10 @@ export class AppWorkbenchView {
 				if (!confirmed) return;
 				const ok = await store.discardSession(sessionId);
 				if (ok) {
+					this.#explicitCombineActive = false;
 					const nextActive = store.workspace(surface.id)?.activeSessions[0]?.id ?? null;
 					store.selectTrack(surface.id, nextActive);
+					this.#syncPreviewToSelection(surface, nextActive);
 					this.update(surface);
 				}
 				return;
@@ -2544,7 +2605,7 @@ export class AppWorkbenchView {
 				}
 				const session = store.session(store.selectedTrackOf(surface.id) ?? "");
 				const meta = session?.artifacts?.find((item) => item.id === artifactId);
-				void store.loadSessionArtifact(artifactId, meta?.revision);
+				void store.loadSessionArtifact(artifactId, meta?.revision, { force: true });
 				this.update(surface);
 				return;
 			}
@@ -2556,7 +2617,16 @@ export class AppWorkbenchView {
 				else this.#selectedPlanId = artifactId;
 				const session = store.session(store.selectedTrackOf(surface.id) ?? "");
 				const meta = session?.artifacts?.find((item) => item.id === artifactId);
-				void store.loadSessionArtifact(artifactId, meta?.revision);
+				void store.loadSessionArtifact(artifactId, meta?.revision, { force: true });
+				this.update(surface);
+				return;
+			}
+			case "retry-artifact": {
+				const artifactId = target.dataset.artifact;
+				if (!artifactId) return;
+				const parsedRev = Number(target.dataset.revision);
+				const expectedRevision = Number.isFinite(parsedRev) && parsedRev >= 1 ? parsedRev : undefined;
+				void store.loadSessionArtifact(artifactId, expectedRevision, { force: true });
 				this.update(surface);
 				return;
 			}
