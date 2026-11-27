@@ -11,8 +11,11 @@ import {
 	answerRecords,
 	askKey,
 	askQuestion,
+	cellText,
+	codeWords,
 	figureText,
 	isRefusal,
+	isUnconnected,
 	pickFigure,
 	previousSource,
 	type SurfaceAskState,
@@ -22,7 +25,7 @@ import {
 	withUnit,
 } from "../src/app/views/surface-blocks/live.ts";
 import { SurfaceLayoutView } from "../src/app/views/surface-layout-view.ts";
-import { setLanguagePreference } from "../src/ui/preferences.ts";
+import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fakeClient, storeWith, summary } from "./surface-fixtures.ts";
 
 const ROOT = "surfaces/analytics";
@@ -193,6 +196,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	setLanguagePreference("en");
+	setTimeZonePreference("system");
 	delete document.documentElement.dataset.theme;
 	document.body.replaceChildren();
 	vi.restoreAllMocks();
@@ -230,9 +234,9 @@ describe("live asks: pure helpers", () => {
 		expect(figureText("DKK")).toBe("DKK");
 		expect(figureText(null)).toBeUndefined();
 		expect(figureText("0800")).toBe("0800");
-		expect(figureText("10042", false)).toBe("10042");
-		expect(figureText(2026, false)).toBe("2026");
-		expect(figureText("1234.567", false)).toBe("1234.57");
+		expect(cellText("10042")).toBe("10042");
+		expect(cellText(2026)).toBe("2026");
+		expect(cellText("1234.567")).toBe((1234.57).toLocaleString("en"));
 	});
 
 	it("turns an answer into a chart: dates in order, one series per y, digit strings as numbers", () => {
@@ -810,6 +814,381 @@ describe("chart colours from the layout", () => {
 		);
 		const option = await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!);
 		expect(option.visualMap?.[0]?.inRange?.color?.at(-1)).toBe("#0072b2");
+		life.abort();
+	});
+});
+
+function notConnected(what: string): Error {
+	return Object.assign(
+		new Error(`Not connected: ${what} once card payments are connected or an order is added by hand`),
+		{
+			status: 400,
+		},
+	);
+}
+
+describe("a question whose source is not connected", () => {
+	it("tells it apart from a refusal, asks no fallback query, and asks again on the next plan", async () => {
+		expect(isUnconnected(notConnected("orders count"))).toBe(true);
+		expect(isUnconnected(new Error("  Not connected: visits count once the site is published"))).toBe(true);
+		expect(isUnconnected(new Error("Bank is not connected"))).toBe(false);
+		expect(isUnconnected("Not connected: x")).toBe(false);
+		expect(isRefusal(notConnected("orders count"))).toBe(false);
+
+		const life = new AbortController();
+		let connected = false;
+		const numbers = new FakeLive(async () => {
+			if (!connected) throw notConnected("orders count");
+			return NUMBERS["orders-now"]!;
+		});
+		const asks = new SurfaceAsks({ numbers }, life.signal);
+		const seen: SurfaceAskState["state"][] = [];
+		asks
+			.handle({ ask: "qorpera/orders-now", pick: "to_pack" })
+			.follow((state) => seen.push(state.state), life.signal);
+		await settle();
+		expect(seen).toEqual(["loading", "unconnected"]);
+		expect(numbers.queries).toHaveLength(0);
+		connected = true;
+		const again = asks.handle({ ask: "qorpera/orders-now", pick: "to_pack" });
+		expect(again.state.state).toBe("loading");
+		again.follow(() => undefined, life.signal);
+		await settle();
+		expect(seen).toEqual(["loading", "unconnected", "loading", "answered"]);
+		life.abort();
+	});
+
+	it("draws a faint dash on figures and a Not connected yet home on charts and tables, in Danish too", async () => {
+		const life = new AbortController();
+		const numbers = new FakeLive(async (asked) => {
+			if (asked.question.startsWith("orders-")) throw notConnected("orders count");
+			const found = NUMBERS[asked.question];
+			if (!found) throw new Error("did not answer (502)");
+			return found;
+		});
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			tabs: [
+				{
+					id: "now",
+					title: "Now",
+					blocks: [
+						{
+							type: "facts",
+							id: "f",
+							items: [{ label: "To pack", from: { ask: "qorpera/orders-now", pick: "to_pack" } }],
+						},
+						{ type: "facts", id: "g", from: { ask: "qorpera/orders-now" }, take: 2 },
+						{ type: "chart", id: "c", from: { ask: "qorpera/orders-days", x: "day", y: "orders" } },
+						{ type: "table", id: "t", from: { ask: "qorpera/orders-states" } },
+					],
+				},
+			],
+		};
+		const root = mount(planOf(layoutView({ numbers }, life.signal), layout));
+		await settle();
+		const dds = [...root.querySelectorAll<HTMLElement>(".studio-fact dd")];
+		expect(dds.map((dd) => [dd.textContent, dd.className])).toEqual([
+			["–", "is-unconnected"],
+			["–", "is-unconnected"],
+			["–", "is-unconnected"],
+		]);
+		expect(dds[0]!.title).toBe("Not connected yet");
+		expect(root.querySelector(".studio-facts-live")?.getAttribute("title")).toBe("Not connected yet");
+		expect([...root.querySelectorAll(".studio-home-unconnected")].map((home) => home.textContent)).toEqual([
+			"Not connected yet",
+			"Not connected yet",
+		]);
+		expect(root.querySelector(".studio-chart-host")).toBeNull();
+		expect(root.querySelector(".studio-home-locked, .studio-home-unknown")).toBeNull();
+
+		setLanguagePreference("da");
+		const danish = mount(planOf(layoutView({ numbers }, life.signal), layout));
+		await settle();
+		expect(danish.querySelector(".studio-home-unconnected")?.textContent).toBe("Ikke forbundet endnu");
+		expect(danish.querySelector<HTMLElement>(".studio-fact dd")?.title).toBe("Ikke forbundet endnu");
+		life.abort();
+	});
+});
+
+describe("live charts: estimates, whole numbers and hours", () => {
+	it("names an estimate's series and draws it dashed, as a line and as bars", async () => {
+		const days = answer(
+			["day", "expected"],
+			[
+				["2026-11-25", 1200.5],
+				["2026-11-26", 1300],
+			],
+		);
+		const shaped = answerChart(days, { ask: "qorpera/money-expected", x: "day", y: "expected", estimate: true });
+		expect(shaped?.doc.series?.map((series) => [series.name, series.estimate])).toEqual([
+			["Expected (estimate)", true],
+		]);
+		expect(
+			answerChart(days, { ask: "qorpera/money-expected", x: "day", y: "expected" })?.doc.series?.[0],
+		).not.toHaveProperty("estimate");
+
+		const life = new AbortController();
+		const numbers = new FakeLive(async () => days);
+		const layout = (kind: string) => ({
+			schema: SURFACE_LAYOUT_SCHEMA,
+			tabs: [
+				{
+					id: "now",
+					title: "Now",
+					blocks: [
+						{
+							type: "chart",
+							id: "c",
+							from: { ask: "qorpera/money-expected", x: "day", y: "expected", estimate: true, kind },
+						},
+					],
+				},
+			],
+		});
+		const line = mount(planOf(layoutView({ numbers }, life.signal), layout("line")));
+		await settle();
+		const lineOption = (await chartOption(line.querySelector<HTMLElement>(".studio-chart-host")!)) as unknown as {
+			series: { name: string; lineStyle?: { type?: unknown } }[];
+		};
+		expect(lineOption.series[0]?.name).toBe("Expected (estimate)");
+		expect(lineOption.series[0]?.lineStyle?.type).toEqual([6, 5]);
+		const bars = mount(planOf(layoutView({ numbers }, life.signal), layout("bar")));
+		await settle();
+		const barOption = (await chartOption(bars.querySelector<HTMLElement>(".studio-chart-host")!)) as unknown as {
+			series: { itemStyle?: { borderType?: unknown } }[];
+		};
+		expect(barOption.series[0]?.itemStyle?.borderType).toEqual([4, 3]);
+
+		setLanguagePreference("da");
+		expect(
+			answerChart(days, { ask: "qorpera/money-expected", x: "day", y: "expected", estimate: true })?.doc.series?.[0]
+				?.name,
+		).toBe("Expected (skøn)");
+		life.abort();
+	});
+
+	it("keeps a count axis on whole steps, also when every value is zero, and lets decimals be", async () => {
+		const life = new AbortController();
+		const zeros = answer(
+			["day", "orders", "sales"],
+			[
+				["2026-11-25", 0, 0.5],
+				["2026-11-26", 0, 1.25],
+			],
+		);
+		const numbers = new FakeLive(async () => zeros);
+		const axis = async (y: string) => {
+			const root = mount(
+				planOf(layoutView({ numbers }, life.signal), {
+					schema: SURFACE_LAYOUT_SCHEMA,
+					tabs: [
+						{
+							id: "now",
+							title: "Now",
+							blocks: [{ type: "chart", id: "c", from: { ask: "qorpera/orders-days", x: "day", y } }],
+						},
+					],
+				}),
+			);
+			await settle();
+			const option = (await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!)) as unknown as {
+				yAxis: { minInterval?: number }[];
+			};
+			return option.yAxis[0]?.minInterval;
+		};
+		expect(await axis("orders")).toBe(1);
+		expect(await axis("sales")).not.toBe(1);
+		life.abort();
+	});
+
+	it("labels hours by their time, with the day only on the first label and at a new day", () => {
+		const local = answer(
+			["hour_local", "orders"],
+			[
+				["2026-11-25T23:00", 1],
+				["2026-11-25T22:00", 0],
+				["2026-11-26T00:00", 2],
+				["2026-11-26T01:00", 3],
+			],
+		);
+		const shaped = answerChart(local, { ask: "qorpera/orders-hours", x: "hour_local", y: "orders" });
+		expect(shaped?.doc.categories).toEqual(["Nov 25 22:00", "23:00", "Nov 26", "01:00"]);
+		expect(shaped?.days).toBeUndefined();
+
+		setTimeZonePreference("Europe/Copenhagen");
+		const zoned = answer(
+			["hour", "orders"],
+			[
+				["2026-11-25T22:00:00Z", 1],
+				["2026-11-25T23:00:00Z", 2],
+				["2026-11-26T00:00:00Z", 3],
+			],
+		);
+		expect(answerChart(zoned, { ask: "qorpera/orders-hours", x: "hour", y: "orders" })?.doc.categories).toEqual([
+			"Nov 25 23:00",
+			"Nov 26",
+			"01:00",
+		]);
+
+		const midnights = answer(
+			["day", "sales"],
+			[
+				["2026-11-25T00:00:00Z", 1],
+				["2026-11-26T00:00:00Z", 2],
+			],
+		);
+		const daily = answerChart(midnights, { ask: "shop/sales-days", x: "day", y: "sales" });
+		expect(daily?.doc.categories).toEqual(["Nov 25", "Nov 26"]);
+		expect(daily?.days).toEqual({ first: "2026-11-25", last: "2026-11-26", count: 2 });
+	});
+});
+
+describe("live figures, table cells and the qorpera codes", () => {
+	it("drops a figure's decimals from 100 up, keeps up to two below, and groups table numbers with their decimals", () => {
+		expect(figureText(147579.4)).toBe((147579).toLocaleString("en"));
+		expect(figureText("147579.40")).toBe((147579).toLocaleString("en"));
+		expect(figureText(-250.75)).toBe("-251");
+		expect(figureText(12.345)).toBe("12.35");
+		expect(figureText("99.5")).toBe("99.5");
+		expect(cellText(48250)).toBe((48250).toLocaleString("en"));
+		expect(cellText(9999)).toBe("9999");
+		expect(cellText("12345.5")).toBe((12345.5).toLocaleString("en"));
+		expect(cellText(3.5)).toBe("3.5");
+		expect(cellText("48250")).toBe("48250");
+		expect(cellText("0042")).toBe("0042");
+		expect(cellText("Card")).toBe("Card");
+		expect(cellText(null)).toBeUndefined();
+		setLanguagePreference("da");
+		expect(figureText(147579.4)).toBe("147.579");
+		expect(cellText(1234.5)).toBe("1.234,5");
+	});
+
+	it("says the qorpera codes in words by question and column, and leaves other databases as written", () => {
+		const states = { ask: "qorpera/orders-states" };
+		expect(codeWords(states, "state", "on_the_way")).toBe("On the way");
+		expect(codeWords(states, "state", "paid")).toBe("Paid");
+		expect(codeWords(states, "state", "toString")).toBeUndefined();
+		expect(codeWords(states, "orders", "paid")).toBeUndefined();
+		expect(codeWords({ ask: "qorpera/orders-sources" }, "source", "added")).toBe("Added by hand");
+		expect(codeWords({ ask: "qorpera/orders-now" }, "stripe", "none")).toBe("Not connected");
+		expect(codeWords({ ask: "qorpera/money-now" }, "state", "current")).toBe("Up to date");
+		expect(codeWords({ ask: "qorpera/money-now" }, "bank", "current")).toBeUndefined();
+		expect(codeWords({ ask: "shop/orders-states" }, "state", "paid")).toBeUndefined();
+		expect(codeWords({ ask: "qorpera/money-kinds" }, "kind", 3)).toBeUndefined();
+		setLanguagePreference("da");
+		expect(codeWords(states, "state", "on_the_way")).toBe("På vej");
+		expect(codeWords({ ask: "qorpera/money-kinds" }, "kind", "fees")).toBe("Kort- og app-gebyrer");
+	});
+
+	it("draws the words in chart categories, series names, table cells and figures", async () => {
+		const kinds = answer(
+			["direction", "kind", "amount", "count"],
+			[
+				["in", "all", 5000, null],
+				["out", "salaries", 3000, null],
+				["out", "fees", 120.4, null],
+			],
+		);
+		const byKind = answerChart(kinds, { ask: "qorpera/money-kinds", x: "kind", y: "amount", series: "direction" });
+		expect(byKind?.doc.categories).toEqual(["All", "Salaries", "Card and app fees"]);
+		expect(byKind?.doc.series?.map((series) => series.name)).toEqual(["Money in", "Money out"]);
+		expect(byKind?.keys).toEqual(["in", "out"]);
+		expect(byKind?.categoryKeys).toEqual(["all", "salaries", "fees"]);
+
+		const life = new AbortController();
+		const numbers = new FakeLive(async (asked) => {
+			if (asked.question === "orders-states") {
+				return answer(
+					["state", "orders", "amount"],
+					[
+						["paid", 2, "12500.50"],
+						["on_the_way", 1, 300],
+					],
+				);
+			}
+			return answer(["stripe", "orders_today"], [["waiting", 0]]);
+		});
+		const root = mount(
+			planOf(layoutView({ numbers }, life.signal), {
+				schema: SURFACE_LAYOUT_SCHEMA,
+				tabs: [
+					{
+						id: "now",
+						title: "Now",
+						blocks: [
+							{
+								type: "facts",
+								id: "f",
+								items: [{ label: "Card payments", from: { ask: "qorpera/orders-now", pick: "stripe" } }],
+							},
+							{ type: "table", id: "t", from: { ask: "qorpera/orders-states" } },
+						],
+					},
+				],
+			}),
+		);
+		await settle();
+		expect(root.querySelector(".studio-fact dd")?.textContent).toBe("Waiting");
+		expect([...root.querySelectorAll(".studio-table td")].map((cell) => cell.textContent)).toEqual([
+			"Paid",
+			"2",
+			(12500.5).toLocaleString("en"),
+			"On the way",
+			"1",
+			"300",
+		]);
+		life.abort();
+	});
+});
+
+describe("pie colours by a qorpera code", () => {
+	it("colours a slice by its code whether the member reads it in English or Danish", async () => {
+		const life = new AbortController();
+		const numbers = new FakeLive(async () =>
+			answer(
+				["state", "orders", "amount"],
+				[
+					["paid", 4, 100],
+					["cancelled", 1, 20],
+				],
+			),
+		);
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			colors: { preset: "calm" },
+			tabs: [
+				{
+					id: "now",
+					title: "Now",
+					blocks: [
+						{
+							type: "chart",
+							id: "c",
+							from: { ask: "qorpera/orders-states", x: "state", y: "orders", kind: "pie" },
+							colors: { paid: "#00aa00", cancelled: "#ff0000" },
+						},
+					],
+				},
+			],
+		};
+		const slices = async () => {
+			const root = mount(planOf(layoutView({ numbers }, life.signal), layout));
+			await settle();
+			const option = (await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!)) as unknown as {
+				series: { data: { name: string; itemStyle?: { color?: string } }[] }[];
+			};
+			return option.series[0]!.data.map((slice) => [slice.name, slice.itemStyle?.color]);
+		};
+		expect(await slices()).toEqual([
+			["Paid", "#00aa00"],
+			["Cancelled", "#ff0000"],
+		]);
+		setLanguagePreference("da");
+		expect(await slices()).toEqual([
+			["Betalt", "#00aa00"],
+			["Annulleret", "#ff0000"],
+		]);
 		life.abort();
 	});
 });

@@ -103,7 +103,7 @@ export const QORPERA_QUESTIONS: readonly QorperaQuestion[] = [
 		question: "money-now",
 		params: [],
 		columns: ["state", "bank", "balance", "available", "reserved", "as_of", "paused_since"],
-		words: "One row: the bank connection's state (none, waiting, current, paused) and its balance now, in kroner.",
+		words: "One row: the bank connection's state (waiting, current, paused) and its balance now, in kroner.",
 	},
 	{
 		question: "money-balance",
@@ -198,7 +198,7 @@ export const QORPERA_QUESTIONS: readonly QorperaQuestion[] = [
 
 const QORPERA_DESCRIBED = {
 	database: QORPERA_DATABASE,
-	words: "The platform's own numbers of the company, always there: ask them by question with data_query, never with sql. Days are YYYY-MM-DD in the company's time zone; test: true asks test orders; currency is three letters, by default the one most orders use.",
+	words: "The platform's own numbers of the company, always there: ask them by question with data_query, never with sql. Days are YYYY-MM-DD in the company's time zone; test: true asks test orders; currency is three letters, by default the one most orders use. A question whose source the company has not connected (no bank, no published website, no card payments and no order) answers \"Not connected:\" and what would connect it, never zeros.",
 	questions: QORPERA_QUESTIONS,
 };
 

@@ -89,7 +89,7 @@ import { type CompanyInterface, companyInterfaces, hiddenInterfaces } from "../i
 import { type PersonWhere, personWhere } from "../person-place.ts";
 import { contactPlaces, MEMBERS_ZONE, type RailContact, railContacts, weave } from "../rail-contacts.ts";
 import { appHash, conceptsHash, type Route, siteHash, surfaceHash } from "../router.ts";
-import { surfaceKindSubtitle, surfaceLookOf } from "../surface-kinds.ts";
+import { surfaceLookOf, surfaceSubtitleOf } from "../surface-kinds.ts";
 import {
 	activeTaskSessions,
 	isOpenChange,
@@ -4768,7 +4768,7 @@ function searchSources(company: CompanyController, context: ShellContext): Searc
 				key: `surface:${surface.id}`,
 				kind: "apps",
 				title: surface.title,
-				detail: surfaceKindSubtitle(look.kind),
+				detail: surfaceSubtitleOf(surface, look),
 				lead: () => surfaceTile(surface, look, "is-small"),
 				open: go(surfaceHash(profileId, surface.slug)),
 			});

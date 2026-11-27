@@ -112,6 +112,11 @@ export function surfaceKindSubtitle(kind: SurfaceKind): string {
 	return t(KIND_SPECS[kind].subtitle);
 }
 
+export function surfaceSubtitleOf(surface: Pick<SurfaceSummary, "archetype">, look: Pick<SurfaceLook, "kind">): string {
+	if (look.kind === "dashboard" && surface.archetype === "studio") return t("Sales, money & visitors");
+	return surfaceKindSubtitle(look.kind);
+}
+
 export function isOpsKind(kind: SurfaceKind): boolean {
 	return kind === "inbox" || kind === "money" || kind === "data" || kind === "files";
 }

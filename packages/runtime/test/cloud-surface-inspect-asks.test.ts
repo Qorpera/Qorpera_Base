@@ -136,6 +136,33 @@ describe("inspect_surface with live asks", () => {
 		expect(chart && "series" in chart ? chart.series?.[0]?.data : undefined).toEqual([null, 4]);
 	});
 
+	it("reports a question whose source is not connected as not connected, and leaves its home empty", async () => {
+		const words = "Not connected: orders count once card payments are connected or an order is added by hand";
+		const snapshot = await askStudioPreview(
+			SNAPSHOT,
+			"now",
+			async (ask) =>
+				ask.ask === "qorpera/money-balance"
+					? (ANSWERS[ask.ask] as StudioInspectAskAnswer)
+					: { state: "not connected", words },
+			CONTEXT,
+		);
+		const rendered = renderStudioPreviewHtml({ snapshot, tabId: "now", theme: "light" });
+		expect(rendered.asks).toEqual([
+			{ block: "facts: Orders today", ask: "qorpera/orders-now", state: "not connected", words },
+			{ block: "facts: Sales today", ask: "qorpera/orders-now", state: "not connected", words },
+			{ block: "facts: To pack", ask: "qorpera/orders-now", state: "not connected", words },
+			{
+				block: "facts: In the bank",
+				ask: "qorpera/money-balance",
+				state: "refused",
+				words: "No question qorpera/money-balance that you may read",
+			},
+			{ block: "Are more people buying?", ask: "qorpera/orders-days", state: "not connected", words },
+		]);
+		expect(rendered.renderedBlocks.find((block) => block.type === "chart")).toMatchObject({ filled: false });
+	});
+
 	it("says a question nobody could ask is unavailable, and asks nothing on a tab without asks", async () => {
 		const snapshot = await askStudioPreview(SNAPSHOT, "sales", undefined, CONTEXT);
 		const rendered = renderStudioPreviewHtml({ snapshot, tabId: "sales", theme: "dark" });
@@ -145,7 +172,7 @@ describe("inspect_surface with live asks", () => {
 		expect(await askStudioPreview(SNAPSHOT, "questions", undefined, CONTEXT)).toBe(SNAPSHOT);
 	});
 
-	it("asks through data_query, telling a question the member may not read from one that is not there to ask", async () => {
+	it("asks through data_query, telling a question the member may not read and one not connected from one not there to ask", async () => {
 		const query: CloudNativeTool = {
 			name: "data_query",
 			source: "runtime",
@@ -157,6 +184,10 @@ describe("inspect_surface with live asks", () => {
 				if (args.question === "money-now")
 					throw new CloudToolRefusal("No question qorpera/money-now that you may read");
 				if (args.question === "site-days") throw new CloudToolRefusal("qorpera/site-days is not counted yet");
+				if (args.question === "orders-now")
+					throw new CloudToolRefusal(
+						"Not connected: orders count once card payments are connected or an order is added by hand",
+					);
 				return {
 					kind: "text",
 					value: JSON.stringify({ columns: ["n"], rows: [[args.params ? 2 : 1]], more: false, asOf: "x" }),
@@ -176,6 +207,10 @@ describe("inspect_surface with live asks", () => {
 		expect(await ask({ ask: "qorpera/site-days" }, CONTEXT)).toEqual({
 			state: "unavailable",
 			words: "qorpera/site-days is not counted yet",
+		});
+		expect(await ask({ ask: "qorpera/orders-now" }, CONTEXT)).toEqual({
+			state: "not connected",
+			words: "Not connected: orders count once card payments are connected or an order is added by hand",
 		});
 		expect(await studioInspectAsker([])({ ask: "qorpera/money-now" }, CONTEXT)).toMatchObject({
 			state: "unavailable",

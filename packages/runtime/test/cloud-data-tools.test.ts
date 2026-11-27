@@ -217,11 +217,15 @@ describe("the platform's own numbers (database qorpera)", () => {
 		]);
 	});
 
-	it("says the platform's own words for a question it may not read, a wrong param and one not counted yet", async () => {
+	it("says the platform's own words for a question it may not read, a wrong param, one not counted yet and one not connected", async () => {
 		const errors: Record<string, CloudCompanyFolderRpcError> = {
 			"money-now": new CloudCompanyFolderRpcError("P0002", "No question qorpera/money-now that you may read"),
 			"orders-days": new CloudCompanyFolderRpcError("22023", "The question takes no :limit"),
 			"site-days": new CloudCompanyFolderRpcError("0A000", "qorpera/site-days is not counted yet"),
+			"orders-now": new CloudCompanyFolderRpcError(
+				"55000",
+				"Not connected: orders count once card payments are connected or an order is added by hand",
+			),
 		};
 		const f = await fixture(() => ok({}), {
 			platform: numbers((args) => {
@@ -262,6 +266,7 @@ describe("the platform's own numbers (database qorpera)", () => {
 		};
 		expect(described.database).toBe("qorpera");
 		expect(described.words).toContain("never with sql");
+		expect(described.words).toContain("Not connected:");
 		expect(described.questions.map((one) => one.question)).toEqual([
 			"money-now",
 			"money-balance",

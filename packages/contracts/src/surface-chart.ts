@@ -29,6 +29,7 @@ export interface SurfaceChartSeries {
 	readonly color?: string;
 	readonly data: readonly (number | null | SurfaceChartPoint)[];
 	readonly markLine?: readonly SurfaceChartMarkLine[];
+	readonly estimate?: boolean;
 }
 
 export interface SurfaceChartSankeyNode {
@@ -206,6 +207,7 @@ function cleanSeries(value: unknown, isRadar: boolean): SurfaceChartSeries[] | u
 			...(color ? { color } : {}),
 			data,
 			...(markLine ? { markLine } : {}),
+			...(entry.estimate === true ? { estimate: true } : {}),
 		});
 	}
 	return out.length > 0 ? out : undefined;

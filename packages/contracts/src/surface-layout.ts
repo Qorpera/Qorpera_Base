@@ -51,6 +51,7 @@ export const SURFACE_ASK_FIELDS = [
 	"stacked",
 	"unit",
 	"against",
+	"estimate",
 ] as const;
 export const SURFACE_ASK_AGAINST = ["previous"] as const;
 export const SURFACE_ASK_DAY_RANGE_QUESTIONS = [
@@ -119,6 +120,7 @@ export interface SurfaceAskSource {
 	readonly stacked?: boolean;
 	readonly unit?: string;
 	readonly against?: SurfaceAskAgainst;
+	readonly estimate?: boolean;
 }
 
 export type SurfaceAskAgainst = (typeof SURFACE_ASK_AGAINST)[number];
@@ -932,7 +934,7 @@ function parseAskParams(value: unknown, label: string): Record<string, SurfaceAs
 
 function checkAskUse(ask: Record<string, unknown>, label: string, use: SurfaceAskUse): void {
 	const takes: Readonly<Record<SurfaceAskUse, readonly string[]>> = {
-		chart: ["x", "y", "series", "kind", "stacked", "unit", "against"],
+		chart: ["x", "y", "series", "kind", "stacked", "unit", "against", "estimate"],
 		figure: ["pick", "unit"],
 		row: ["unit"],
 		rows: [],
@@ -943,7 +945,7 @@ function checkAskUse(ask: Record<string, unknown>, label: string, use: SurfaceAs
 		row: "facts.from's ask (the answer's last row)",
 		rows: "table.from's ask (the answer's rows)",
 	};
-	for (const key of ["pick", "x", "y", "series", "kind", "stacked", "unit", "against"]) {
+	for (const key of ["pick", "x", "y", "series", "kind", "stacked", "unit", "against", "estimate"]) {
 		if (ask[key] !== undefined && !takes[use].includes(key)) {
 			fail(
 				`${label}.${key}`,
@@ -1011,6 +1013,10 @@ function parseAsk(value: Record<string, unknown>, label: string, use: SurfaceAsk
 			);
 		}
 		ask.against = raw.against;
+	}
+	if (raw.estimate !== undefined) {
+		if (typeof raw.estimate !== "boolean") fail(`${label}.estimate`, "must be true or false");
+		ask.estimate = raw.estimate;
 	}
 	checkAskUse(ask, label, use);
 	return ask as unknown as SurfaceAskSource;
@@ -1921,19 +1927,6 @@ const ANALYTICS_STARTER_LAYOUT: SurfaceLayout = {
 					from: { ask: "qorpera/money-balance", x: "day", y: "balance", kind: "area", unit: "kr." },
 					heading: "How long does the money last?",
 				},
-				{
-					type: "chart",
-					id: "months",
-					from: {
-						ask: "qorpera/money-months",
-						x: "month",
-						y: ["money_in", "money_out"],
-						kind: "bar",
-						unit: "kr.",
-					},
-					heading: "Do we earn more than we spend?",
-					colors: { money_in: "up", money_out: "compare" },
-				},
 			],
 		},
 		{
@@ -2019,7 +2012,7 @@ export const SURFACE_LANDSCAPE_FORMAT =
 	'A landscape file (landscape.json) is {"summary","wedge","axes":{"xLabel","yLabel","xLow","xHigh","yLow","yHigh"},"players":[{"id","name","isUs":false,"url","category","positioning","pricing","target","strength","weakness","ourEdge","tier":"verified"|"benchmark"|"hypothesis","source","x":0,"y":0}]} (x and y are 0-100 coordinates on axes).';
 
 export const SURFACE_CHART_FORMAT =
-	'A chart file (*.chart.json or charts/*.json) is {"kind":"line"|"bar"|"area"|"scatter"|"pie"|"sankey"|"radar"|"funnel"|"heatmap","title","subtitle","unit","note","stacked":false,"horizontal":false,"smooth":false,"donut":false,"showLegend":true,"categories":["..."],"xAxisLabel","yAxisLabel","xAxisMin","xAxisMax","yAxisMin","yAxisMax","series":[{"name","color","data":[10,{"name","value":20,"color"}],"markLine":[{"value":0,"label"}]}]} — or for sankey {"kind":"sankey","nodes":[{"name","color"}],"links":[{"source","target","value"}]}, radar {"kind":"radar","indicators":[{"name","max"}],"series":[{"name","data":[...]}]}, heatmap {"kind":"heatmap","xCategories":["..."],"yCategories":["..."],"cells":[[x,y,value]]}.';
+	'A chart file (*.chart.json or charts/*.json) is {"kind":"line"|"bar"|"area"|"scatter"|"pie"|"sankey"|"radar"|"funnel"|"heatmap","title","subtitle","unit","note","stacked":false,"horizontal":false,"smooth":false,"donut":false,"showLegend":true,"categories":["..."],"xAxisLabel","yAxisLabel","xAxisMin","xAxisMax","yAxisMin","yAxisMax","series":[{"name","color","estimate":false,"data":[10,{"name","value":20,"color"}],"markLine":[{"value":0,"label"}]}]} — or for sankey {"kind":"sankey","nodes":[{"name","color"}],"links":[{"source","target","value"}]}, radar {"kind":"radar","indicators":[{"name","max"}],"series":[{"name","data":[...]}]}, heatmap {"kind":"heatmap","xCategories":["..."],"yCategories":["..."],"cells":[[x,y,value]]}.';
 
 const SURFACE_OBJECT_FORMAT = `A stage_3d model file (default ${SURFACE_STAGE_DEFAULT_MODEL}) is {"model":"<name>.glb","view":{"yaw","pitch"},"parts":[{"id","node","pull":[x,y,z]}],"tint":["<material>"]}, the .glb beside it. With no .glb in the folder, a top-level "model" object in a JSON file, {"kind":"headband"|"device","dimensions","layers":["..."]}, draws a stand-in tinted by the tab's swatch_row.`;
 
@@ -2039,7 +2032,7 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string>>>
 	module: SURFACE_TOKENS_FORMAT,
 };
 
-export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"<database>/<question>","params":{"<name>": text, number, true, false or null},"pick","x","y","series"} (pick, x, y and series name the answer's columns). It is asked live when the page opens, as the member viewing it, so each member sees only what they may read; a question they may not read shows as not shared with them. The database qorpera holds the company's own numbers, e.g. qorpera/orders-days. An ask stands alone, never in a list of sources, and only in chart.from (needs x and y, y one column or 1-${SURFACE_ASK_MAX_Y}; series splits one y by that column's values; a series is named by its y column or its series value; kind ${SURFACE_ASK_CHART_KINDS.join("|")}, default line, stacked true|false and unit <=${SURFACE_ASK_UNIT_CHARS} chars set its look; against "previous" also draws the equal range of days just before in the compare colour, for ${SURFACE_ASK_DAY_RANGE_QUESTIONS.join(", ")} or a question given params from and to), facts items (needs pick: that column of the answer's last row; unit is written after it), facts.from (the last row's columns as figures, unit after each) and table.from (the rows; columns picks their columns).`;
+export const SURFACE_ASK_FORMAT = `A source can ask a question instead: {"ask":"<database>/<question>","params":{"<name>": text, number, true, false or null},"pick","x","y","series"} (pick, x, y and series name the answer's columns). It is asked live when the page opens, as the member viewing it, so each member sees only what they may read; a question they may not read shows as not shared with them. The database qorpera holds the company's own numbers, e.g. qorpera/orders-days. An ask stands alone, never in a list of sources, and only in chart.from (needs x and y, y one column or 1-${SURFACE_ASK_MAX_Y}; series splits one y by that column's values; a series is named by its y column or its series value; kind ${SURFACE_ASK_CHART_KINDS.join("|")}, default line, stacked true|false and unit <=${SURFACE_ASK_UNIT_CHARS} chars set its look; estimate true draws it dashed, as an estimate; against "previous" also draws the equal range of days just before in the compare colour, for ${SURFACE_ASK_DAY_RANGE_QUESTIONS.join(", ")} or a question given params from and to), facts items (needs pick: that column of the answer's last row; unit is written after it), facts.from (the last row's columns as figures, unit after each) and table.from (the rows; columns picks their columns).`;
 
 export const SURFACE_COLORS_FORMAT = `"colors" at the layout's top sets every chart's colours once: {"preset":"company"|"one-colour"|"calm"|"bright"} and jobs {"main","compare","up","down","series":[1-${SURFACE_COLORS_MAX_SERIES}]}, each a colour "#rrggbb" or a binding to one, e.g. "/identity/tokens.json#/colors/sand"; jobs left out come from the preset, company when none is named. company follows the Identity colours, one-colour is shades of main, calm is main and greys, bright is eight colours anyone can tell apart, colour-blind included. A chart block's "colors" gives a series by its name a job (main, compare, up, down, series-1 to series-${SURFACE_COLORS_MAX_SERIES}), a colour or a binding, at most ${SURFACE_CHART_COLORS_MAX}; a color in the chart file itself still wins. Say why in the change when you leave the company colours.`;
 
