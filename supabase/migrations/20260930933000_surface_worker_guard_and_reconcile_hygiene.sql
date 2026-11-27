@@ -672,6 +672,8 @@ $old$	v_conflicted_downstream_ids uuid[];
 	v_now timestamptz := clock_timestamp();$old$,
 $new$	v_conflicted_downstream_ids uuid[];
 	v_supersede_key text := nullif(lower(btrim(coalesce(p_supersede_key, ''))), '');
+	v_locked_idle_session_ids uuid[] := '{}'::uuid[];
+	v_locked_rec_session_ids uuid[] := '{}'::uuid[];
 	v_superseded_rec_session_ids uuid[];
 	v_superseded_change_ids uuid[];
 	v_superseded_session_ids uuid[];
@@ -687,7 +689,26 @@ $old$		update public.qorpera_surface_reconciliations
 		where surface_id = v_session.surface_id
 			and selected_change_ids && v_affected_change_ids
 			and (expires_at > v_now or status in ('queued', 'running'));$old$,
-$new$		with invalidated as (
+$new$		select coalesce(array_agg(s.id order by s.id), '{}'::uuid[])
+		into v_locked_rec_session_ids
+		from (
+			select rs.id
+			from public.qorpera_surface_sessions rs
+			where rs.id in (
+				select r.session_id
+				from public.qorpera_surface_reconciliations r
+				where r.surface_id = v_session.surface_id
+					and r.selected_change_ids && v_affected_change_ids
+					and (r.expires_at > v_now or r.status in ('queued', 'running'))
+					and r.session_id is not null
+			)
+				and rs.is_internal
+				and rs.state in ('queued', 'running', 'reconciling', 'reconciling_running')
+			order by rs.id asc
+			for update of rs skip locked
+		) s;
+
+		with invalidated as (
 			update public.qorpera_surface_reconciliations
 			set
 				expires_at = v_now,
@@ -705,7 +726,8 @@ $new$		with invalidated as (
 		from invalidated
 		where session_id is not null;
 
-		if coalesce(cardinality(v_superseded_rec_session_ids), 0) > 0 then
+		if coalesce(cardinality(v_superseded_rec_session_ids), 0) > 0
+			and coalesce(cardinality(v_locked_rec_session_ids), 0) > 0 then
 			update public.qorpera_surface_sessions
 			set
 				state = 'discarded',
@@ -715,6 +737,7 @@ $new$		with invalidated as (
 				closed_at = v_now,
 				updated_at = v_now
 			where id = any(v_superseded_rec_session_ids)
+				and id = any(v_locked_rec_session_ids)
 				and is_internal
 				and state in ('queued', 'running', 'reconciling', 'reconciling_running');
 		end if;$new$,
@@ -742,6 +765,50 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 		perform pg_catalog.pg_advisory_xact_lock(
 			pg_catalog.hashtextextended('qorpera.surface-supersede:' || v_session.surface_id::text || ':' || v_supersede_key, 0)
 		);
+		select
+			coalesce(array_agg(s.id order by s.id) filter (where not s.is_internal), '{}'::uuid[]),
+			coalesce(array_agg(s.id order by s.id) filter (where s.is_internal), '{}'::uuid[])
+		into v_locked_idle_session_ids, v_locked_rec_session_ids
+		from (
+			select ps.id, coalesce(ps.is_internal, false) as is_internal
+			from public.qorpera_surface_sessions ps
+			where (
+				ps.id in (
+					select distinct ch.session_id
+					from public.qorpera_surface_changes ch
+					where ch.surface_id = v_session.surface_id
+						and ch.profile_id = v_session.profile_id
+						and ch.supersede_key = v_supersede_key
+						and ch.status in ('staged', 'conflicted')
+						and ch.session_id <> p_session_id
+				)
+				and ps.state not in ('queued', 'running', 'reconciling', 'reconciling_running')
+			) or (
+				ps.is_internal
+				and ps.state in ('queued', 'running', 'reconciling', 'reconciling_running')
+				and ps.id in (
+					select r.session_id
+					from public.qorpera_surface_reconciliations r
+					where r.surface_id = v_session.surface_id
+						and r.session_id is not null
+						and (r.expires_at > v_now or r.status in ('queued', 'running'))
+						and r.selected_change_ids && coalesce(
+							(
+								select array_agg(ch.id)
+								from public.qorpera_surface_changes ch
+								where ch.surface_id = v_session.surface_id
+									and ch.profile_id = v_session.profile_id
+									and ch.supersede_key = v_supersede_key
+									and ch.status in ('staged', 'conflicted')
+									and ch.session_id <> p_session_id
+							),
+							'{}'::uuid[]
+						)
+				)
+			)
+			order by ps.id asc
+			for update of ps skip locked
+		) s;
 	end if;
 
 	insert into public.qorpera_surface_changes(
@@ -832,7 +899,8 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 			from invalidated
 			where session_id is not null;
 
-			if coalesce(cardinality(v_superseded_rec_session_ids), 0) > 0 then
+			if coalesce(cardinality(v_superseded_rec_session_ids), 0) > 0
+				and coalesce(cardinality(v_locked_rec_session_ids), 0) > 0 then
 				update public.qorpera_surface_sessions
 				set
 					state = 'discarded',
@@ -842,6 +910,7 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 					closed_at = v_now,
 					updated_at = v_now
 				where id = any(v_superseded_rec_session_ids)
+					and id = any(v_locked_rec_session_ids)
 					and is_internal
 					and state in ('queued', 'running', 'reconciling', 'reconciling_running');
 			end if;
@@ -856,12 +925,7 @@ $new$	v_supersede_key := coalesce(v_supersede_key, v_session.supersede_key);
 			perform public.qorpera_surface_enqueue_standalone_dependents(v_session.surface_id, v_superseded_change_ids);
 
 			foreach v_superseded_sid in array v_superseded_session_ids loop
-				perform 1
-				from public.qorpera_surface_sessions ps
-				where ps.id = v_superseded_sid
-					and ps.state not in ('queued', 'running', 'reconciling', 'reconciling_running')
-				for update;
-				if found then
+				if v_superseded_sid = any(v_locked_idle_session_ids) then
 					perform public.qorpera_evaluate_surface_session_lifecycle(v_superseded_sid);
 				end if;
 			end loop;

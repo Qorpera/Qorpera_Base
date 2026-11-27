@@ -3898,7 +3898,13 @@ describe("a coding turn's first reads through a slow database (R2, 31 Oct 2026)"
 					exitCode: 0,
 					output: out,
 					truncated: false,
-					log: { offset: 0, nextOffset: out.length, totalBytes: out.length, limitBytes: 67108864, limitReached: false },
+					log: {
+						offset: 0,
+						nextOffset: out.length,
+						totalBytes: out.length,
+						limitBytes: 67108864,
+						limitReached: false,
+					},
 				};
 			});
 			const ledger = new Map<string, { receiptId: string; result: unknown }>();

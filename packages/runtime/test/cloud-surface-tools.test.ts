@@ -4555,7 +4555,7 @@ describe("cloud surface runtime tools", () => {
 			args: { p_supersede_key: "daily-metrics" },
 		});
 
-		const rawNumstat = "12\t3\tsrc/app.tsx\0-\t-\tassets/logo.png\04\t1\tdir/file\twith\ttab.ts\0";
+		const rawNumstat = "12\t3\tsrc/app.tsx\x00-\t-\tassets/logo.png\x004\t1\tdir/file\twith\ttab.ts\x00";
 		expect(parseGitNumstatZ(rawNumstat)).toEqual({
 			affectedPaths: ["src/app.tsx", "assets/logo.png", "dir/file\twith\ttab.ts"],
 			diffStats: { filesChanged: 3, additions: 16, deletions: 4 },
