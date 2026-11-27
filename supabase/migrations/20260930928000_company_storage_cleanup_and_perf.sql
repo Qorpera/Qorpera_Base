@@ -432,37 +432,45 @@ $new$				and (
 create function public.qorpera_surface_backfill_discarded_cleanups()
 returns integer language plpgsql volatile security definer set search_path = '' as $$
 declare
-	v_session_ids uuid[];
+	v_group record;
 	v_session_id uuid;
+	v_total integer := 0;
 begin
-	select coalesce(array_agg(ss.id order by ss.id), '{}'::uuid[])
-	into v_session_ids
-	from public.qorpera_surface_sessions ss
-	join public.qorpera_surfaces surf on surf.id = ss.surface_id
-	where ss.state = 'discarded'
-		and ss.worker_id is not null
-		and surf.source_kind = 'code_repo'
-		and surf.repository_key is not null
-		and not exists (
-			select 1 from public.qorpera_surface_jobs j
-			where j.session_id = ss.id
-				and j.kind = 'cleanup_session'
-				and j.status in ('queued', 'running', 'completed')
-		)
-		and (
-			ss.branch_head_sha is not null
-			or exists (
-				select 1 from public.qorpera_coding_sessions cs
-				where cs.worker_id = ss.worker_id and cs.archived_at is null
+	for v_group in
+		select
+			coalesce(w.environment_id, ss.profile_id) as group_id,
+			array_agg(ss.id order by ss.id) as session_ids
+		from public.qorpera_surface_sessions ss
+		join public.qorpera_surfaces surf on surf.id = ss.surface_id
+		left join public.qorpera_runtime_workers w on w.id = ss.worker_id
+		where ss.state = 'discarded'
+			and ss.worker_id is not null
+			and public.qorpera_company_is_folder_v2(ss.profile_id)
+			and surf.source_kind = 'code_repo'
+			and surf.repository_key is not null
+			and not exists (
+				select 1 from public.qorpera_surface_jobs j
+				where j.session_id = ss.id
+					and j.kind = 'cleanup_session'
+					and j.status in ('queued', 'running', 'completed')
 			)
-		);
-	if coalesce(cardinality(v_session_ids), 0) > 0 then
-		perform public.qorpera_surface_archive_coding_workers(v_session_ids, 'surface_discarded');
-		foreach v_session_id in array v_session_ids loop
+			and (
+				ss.branch_head_sha is not null
+				or exists (
+					select 1 from public.qorpera_coding_sessions cs
+					where cs.worker_id = ss.worker_id and cs.archived_at is null
+				)
+			)
+		group by coalesce(w.environment_id, ss.profile_id)
+		order by coalesce(w.environment_id, ss.profile_id)
+	loop
+		perform public.qorpera_surface_archive_coding_workers(v_group.session_ids, 'surface_discarded');
+		foreach v_session_id in array v_group.session_ids loop
 			perform public.qorpera_surface_enqueue_session_cleanup(v_session_id, null);
 		end loop;
-	end if;
-	return coalesce(cardinality(v_session_ids), 0);
+		v_total := v_total + coalesce(cardinality(v_group.session_ids), 0);
+	end loop;
+	return v_total;
 end $$;
 
 select public.qorpera_surface_backfill_discarded_cleanups();
