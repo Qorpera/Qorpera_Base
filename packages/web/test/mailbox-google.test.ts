@@ -309,7 +309,9 @@ describe("Mail at Google under Addresses", () => {
 			],
 		];
 		for (const [code, message, expected, hidesOffer] of rpcCases) {
-			const { main } = await mailbox(() => {}, "owner", {
+			let now = 1_000_000;
+			vi.spyOn(Date, "now").mockImplementation(() => now);
+			const { main, controller, google } = await mailbox(() => {}, "owner", {
 				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
 				connectExisting: async () => {
 					throw new CloudRpcError("qorpera_connect_existing_google_mailbox", { message, code }, 400);
@@ -322,9 +324,15 @@ describe("Mail at Google under Addresses", () => {
 			if (hidesOffer) {
 				expect(googleRow(main)!.querySelector(".mailbox-google-existing")).toBeNull();
 				expect(googleRow(main)!.querySelector(".mailbox-google-open")).not.toBeNull();
+				const callsBefore = vi.mocked(google.existing!).mock.calls.length;
+				now += 31_000;
+				await CompanyMail.of(controller)?.reread();
+				await vi.waitFor(() => expect(vi.mocked(google.existing!).mock.calls.length).toBeGreaterThan(callsBefore));
+				expect(googleRow(main)!.querySelector(".mailbox-google-existing")).toBeNull();
 			}
 			for (const dispose of cleanup.splice(0).reverse()) dispose();
 			document.body.replaceChildren();
+			vi.restoreAllMocks();
 		}
 	});
 });
@@ -545,6 +553,20 @@ describe("coming back from Google", () => {
 			await vi.waitFor(() => expect(refusal(main)).toBe(words));
 			close();
 		}
+	});
+
+	it("keeps the generic message when a fresh sign-in return fails with 22023", async () => {
+		finishing = async () => {
+			throw new CloudRpcError(
+				"qorpera_complete_google_mailbox_capture",
+				{ message: "bad ticket", code: "22023" },
+				400,
+			);
+		};
+		noteGoogleMailReturn(outcome());
+		const { main } = await mailbox(() => {});
+		await vi.waitFor(() => expect(refusal(main)).toBe("Google mail could not be brought in. Try again."));
+		close();
 	});
 
 	it("says only owners and admins connect Google when the cloud refuses the start", async () => {

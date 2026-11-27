@@ -267,6 +267,16 @@ interface ManageViews {
 	existingGoogle: { list: readonly ExistingGoogleAccount[] | null; at: number; reading: number };
 }
 const manageViews = new WeakMap<MailboxUi, ManageViews>();
+const refusedExistingGoogle = new WeakMap<CompanyController, Set<string>>();
+
+function refusedGoogleSet(company: CompanyController): Set<string> {
+	let refused = refusedExistingGoogle.get(company);
+	if (!refused) {
+		refused = new Set<string>();
+		refusedExistingGoogle.set(company, refused);
+	}
+	return refused;
+}
 /** How long a read of the routines stands before the Addresses read them again, as they are drawn. */
 const ROUTINES_FRESH_MS = 30_000;
 /** A page's addresses being given to agents, one after another: the last of them. */
@@ -2057,7 +2067,6 @@ function refusalOf(error: unknown): string | undefined {
 	if (matched) return matched;
 	if (error.code === "42501") return "not_allowed";
 	if (error.code === "54000") return "limit_reached";
-	if (error.code === "22023") return "connection_unavailable";
 	if (error.code === "0A000") return "mail_unavailable";
 	return undefined;
 }
@@ -2106,7 +2115,8 @@ async function readExistingGoogle(page: Page): Promise<void> {
 	try {
 		const list = await existing(page.company.signal);
 		if (kept.reading !== reading || page.company.signal.aborted) return;
-		kept.list = list;
+		const refused = refusedExistingGoogle.get(page.company);
+		kept.list = refused ? list.filter((account) => !refused.has(account.secretId)) : list;
 	} catch {
 		return;
 	}
@@ -2180,9 +2190,12 @@ async function connectExistingGoogle(page: Page, google: GoogleMailboxCalls, sec
 	} catch (error) {
 		if (company.signal.aborted) return;
 		ui.googleLinking = null;
-		const reason = refusalOf(error);
+		const reason =
+			refusalOf(error) ??
+			(error instanceof CloudRpcError && error.code === "22023" ? "connection_unavailable" : undefined);
 		ui.googleError = googleRefusal(reason, refusedAddress(error));
 		if (reason === "connection_unavailable") {
+			refusedGoogleSet(company).add(secretId);
 			const kept = manageViews.get(ui)?.existingGoogle;
 			if (kept?.list) kept.list = kept.list.filter((account) => account.secretId !== secretId);
 			ui.google = "open";
@@ -2251,9 +2264,11 @@ function googleRow(page: Page): HTMLElement | null {
 	const open = ui.google !== "closed";
 	const busy = ui.google === "starting" || ui.googleLinking !== null;
 	const listed = new Set((state.mail?.addresses ?? []).map((address) => address.address.toLowerCase()));
+	const refused = refusedExistingGoogle.get(company);
 	const seen = new Set<string>();
 	const existing = google.connectExisting
 		? (views?.existingGoogle.list ?? []).filter((account) => {
+				if (refused?.has(account.secretId)) return false;
 				const lower = account.address.toLowerCase();
 				if (listed.has(lower) || seen.has(lower)) return false;
 				seen.add(lower);
