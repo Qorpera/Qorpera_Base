@@ -705,7 +705,7 @@ export type CloudCompanyNumbersAnswer =
 			readonly more: boolean;
 			readonly asOf: string;
 	  }
-	| { readonly state: "refused" | "invalid" | "not_counted" | "not_connected"; readonly words: string };
+	| { readonly state: "refused" | "invalid" | "not_counted"; readonly words: string };
 
 export interface CloudCompanyFolderReadResult {
 	/** The folder's clock when the read was answered. */
@@ -1688,7 +1688,6 @@ export class CloudCompanyFolderClient {
 				if (error.code === "P0002") return { state: "refused", words };
 				if (error.code === "22023") return { state: "invalid", words };
 				if (error.code === "0A000") return { state: "not_counted", words };
-				if (error.code === "55000" && words.startsWith("Not connected:")) return { state: "not_connected", words };
 			}
 			throw cloudCompanyFolderFailure(error);
 		}
