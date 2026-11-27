@@ -837,6 +837,8 @@ describe("AppWorkbenchView", () => {
 		const hosting = fakeSiteHosting({ entry: { isPublic: false, domains: [] } });
 		const getSurfaceAppRuntimeConfig = vi.fn(async () => ({
 			surfaceId: webApp.id,
+			profileId: COMPANY,
+			slug: webApp.slug,
 			siteId: HOSTED_SITE,
 			deploymentKind: "static" as const,
 			linkedDatabaseName: null,
@@ -847,6 +849,8 @@ describe("AppWorkbenchView", () => {
 		}));
 		const setSurfaceAppRuntimeConfig = vi.fn(async () => ({
 			surfaceId: webApp.id,
+			profileId: COMPANY,
+			slug: webApp.slug,
 			siteId: HOSTED_SITE,
 			deploymentKind: "static" as const,
 			linkedDatabaseName: "shop",
