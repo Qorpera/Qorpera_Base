@@ -243,10 +243,7 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
-	async listCompanyCodeRepositories(
-		companyId: string,
-		signal?: AbortSignal,
-	): Promise<CompanyCodeRepositorySummary[]> {
+	async listCompanyCodeRepositories(companyId: string, signal?: AbortSignal): Promise<CompanyCodeRepositorySummary[]> {
 		const data = await this.#rpc("qorpera_list_company_code_repositories", { p_company_id: companyId }, signal);
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_company_code_repositories payload");
 		return data.map((item, index) => parseCompanyCodeRepositorySummary(item, `codeRepositories[${index}]`));

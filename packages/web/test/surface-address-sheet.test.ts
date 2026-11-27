@@ -1184,7 +1184,11 @@ describe("editing the platform subdomain", () => {
 				updatedAt: "2026-11-27T00:00:00.000Z",
 			},
 		]);
-		let current = { repositoryKey: "surfaces/web-app", repositorySubpath: null as string | null, defaultBranch: "main" };
+		let current = {
+			repositoryKey: "surfaces/web-app",
+			repositorySubpath: null as string | null,
+			defaultBranch: "main",
+		};
 		const { address } = mount({ entry: { isPublic: true, domains: [] } }, true, {
 			codeSource: () => ({
 				repositoryKey: current.repositoryKey,
@@ -1242,6 +1246,8 @@ describe("editing the platform subdomain", () => {
 			},
 		]);
 		expect(title()).toBeUndefined();
-		expect(sheet().querySelector('[data-key="code-source"]')?.textContent).toContain("qorpera/qorpera_base/packages/web");
+		expect(sheet().querySelector('[data-key="code-source"]')?.textContent).toContain(
+			"qorpera/qorpera_base/packages/web",
+		);
 	});
 });

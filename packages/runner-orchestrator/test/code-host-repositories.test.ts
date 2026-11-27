@@ -3374,6 +3374,8 @@ describe("per-repository landing queue and inline record batching", () => {
 			headSha: baseSha,
 			changed: false,
 			filesChanged: 0,
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
 		});
 
 		const head = await f.commit(tree, "landing.html");
@@ -3383,6 +3385,8 @@ describe("per-repository landing queue and inline record batching", () => {
 			headSha: head,
 			changed: true,
 			filesChanged: 1,
+			affectedPaths: ["landing.html"],
+			diffStats: { filesChanged: 1, additions: 1, deletions: 0 },
 		});
 		expect(await f.git(repo, "rev-parse", "refs/heads/main")).toBe(baseSha);
 		expect(await f.git(repo, "rev-parse", `refs/heads/${claim.branch}`)).toBe(head);

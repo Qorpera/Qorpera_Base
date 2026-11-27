@@ -607,7 +607,12 @@ export function openCreateSurfaceSheet(
 	const sourcePanel = h(
 		"div",
 		{ class: "surface-create-source", hidden: !canConnectExistingRepo || selected.archetype !== "live_build" },
-		h("div", { class: "surface-create-source-tabs", role: "group", "aria-label": t("Code source") }, freshBtn, existingBtn),
+		h(
+			"div",
+			{ class: "surface-create-source-tabs", role: "group", "aria-label": t("Code source") },
+			freshBtn,
+			existingBtn,
+		),
 		sourceFields.el,
 	);
 

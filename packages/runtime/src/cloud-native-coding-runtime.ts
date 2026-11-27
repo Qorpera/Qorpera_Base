@@ -44,6 +44,7 @@ import { CODING_MAKE_PICTURE_SCHEMA, createCodingPictureTool } from "./cloud-cod
 import {
 	CODING_FINISH_CONFLICT_SCHEMA,
 	formatCodingFinishConflictFeedback,
+	inspectCodingChangeDiff,
 	runCodingFinishConflictPreflight,
 } from "./cloud-coding-preflight-land.ts";
 import type { CloudCompanyFolderClient } from "./cloud-company-folder-client.ts";
@@ -1361,11 +1362,61 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 							return checked.conflicted ? formatCodingFinishConflictFeedback(checked) : null;
 						}
 					: undefined;
+			let lastRecordedHeadSha: string | null = null;
 			const recordChangeTool = surfaceSession?.recordChange
 				? [
 						createCodingRecordChangeTool(
 							surfaceSession.sessionId,
-							{ recordChange: surfaceSession.recordChange },
+							{
+								recordChange: async (targetSessionId, request, toolContext) => {
+									let enriched = request;
+									if (!request.affectedPaths?.length && !request.diffStats) {
+										const openGitChanges = (surfaceSession.sessionOpenChanges ?? [])
+											.filter((item) => item.kind === "git_range")
+											.sort((a, b) => a.seq - b.seq || a.changeId.localeCompare(b.changeId));
+										const matchedExisting = request.changeId
+											? openGitChanges.find((item) => item.changeId === request.changeId)
+											: undefined;
+										const fallbackParentSha =
+											request.parentSha ??
+											matchedExisting?.parentSha ??
+											lastRecordedHeadSha ??
+											openGitChanges[openGitChanges.length - 1]?.headSha ??
+											surfaceSession.branchHeadSha ??
+											(typeof initial.coding.baseSha === "string" ? initial.coding.baseSha : null) ??
+											surfaceSession.mainSha ??
+											null;
+										if (fallbackParentSha && fallbackParentSha !== request.commitSha) {
+											const diff = await inspectCodingChangeDiff({
+												scope,
+												operations,
+												gateway: guarded,
+												checkAuthority: (ctx) =>
+													observedCloudToolAuthority(
+														ctx.observation,
+														() => assertContext(ctx.signal),
+														ctx.signal,
+													),
+												parentSha: fallbackParentSha,
+												commitSha: request.commitSha,
+												context: toolContext,
+											});
+											if (diff) {
+												enriched = {
+													...request,
+													affectedPaths: diff.affectedPaths,
+													diffStats: diff.diffStats,
+												};
+											}
+										}
+									}
+									const result = await surfaceSession.recordChange!(targetSessionId, enriched, toolContext);
+									if (!request.optionGroup) {
+										lastRecordedHeadSha = request.commitSha;
+									}
+									return result;
+								},
+							},
 							{
 								openChanges: surfaceSession.sessionOpenChanges ?? [],
 								replyChangeId: surfaceSession.replyChangeId ?? null,

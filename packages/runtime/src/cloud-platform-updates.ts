@@ -581,6 +581,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "Agents and Inbox sessions can now manage email like Gmail without permanent deletion. Use find_mail (with view filters and up to 50 results) and manage_mail to move conversations to Trash or restore them, archive, star or unstar, block or unblock senders (auto-trashing future mail and skipping routine wakes), and unsubscribe via one-click POST or mailto; brought-in Google mailboxes sync two-way with Gmail. Connected Gmail accounts also gain list, batch update (trash, archive, star, read/unread, spam), and reversible sender-block filter actions. For web-only newsletter links, open the URL in a company or coding machine browser instead of asking the member.",
 	},
 	{
+		id: "surface-guards-supersede-and-change-stats",
+		kind: "behaviour",
+		date: "2026-11-27",
+		title: "Interface repo guard, upkeep superseding, change stats",
+		text: "manage_worker coding sessions can no longer target a company Interface repository directly; always update Interface codebases through Interface sessions so changes stay staged for Preview and approval. Recurring upkeep or sync sessions can pass a stable supersedeKey (such as github-sync) when starting a session or staging a change so each fresh update automatically supersedes the previous unapproved refresh instead of piling up duplicates. Staged code changes now automatically record their affected file paths and line diff stats.",
+	},
+	{
 		id: "surface-repo-subpath-and-branch",
 		kind: "capability",
 		date: "2026-11-27",

@@ -1543,7 +1543,9 @@ function parseClaimedSurfaceSessionJob(value: unknown): ClaimedSurfaceSessionJob
 			? undefined
 			: optionalResponseString(input.repositorySubpath, "surface repository subpath");
 	const defaultBranch =
-		input.defaultBranch === undefined ? undefined : optionalResponseString(input.defaultBranch, "surface default branch");
+		input.defaultBranch === undefined
+			? undefined
+			: optionalResponseString(input.defaultBranch, "surface default branch");
 	return {
 		sessionId: responseUuid(input.sessionId, "surface session id"),
 		surfaceId: responseUuid(input.surfaceId, "surface id"),

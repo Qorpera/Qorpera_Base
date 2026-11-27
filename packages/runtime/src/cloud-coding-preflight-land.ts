@@ -670,3 +670,221 @@ export async function runCodingFinishConflictPreflight(options: {
 		return { conflicted: false };
 	}
 }
+
+const CHANGE_DIFF_TIMEOUT_MS = 15_000;
+const CHANGE_DIFF_MAX_OUTPUT_BYTES = 256 * 1024;
+const CHANGE_DIFF_MAX_PATHS = 500;
+const CHANGE_DIFF_MAX_PATH_CHARS = 512;
+const CHANGE_DIFF_MARKER = "__QORPERA_CHANGE_DIFF_V1__";
+const CHANGE_DIFF_END_MARKER = "__QORPERA_CHANGE_DIFF_END__";
+const CHANGE_DIFF_BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+const CHANGE_DIFF_SHA_RE = /^[0-9a-f]{40}$/;
+
+export interface CodingChangeDiffSummary {
+	readonly affectedPaths: readonly string[];
+	readonly diffStats: {
+		readonly filesChanged: number;
+		readonly additions: number;
+		readonly deletions: number;
+	};
+}
+
+export function parseGitNumstatZ(raw: string): CodingChangeDiffSummary | null {
+	if (!raw) {
+		return {
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		};
+	}
+	const entries = raw.split("\0").filter(Boolean);
+	const allPaths: string[] = [];
+	let additions = 0;
+	let deletions = 0;
+	for (const entry of entries) {
+		const parts = entry.split("\t");
+		if (parts.length < 3) continue;
+		const add = Number.parseInt(parts[0] ?? "0", 10);
+		const del = Number.parseInt(parts[1] ?? "0", 10);
+		if (Number.isFinite(add) && add > 0) additions += add;
+		if (Number.isFinite(del) && del > 0) deletions += del;
+		const filePath = parts.slice(2).join("\t");
+		if (filePath) allPaths.push(filePath);
+	}
+	return {
+		affectedPaths: allPaths.slice(0, CHANGE_DIFF_MAX_PATHS).map((p) => p.slice(0, CHANGE_DIFF_MAX_PATH_CHARS)),
+		diffStats: { filesChanged: allPaths.length, additions, deletions },
+	};
+}
+
+export function decodeChangeDiffOutput(output: string): CodingChangeDiffSummary | null {
+	const prefix = `${CHANGE_DIFF_MARKER}:`;
+	const suffix = `:${CHANGE_DIFF_END_MARKER}`;
+	const index = output.indexOf(prefix);
+	if (index < 0) return null;
+	const line = output
+		.slice(index + prefix.length)
+		.split(/\r?\n/, 1)[0]
+		?.trim();
+	if (line === undefined || !line.endsWith(suffix)) return null;
+	const encoded = line.slice(0, -suffix.length);
+	if (!encoded) {
+		return {
+			affectedPaths: [],
+			diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+		};
+	}
+	if (encoded.length % 4 !== 0 || !CHANGE_DIFF_BASE64_RE.test(encoded)) return null;
+	try {
+		const raw = Buffer.from(encoded, "base64").toString("utf8");
+		return parseGitNumstatZ(raw);
+	} catch {
+		return null;
+	}
+}
+
+export async function inspectCodingChangeDiff(options: {
+	scope: CloudCodingCommandScope;
+	operations: Pick<CloudNativeToolOperations, "execute">;
+	gateway: CloudCodingCommandGateway;
+	checkAuthority: (context: CloudToolContext) => Promise<void>;
+	parentSha: string;
+	commitSha: string;
+	context: CloudToolContext;
+	pollMs?: number;
+	timeoutMs?: number;
+}): Promise<CodingChangeDiffSummary | null> {
+	const { scope, operations, gateway, checkAuthority, parentSha, commitSha, context } = options;
+	if (!CHANGE_DIFF_SHA_RE.test(parentSha) || !CHANGE_DIFF_SHA_RE.test(commitSha) || parentSha === commitSha) {
+		return null;
+	}
+	const target = { schema: "qorpera.coding-command-target/v1", ...scope };
+	const timeoutMs = options.timeoutMs ?? CHANGE_DIFF_TIMEOUT_MS;
+	const basePollMs = options.pollMs ?? FINISH_PREFLIGHT_POLL_MS;
+	const maxPollMs = Math.max(basePollMs, Math.min(FINISH_PREFLIGHT_MAX_POLL_MS, basePollMs * 4));
+	const command = `set -o pipefail; git rev-parse --verify -q ${parentSha}^{commit} >/dev/null && git rev-parse --verify -q ${commitSha}^{commit} >/dev/null && out="$(git diff --numstat --no-renames -z ${parentSha} ${commitSha} | base64 | tr -d '\\r\\n')" && printf '${CHANGE_DIFF_MARKER}:%s:${CHANGE_DIFF_END_MARKER}\\n' "$out"`;
+	const subKey = preflightSubOperationKey(`${parentSha}:${commitSha}`, "change-diff");
+	const subArgs = { operationKey: subKey, command, timeoutMs };
+
+	const cancelBestEffort = async (commandId: string): Promise<void> => {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CANCEL_ON_ABORT_MS);
+		timer.unref?.();
+		try {
+			await gateway.cancel(scope, commandId, controller.signal);
+		} catch {
+			undefined;
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+
+	try {
+		const childObservation = context.observation?.child("coding_run_command");
+		const content = await operations.execute({
+			operation: {
+				tool: "coding_run_command",
+				toolVersion: "v1",
+				logicalOperationKey: subKey,
+				arguments: subArgs,
+				target,
+				requiresCompanyRevision: false,
+			},
+			authorize: (_operation, admitted, signal) => gateway.authorize(scope, admitted, signal),
+			perform: async (_operation, receipt) => {
+				const started = parseCloudCodingCommandReceipt(
+					await gateway.start(
+						scope,
+						{
+							commandId: receipt.receiptId,
+							inputSha256: receipt.inputSha256,
+							command,
+							timeoutMs,
+						},
+						receipt.signal,
+					),
+				);
+				if (
+					started.workerId !== scope.workerId ||
+					started.commandId !== receipt.receiptId ||
+					started.inputSha256 !== receipt.inputSha256
+				) {
+					throw new Error("Coding command result differs");
+				}
+				const fitted = fitCloudCommandPage(started, false, cloudCommandFits);
+				const stored =
+					fitted && "page" in fitted
+						? fitted.page
+						: {
+								...started,
+								output: "",
+								log: { ...started.log, nextOffset: started.log.offset },
+								truncated: started.log.offset < started.log.totalBytes || started.log.limitReached,
+							};
+				return { content: { kind: "text", value: cloudToolJsonText(stored) } };
+			},
+			signal: context.signal,
+			...(childObservation ? { observation: childObservation } : {}),
+		});
+		if (content.kind !== "text") return null;
+		let receipt = parseCloudCodingCommandReceipt(JSON.parse(content.value));
+		const deadline = Date.now() + timeoutMs + DEFAULT_TIMEOUT_GRACE_MS;
+		let pollDelay = basePollMs;
+		while (receipt.state === "running") {
+			if (Date.now() >= deadline) {
+				await cancelBestEffort(receipt.commandId);
+				return null;
+			}
+			await cloudControlPause(Math.min(pollDelay, Math.max(1, deadline - Date.now())), context.signal);
+			pollDelay = Math.min(maxPollMs, pollDelay * 2);
+			receipt = parseCloudCodingCommandReceipt(
+				await cloudToolRequest(
+					(signal) =>
+						gateway.read(
+							scope,
+							parseCloudCodingCommandRead({
+								commandId: receipt.commandId,
+								offset: 0,
+								limit: CLOUD_CODING_COMMAND_PAGE_BYTES,
+							}),
+							signal,
+						),
+					context.signal,
+				),
+			);
+			await checkAuthority(context);
+		}
+		if (receipt.state !== "succeeded" || receipt.log.limitReached) return null;
+		let rawOutput = receipt.log.offset === 0 ? receipt.output : "";
+		let offset = receipt.log.offset === 0 ? receipt.log.nextOffset : 0;
+		let totalBytes = receipt.log.totalBytes;
+		while (offset < totalBytes && rawOutput.length < CHANGE_DIFF_MAX_OUTPUT_BYTES) {
+			const page = parseCloudCodingCommandReceipt(
+				await cloudToolRequest(
+					(signal) =>
+						gateway.read(
+							scope,
+							parseCloudCodingCommandRead({
+								commandId: receipt.commandId,
+								offset,
+								limit: CLOUD_CODING_COMMAND_PAGE_BYTES,
+							}),
+							signal,
+						),
+					context.signal,
+				),
+			);
+			await checkAuthority(context);
+			if (page.log.limitReached) return null;
+			totalBytes = page.log.totalBytes;
+			if (page.log.nextOffset <= offset) break;
+			rawOutput += page.output;
+			offset = page.log.nextOffset;
+		}
+		if (offset < totalBytes) return null;
+		return decodeChangeDiffOutput(rawOutput);
+	} catch (error) {
+		if (context.signal.aborted) throw error;
+		if (error instanceof Error && FINISH_PREFLIGHT_FATAL_ERRORS.has(error.message)) throw error;
+		return null;
+	}
+}

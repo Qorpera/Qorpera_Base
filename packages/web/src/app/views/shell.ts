@@ -1053,7 +1053,9 @@ function partsFor(company: CompanyController, redraw: () => void): RailParts {
 				event.preventDefault();
 				const role = company.store.get().team?.role;
 				const canBindRepo = role === undefined || role === "owner" || role === "admin";
-				withSurfaceMigrationSheet((mod) => mod.openCreateSurfaceSheet(store, { canConnectExistingRepo: canBindRepo }));
+				withSurfaceMigrationSheet((mod) =>
+					mod.openCreateSurfaceSheet(store, { canConnectExistingRepo: canBindRepo }),
+				);
 			},
 			{ signal: company.signal },
 		);

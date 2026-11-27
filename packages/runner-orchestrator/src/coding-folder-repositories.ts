@@ -113,12 +113,20 @@ export interface CodingFolderStart {
 	assertAuthorized(signal: AbortSignal): Promise<void>;
 }
 
+export interface CodingStagedDiffStats {
+	readonly filesChanged: number;
+	readonly additions: number;
+	readonly deletions: number;
+}
+
 export interface CodingStaged {
 	readonly branch: string;
 	readonly baseSha: string;
 	readonly headSha: string;
 	readonly changed: boolean;
 	readonly filesChanged: number;
+	readonly affectedPaths?: readonly string[];
+	readonly diffStats?: CodingStagedDiffStats | null;
 }
 
 /** Where a session's work landed in a repository kept in Qorpera. */

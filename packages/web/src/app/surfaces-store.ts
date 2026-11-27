@@ -3637,12 +3637,10 @@ export class SurfacesStore {
 			input.archetype === "studio"
 				? explicitFolderRoot || (input.kind === "identity" ? "identity" : `surfaces/${slug}`)
 				: null;
-		const repositoryKey =
-			input.archetype === "live_build" ? input.repositoryKey?.trim() || undefined : undefined;
+		const repositoryKey = input.archetype === "live_build" ? input.repositoryKey?.trim() || undefined : undefined;
 		const repositorySubpath =
 			input.archetype === "live_build" ? input.repositorySubpath?.trim() || undefined : undefined;
-		const defaultBranch =
-			input.archetype === "live_build" ? input.defaultBranch?.trim() || undefined : undefined;
+		const defaultBranch = input.archetype === "live_build" ? input.defaultBranch?.trim() || undefined : undefined;
 		if (this.state.source === "cloud" && this.#options.client?.createSurface) {
 			const cloudSlug = input.archetype === "studio" ? slug : explicitSlug || undefined;
 			const created = await this.#run("surface:create", (client) =>
@@ -3728,7 +3726,11 @@ export class SurfacesStore {
 		surfaceId: string,
 		input: BindSurfaceRepositoryInput,
 	): Promise<SurfaceSummary | undefined> {
-		if (this.state.source === "cloud" && !isLocalSurfaceId(surfaceId) && this.#options.client?.bindSurfaceRepository) {
+		if (
+			this.state.source === "cloud" &&
+			!isLocalSurfaceId(surfaceId) &&
+			this.#options.client?.bindSurfaceRepository
+		) {
 			const updated = await this.#run(`surface:bind-repo:${surfaceId}`, (client) =>
 				client.bindSurfaceRepository!(surfaceId, input),
 			);
@@ -3738,7 +3740,9 @@ export class SurfacesStore {
 				const existing = state.workspaces[surfaceId];
 				return {
 					surfaces: state.surfaces.map((item) => (item.id === surfaceId ? updated : item)),
-					...(existing ? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } } : {}),
+					...(existing
+						? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } }
+						: {}),
 					error: undefined,
 				};
 			});
@@ -3757,7 +3761,9 @@ export class SurfacesStore {
 			const existing = state.workspaces[surfaceId];
 			return {
 				surfaces: state.surfaces.map((item) => (item.id === surfaceId ? updated : item)),
-				...(existing ? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } } : {}),
+				...(existing
+					? { workspaces: { ...state.workspaces, [surfaceId]: { ...existing, surface: updated } } }
+					: {}),
 				error: undefined,
 			};
 		});

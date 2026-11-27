@@ -1305,7 +1305,12 @@ export class SurfaceAddress {
 			key: "code-source",
 			glyph: "code",
 			label: t("Code source"),
-			end: h("span", { class: "surface-address-row-end surface-address-source-summary", title: summary }, summary, icon("chevron")),
+			end: h(
+				"span",
+				{ class: "surface-address-row-end surface-address-source-summary", title: summary },
+				summary,
+				icon("chevron"),
+			),
 			press: () => this.#openSource(source),
 		});
 	}
@@ -1395,7 +1400,10 @@ export class SurfaceAddress {
 		if (!isSurfaceRepositoryKey(repoKey)) {
 			this.#problem = t("Enter a repository like owner/name.");
 			this.#paint();
-			(this.#sourceCustomRepo || this.#sourceRepos.length === 0 ? this.#sourceRepoField : this.#sourceRepoSelect).focus();
+			(this.#sourceCustomRepo || this.#sourceRepos.length === 0
+				? this.#sourceRepoField
+				: this.#sourceRepoSelect
+			).focus();
 			return;
 		}
 		const rawSubpath = this.#sourceSubpathField.value.trim();
@@ -1463,13 +1471,33 @@ export class SurfaceAddress {
 					},
 				},
 				hasRepos
-					? h("label", { class: "surface-address-field" }, h("span", null, t("Repository")), this.#sourceRepoSelect)
+					? h(
+							"label",
+							{ class: "surface-address-field" },
+							h("span", null, t("Repository")),
+							this.#sourceRepoSelect,
+						)
 					: null,
 				showCustom
-					? h("label", { class: "surface-address-field" }, h("span", null, t("Repository key")), this.#sourceRepoField)
+					? h(
+							"label",
+							{ class: "surface-address-field" },
+							h("span", null, t("Repository key")),
+							this.#sourceRepoField,
+						)
 					: null,
-				h("label", { class: "surface-address-field" }, h("span", null, t("Subfolder (optional)")), this.#sourceSubpathField),
-				h("label", { class: "surface-address-field" }, h("span", null, t("Upstream branch")), this.#sourceBranchField),
+				h(
+					"label",
+					{ class: "surface-address-field" },
+					h("span", null, t("Subfolder (optional)")),
+					this.#sourceSubpathField,
+				),
+				h(
+					"label",
+					{ class: "surface-address-field" },
+					h("span", null, t("Upstream branch")),
+					this.#sourceBranchField,
+				),
 				h(
 					"div",
 					{ class: "surface-address-end" },
