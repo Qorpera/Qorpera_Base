@@ -12,7 +12,7 @@ A research post answers one question from sources anyone can open again. The fou
 - Read the company's vision first, whole, and the posts this interface already has. A question they answer gets a link, not a new post.
 
 ## 2. The plan, then the founder's yes
-Before you open one source, show the plan with your ask tool (`surface_ask`), its text starting "Research plan:":
+Before you open one source, show the plan with your ask tool (`surface_ask`) in under 1000 characters, its text starting "Research plan:":
 - what you will find out: the question and the few facts that would answer it;
 - where you will look, by kind of source: makers' own pages, the regulator, studies, price lists;
 - what only the founder knows and you need: money they will put in, what may give way, who they have already spoken to. Ask it as open questions, never as your guess for them to confirm.
