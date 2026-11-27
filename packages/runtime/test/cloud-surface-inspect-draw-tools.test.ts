@@ -1933,4 +1933,66 @@ describe("Studio visual inspect & draw tools", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it("maps non-abort inspect step failures to CloudToolRefusal and preserves aborts", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "surface-inspect-err-"));
+		try {
+			const baseMachine = makeShellMachine(dir, process.env, []);
+			const refusingMachine: StudioChatGptVoiceMachine = {
+				...baseMachine,
+				operations: {
+					async execute() {
+						throw new Error("ambiguous downstream receipt");
+					},
+				},
+			};
+			const loadSnapshot = async () => ({
+				surfaceTitle: "Strategy",
+				folderRoot: "surfaces/strategy",
+				starter: "product" as const,
+				files: {
+					"surfaces/strategy/layout.json": JSON.stringify({
+						schema: SURFACE_LAYOUT_SCHEMA,
+						tabs: [{ id: "overview", title: "Overview", blocks: [] }],
+					}),
+				},
+				binaries: {},
+				localAssetPaths: {},
+				knownBinaries: {},
+			});
+			const refusedTool = createInspectSurfaceTool({
+				machine: refusingMachine,
+				loadSnapshot,
+				pollMs: 10,
+			});
+			const failure = await refusedTool
+				.execute({ tab: "overview", viewport: "desktop" }, CONTEXT)
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(CloudToolRefusal);
+			expect((failure as Error).message).toContain("INSPECT_SURFACE_UNAVAILABLE");
+
+			const abortController = new AbortController();
+			const abortErr = new DOMException("Aborted", "AbortError");
+			const abortingMachine: StudioChatGptVoiceMachine = {
+				...baseMachine,
+				operations: {
+					async execute() {
+						abortController.abort(abortErr);
+						throw abortErr;
+					},
+				},
+			};
+			const abortedTool = createInspectSurfaceTool({
+				machine: abortingMachine,
+				loadSnapshot,
+				pollMs: 10,
+			});
+			const aborted = await abortedTool
+				.execute({ tab: "overview", viewport: "desktop" }, { ...CONTEXT, signal: abortController.signal })
+				.catch((error: unknown) => error);
+			expect(aborted).toBe(abortErr);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

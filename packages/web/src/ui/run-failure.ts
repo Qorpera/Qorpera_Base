@@ -27,6 +27,7 @@ export type RunFailureKind =
 	| "timeout"
 	| "bridge"
 	| "no_reply"
+	| "no_submission"
 	| "cancelled"
 	| "other";
 
@@ -68,6 +69,8 @@ export function classifyRunFailure(
 		(lastError ?? "").includes("[code=NATIVE_PUBLIC_COMPLETION:UNKNOWN]")
 	)
 		return jobStatus === "cancelled" ? "cancelled" : "no_reply";
+	if ((lastError ?? "").includes("[code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]"))
+		return jobStatus === "cancelled" ? "cancelled" : "no_submission";
 	// Any other refused step carries the provider's fixed code (e.g. "[code=NATIVE_CREDENTIAL_SEALING:STORAGE_BUDGET]").
 	// Most name Qorpera's own machinery, not a member's account, so the words inside a code never decide the class: the
 	// step stays "bridge", as it was before the code. Only its category can (the part after the colon, from the runtime's
@@ -166,6 +169,7 @@ const REASONS: Record<RunFailureKind, string> = {
 	bridge: phrase("The run started, but one of its steps was refused. The problem is on Qorpera's side."),
 	// Try again is offered as for lost contact; the words never ask for it.
 	no_reply: phrase("The agent finished without sending its answer. The problem is on Qorpera's side."),
+	no_submission: phrase("The coding session ended without finishing its work. The problem is on Qorpera's side."),
 	cancelled: phrase("The run was stopped before it finished."),
 	other: phrase("The run stopped because of an internal error."),
 };
@@ -313,7 +317,7 @@ const SIGN_IN_WAIT = phrase(
 const CODING_TURN_ENDED = "The coding turn ended without a submission.";
 const CODING_TURN_STOPPED = "The coding turn was stopped before it finished.";
 
-const CODING_REASONS: Record<RunFailureKind | "no_submission", string> = {
+const CODING_REASONS: Record<RunFailureKind, string> = {
 	no_submission: phrase(
 		"The session's last turn ended without saving its work or asking a question. The workspace is kept; a follow-up continues it.",
 	),
@@ -569,6 +573,7 @@ export function runFailureInterrupted(
 		kind === "timeout" ||
 		kind === "dispatch" ||
 		kind === "no_reply" ||
+		kind === "no_submission" ||
 		kind === "cancelled"
 	);
 }

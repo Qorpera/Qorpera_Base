@@ -68,6 +68,12 @@ describe("Claude Code coding session failures, in Danish", () => {
 		expect(codingFailureReason("Stopped", { mine: true }, "CODING_CLAUDE_OUTPUT_LIMIT")).toBe(
 			"Sessionens output blev for stort til én tur. Arbejdsområdet er gemt; en opfølgning fortsætter den.",
 		);
+		expect(
+			runFailureReason(
+				"Coding session ended before calling coding_finish. [code=CODING_TURN_ENDED_WITHOUT_SUBMISSION]",
+				"failed",
+			),
+		).toBe("Kodningssessionen sluttede uden at gøre sit arbejde færdigt. Fejlen ligger hos Qorpera.");
 		expect(untranslated()).toEqual([]);
 	});
 });

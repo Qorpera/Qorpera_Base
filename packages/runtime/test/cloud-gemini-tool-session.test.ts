@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { JsonValue } from "@qorpera/contracts";
 import { CloudActionReviewChannel } from "@qorpera/runtime/cloud-action-review";
 import {
 	GeminiCapReachedError,
@@ -12,6 +13,7 @@ import {
 	geminiProviderErrorCode,
 	geminiProviderFailureCode,
 	runCloudGeminiToolSession,
+	stripGeminiGroundingCitations,
 } from "@qorpera/runtime/cloud-gemini-tool-session";
 import { nativeRuntimeFailureMetadata } from "@qorpera/runtime/cloud-native-failure";
 import { type CloudNativeTool, CloudNativeToolBoundary } from "@qorpera/runtime/cloud-native-tool-boundary";
@@ -1683,5 +1685,143 @@ describe("runCloudGeminiToolSession", () => {
 		}).catch((failure: unknown) => failure);
 		expect(oversizedAttempts).toBe(1);
 		expect(nativeRuntimeFailureMetadata(oversizedErr)).toMatchObject({ category: "provider_failed" });
+	});
+
+	it("instructs against inline grounding citations and strips them from send_message and ask_member", async () => {
+		expect(
+			stripGeminiGroundingCitations(
+				"IKEA Kreativ is locked to IKEA's catalog [1.1.3, 1.1.4]. One store [1.1.4], and 3D [1.1.4, 1.1.5]. Pro tiers cost $14-$127 [1.2.5, 1.2.9].",
+			),
+		).toBe("IKEA Kreativ is locked to IKEA's catalog. One store, and 3D. Pro tiers cost $14-$127.");
+		expect(
+			stripGeminiGroundingCitations("Release [1.2.3] adds `[1.1.3, 1.1.4]` and [1.1.4](https://example.com)"),
+		).toBe("Release adds `[1.1.3, 1.1.4]` and [1.1.4](https://example.com)");
+		expect(stripGeminiGroundingCitations("## [1.2.3]\n- [1.2.4] Fixed bug")).toBe("## [1.2.3]\n- [1.2.4] Fixed bug");
+		expect(stripGeminiGroundingCitations("Summary [1.2].")).toBe("Summary [1.2].");
+		expect(stripGeminiGroundingCitations("Adjacent [1.1.3] [1.1.4]. Next.")).toBe("Adjacent. Next.");
+		expect(stripGeminiGroundingCitations("Summary [1.2] and detail [2.4, 3.1].", true)).toBe("Summary and detail.");
+
+		const sentMessages: JsonValue[] = [];
+		const askMessages: JsonValue[] = [];
+		const sendTool: CloudNativeTool = {
+			name: "send_message",
+			description: "Send message to the user",
+			source: "runtime",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				properties: { text: { type: "string" } },
+				required: ["text"],
+			},
+			parseArguments: (args) => args,
+			execute: vi.fn<CloudNativeTool["execute"]>(async (args) => {
+				sentMessages.push(args);
+				return { kind: "text", value: "ok" };
+			}),
+		};
+		const askTool: CloudNativeTool = {
+			name: "ask_member",
+			description: "Ask a company member",
+			source: "runtime",
+			inputSchema: {
+				type: "object",
+				additionalProperties: false,
+				properties: { text: { type: "string" } },
+				required: ["text"],
+			},
+			parseArguments: (args) => args,
+			execute: vi.fn<CloudNativeTool["execute"]>(async (args) => {
+				askMessages.push(args);
+				return { kind: "text", value: "asked" };
+			}),
+		};
+		const seenBodies: Record<string, unknown>[] = [];
+		let turn = 0;
+		const { baseUrl } = await startMockGemini((req) => {
+			seenBodies.push(req.body);
+			turn += 1;
+			if (turn === 1) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{
+											functionCall: {
+												id: "call_send",
+												name: "send_message",
+												args: {
+													text: "On the consumer side, IKEA Kreativ uses one catalog [1.1.3, 1.1.4]. One store [1.1.4], and stagers pay every week [1.2].",
+												},
+											},
+										},
+									],
+								},
+								groundingMetadata: { webSearchQueries: ["ikea kreativ"] },
+								finishReason: "STOP",
+							},
+						],
+						usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 15 },
+					},
+				};
+			}
+			if (turn === 2) {
+				return {
+					body: {
+						candidates: [
+							{
+								content: {
+									role: "model",
+									parts: [
+										{
+											functionCall: {
+												id: "call_ask",
+												name: "ask_member",
+												args: { text: "Should we prioritize pros [1.2.5, 1.2.9]?" },
+											},
+										},
+									],
+								},
+								finishReason: "STOP",
+							},
+						],
+						usageMetadata: { promptTokenCount: 25, candidatesTokenCount: 10 },
+					},
+				};
+			}
+			return {
+				body: {
+					candidates: [{ content: { role: "model", parts: [{ text: "Done." }] }, finishReason: "STOP" }],
+					usageMetadata: { promptTokenCount: 30, candidatesTokenCount: 3 },
+				},
+			};
+		});
+
+		await runCloudGeminiToolSession({
+			boundary: makeBoundary([sendTool, askTool]),
+			model: "gemini-4-neon",
+			effort: "low",
+			apiKey: CANARY_KEY,
+			apiBaseUrl: baseUrl,
+			allowLoopback: true,
+			initialSpendMicrodollars: 0,
+			monthlyCapCents: null,
+			prompt: "Compare consumer vs pro markets",
+			runtimeInstructions: "Be concise.",
+			signal: AbortSignal.timeout(10_000),
+		});
+
+		const sysParts = (
+			(seenBodies[0]?.systemInstruction as { parts?: Array<{ text?: string }> } | undefined)?.parts ?? []
+		)
+			.map((p) => p.text ?? "")
+			.join("\n");
+		expect(sysParts).toContain("never include inline bracketed citation markers");
+		expect(sentMessages).toEqual([
+			{ text: "On the consumer side, IKEA Kreativ uses one catalog. One store, and stagers pay every week." },
+		]);
+		expect(askMessages).toEqual([{ text: "Should we prioritize pros?" }]);
 	});
 });

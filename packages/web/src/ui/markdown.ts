@@ -132,6 +132,81 @@ function referenced(start: number, raw: string, text: string): Stretch | undefin
 	};
 }
 
+interface TextSpanMap {
+	readonly cleaned: string;
+	readonly toDecoded: (offset: number) => number;
+}
+
+const INLINE_CITATION_BRACKET =
+	/([ \t]*)\[(?:\d+(?:\.\d+){2,}(?:\s*,\s*\d+(?:\.\d+){2,})*)\](?:[ \t]*\[(?:\d+(?:\.\d+){2,}(?:\s*,\s*\d+(?:\.\d+){2,})*)\])*([ \t]*)/g;
+
+function stripInlineCitationText(decoded: string): { decoded: string; map: TextSpanMap } {
+	const kept: Array<{ cleanedStart: number; cleanedEnd: number; decodedStart: number }> = [];
+	let cleaned = "";
+	let cursor = 0;
+
+	const pushKept = (from: number, to: number): void => {
+		if (to <= from) return;
+		const cleanedStart = cleaned.length;
+		cleaned += decoded.slice(from, to);
+		kept.push({ cleanedStart, cleanedEnd: cleaned.length, decodedStart: from });
+	};
+
+	for (const match of decoded.matchAll(INLINE_CITATION_BRACKET)) {
+		const offset = match.index;
+		const full = match[0];
+		const beforeSpace = match[1] ?? "";
+		const afterSpace = match[2] ?? "";
+		const tail = decoded.slice(offset + full.length);
+		const prevChar = offset > 0 ? decoded[offset - 1] : "";
+		const nextChar = tail[0] ?? "";
+		if (nextChar === "(" || nextChar === "[") continue;
+		if (offset === 0 && beforeSpace.length === 0 && afterSpace.length > 0 && !/^[.,;:!?)}\]\r\n]/.test(tail)) {
+			continue;
+		}
+		const lineStart = decoded.lastIndexOf("\n", offset - 1) + 1;
+		const linePrefix = decoded.slice(lineStart, offset);
+		if (/^[ \t]*$/.test(linePrefix) && nextChar === ":") continue;
+
+		const dropEnd = offset + full.length;
+		let keepBefore = 0;
+		let keepAfter = 0;
+		if (beforeSpace.length > 0 && (nextChar === "" || /^[.,;:!?)}\]\r\n]/.test(nextChar))) {
+			keepBefore = 0;
+		} else if (prevChar === "" || prevChar === "\n" || prevChar === "(" || prevChar === "[") {
+			keepAfter = 0;
+		} else if (beforeSpace.length > 0 && afterSpace.length > 0) {
+			keepBefore = 1;
+		} else if (beforeSpace.length === 0 && afterSpace.length > 0 && !/^[.,;:!?)}\]\r\n]/.test(tail)) {
+			keepAfter = 1;
+		}
+
+		pushKept(cursor, offset + keepBefore);
+		cursor = dropEnd - keepAfter;
+		if (keepAfter > 0) {
+			pushKept(dropEnd - keepAfter, dropEnd);
+			cursor = dropEnd;
+		}
+	}
+	pushKept(cursor, decoded.length);
+
+	return {
+		decoded,
+		map: {
+			cleaned,
+			toDecoded: (cleanedOffset) => {
+				const clamped = Math.max(0, Math.min(cleaned.length, cleanedOffset));
+				for (const span of kept) {
+					if (clamped < span.cleanedEnd || (clamped === span.cleanedEnd && clamped === cleaned.length)) {
+						return span.decodedStart + (clamped - span.cleanedStart);
+					}
+				}
+				return decoded.length;
+			},
+		},
+	};
+}
+
 /** Text that stands in `raw` (at `start`) line for line, each of its lines the end of a line there: a code's lines
  * under its fence or behind its indent, a quote's behind its "> ", a list item's behind its bullet and indent. None
  * unless every line does, or for no text at all. */
@@ -189,11 +264,15 @@ function stretchOf(token: MarkedToken, { start, raw }: Place, text: string): Str
 }
 
 /** A token's own text as a node of the page, with its way to the source where it has one. */
-function drawn(token: MarkedToken, text: string): Text {
+function drawn(token: MarkedToken, text: string, decodedMap?: { decoded: string; map: TextSpanMap }): Text {
 	const node = document.createTextNode(text);
 	const place = places.get(token);
-	const stretch = place && stretchOf(token, place, text);
-	if (place && stretch) drawnFrom.set(node, (offset) => place.layer.toSource(stretch(offset)));
+	const stretch = place && stretchOf(token, place, decodedMap ? decodedMap.decoded : text);
+	if (place && stretch) {
+		drawnFrom.set(node, (offset) =>
+			place.layer.toSource(stretch(decodedMap ? decodedMap.map.toDecoded(offset) : offset)),
+		);
+	}
 	return node;
 }
 
@@ -430,16 +509,18 @@ function renderTokens(
 	links = true,
 	sites?: FoundSites,
 	surfaces: FoundSurfaces = foundSurfaces(),
+	stripCitations = true,
 ): Node[] {
 	if (depth > 32) return [document.createTextNode(tokens.map((token) => token.raw).join(""))];
 	return tokens.flatMap((token): Node[] => {
-		const children = () =>
+		const children = (keepCitations = false) =>
 			renderTokens(
 				("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[],
 				depth + 1,
 				links,
 				sites,
 				surfaces,
+				keepCitations ? false : stripCitations,
 			);
 		switch (token.type) {
 			case "space":
@@ -449,7 +530,7 @@ function renderTokens(
 			case "checkbox":
 				return [];
 			case "heading":
-				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children())];
+				return [h(token.depth <= 2 ? "h2" : "h3", { "data-heading-level": token.depth }, children(true))];
 			case "paragraph": {
 				const parts = ("tokens" in token ? (token.tokens ?? []) : []) as MarkedToken[];
 				const linksOnly = links ? surfaceLinksOnly(parts) : undefined;
@@ -463,6 +544,7 @@ function renderTokens(
 						links,
 						sites,
 						surfaces,
+						stripCitations,
 					);
 				const namedApps = new Set<string>();
 				const cards = parts.flatMap((part) => {
@@ -480,7 +562,8 @@ function renderTokens(
 						null,
 						parts.flatMap((part): Node[] => {
 							const app = appOf(part);
-							if (app === undefined) return renderTokens([part], depth + 1, links, sites, surfaces);
+							if (app === undefined)
+								return renderTokens([part], depth + 1, links, sites, surfaces, stripCitations);
 							return [
 								h(
 									"button",
@@ -550,7 +633,7 @@ function renderTokens(
 											"aria-label": t("Task status"),
 										})
 									: null,
-								renderTokens(item.tokens as MarkedToken[], depth + 1, links, sites, surfaces),
+								renderTokens(item.tokens as MarkedToken[], depth + 1, links, sites, surfaces, stripCitations),
 							),
 						),
 					),
@@ -562,7 +645,7 @@ function renderTokens(
 						h(
 							heading ? "th" : "td",
 							heading ? { scope: "col" } : null,
-							renderTokens(cell.tokens as MarkedToken[], depth + 1, links, sites, surfaces),
+							renderTokens(cell.tokens as MarkedToken[], depth + 1, links, sites, surfaces, stripCitations),
 						),
 					);
 				return [
@@ -583,11 +666,11 @@ function renderTokens(
 				if (!links)
 					return token.type === "image"
 						? [drawn(token, decodeEntities(token.text))]
-						: [h("span", null, children())];
+						: [h("span", null, children(true))];
 				const content =
 					token.type === "image"
 						? t("Image: {name}", { name: decodeEntities(token.text) || t("Open image") })
-						: children();
+						: children(true);
 				const app = token.type === "link" ? appLinkName(decodeEntities(token.href)) : undefined;
 				if (app !== undefined) return [appCard(app, content)];
 				const surface = token.type === "link" ? surfaceLinkTarget(decodeEntities(token.href)) : undefined;
@@ -597,7 +680,14 @@ function renderTokens(
 						surfaces.named.set(key, {
 							slug: surface.slug,
 							...(surface.tab ? { tab: surface.tab } : {}),
-							name: renderTokens((token.tokens ?? []) as MarkedToken[], depth + 1, false, undefined, surfaces)
+							name: renderTokens(
+								(token.tokens ?? []) as MarkedToken[],
+								depth + 1,
+								false,
+								undefined,
+								surfaces,
+								false,
+							)
 								.map((node) => node.textContent ?? "")
 								.join(""),
 						});
@@ -658,8 +748,15 @@ function renderTokens(
 						: h("span", null, content),
 				];
 			}
-			case "text":
-				return token.tokens ? children() : [drawn(token, decodeEntities(token.text))];
+			case "text": {
+				if (token.tokens) return children();
+				const decoded = decodeEntities(token.text);
+				if (!stripCitations) return [drawn(token, decoded)];
+				const stripped = stripInlineCitationText(decoded);
+				return [
+					stripped.map.cleaned === decoded ? drawn(token, decoded) : drawn(token, stripped.map.cleaned, stripped),
+				];
+			}
 			case "escape":
 			case "html":
 				return [drawn(token, token.text)];
