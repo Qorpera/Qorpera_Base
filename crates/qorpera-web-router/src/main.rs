@@ -3,6 +3,7 @@ use qorpera_web_router::dns_verify::{default_dns_servers, spawn_dns_verifier};
 use qorpera_web_router::postgres_sync::spawn_postgres_sync;
 use qorpera_web_router::routes::EdgeSnapshot;
 use qorpera_web_router::server::{BoundServers, RouterConfig, RouterState};
+use qorpera_web_router::telemetry::spawn_telemetry_flusher;
 use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -125,15 +126,29 @@ async fn async_main() {
         dns_rx,
     );
 
-    if let Some(db_url) = database_url {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let telemetry_handle = if let Some(ref db_url) = database_url {
         spawn_postgres_sync(
-            db_url,
+            db_url.clone(),
             Arc::clone(&state.routes),
             Arc::clone(&state.ready),
             Duration::from_secs(60),
             Some(dns_tx),
         );
-    }
+        let flush_sec: u64 = env::var("QORPERA_WEB_TELEMETRY_FLUSH_SEC")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        Some(spawn_telemetry_flusher(
+            db_url.clone(),
+            Arc::clone(&state.telemetry),
+            Duration::from_secs(flush_sec.max(5)),
+            shutdown_rx.clone(),
+        ))
+    } else {
+        None
+    };
 
     let bound = BoundServers::bind(&cfg, Arc::clone(&state))
         .await
@@ -143,7 +158,6 @@ async fn async_main() {
         internal_addr = %bound.internal_addr,
         "qorpera-web-router listening"
     );
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (pub_handle, int_handle) = bound.spawn_with_shutdown(shutdown_rx.clone());
     #[cfg(unix)]
     let unix_handle = env::var("QORPERA_WEB_ROUTER_PUBLIC_UNIX")
@@ -169,6 +183,9 @@ async fn async_main() {
         let _ = int_handle.await;
     })
     .await;
+    if let Some(handle) = telemetry_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
     #[cfg(unix)]
     if let Some((path, h)) = unix_handle {
         let _ = tokio::time::timeout(Duration::from_secs(2), h).await;

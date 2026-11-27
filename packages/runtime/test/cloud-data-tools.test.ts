@@ -278,6 +278,9 @@ describe("the platform's own numbers (database qorpera)", () => {
 			"site-hours",
 			"site-days",
 			"site-pages",
+			"app-health",
+			"app-latency",
+			"app-errors",
 			"orders-now",
 			"orders-hours",
 			"orders-days",
@@ -298,9 +301,9 @@ describe("the platform's own numbers (database qorpera)", () => {
 	it("lists every qorpera question with the params and columns its migration gives it", () => {
 		const folder = new URL("../../../supabase/migrations/", import.meta.url);
 		const files = readdirSync(folder).filter((name) =>
-			/_company_numbers_(money|site|orders|order_changes)\.sql$/.test(name),
+			/_(?:company_numbers_(?:money|site|orders|order_changes)|git_http_remote_and_ops_telemetry)\.sql$/.test(name),
 		);
-		expect(files).toHaveLength(4);
+		expect(files).toHaveLength(5);
 		const columns: Record<string, string[]> = {};
 		const params: Record<string, string[]> = {};
 		const names = (list: string) => [...list.matchAll(/'([a-z0-9_]+)'/g)].map((match) => match[1] as string);
@@ -309,7 +312,7 @@ describe("the platform's own numbers (database qorpera)", () => {
 			const whens = [...text.matchAll(/when '([a-z][a-z-]*)' then/g)];
 			whens.forEach((when, at) => {
 				const question = when[1] as string;
-				if (!/^(money-|site-|sites$|orders-)/.test(question)) return;
+				if (!/^(money-|site-|sites$|orders-|app-)/.test(question)) return;
 				const part = text.slice(when.index, whens[at + 1]?.index ?? text.length);
 				const takes = /^when '[a-z-]+' then (?:array\[([^\]]*)\]|'\{\}'::text\[\])/.exec(part);
 				if (takes) params[question] = takes[1] ? names(takes[1]) : [];

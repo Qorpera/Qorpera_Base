@@ -271,6 +271,14 @@ export type RunnerOrchestratorRequest =
 			publishedHeadSha?: string;
 			errorDetail?: string;
 			leaseToken?: string;
+	  }
+	| {
+			action: "surface_execute_ops_action";
+			orchestratorId: string;
+			profileId: string;
+			jobId: string;
+			changeId: string;
+			leaseToken?: string;
 	  };
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -786,6 +794,18 @@ export function parseRunnerOrchestratorRequest(value: unknown): RunnerOrchestrat
 				...(input.errorDetail === null || input.errorDetail === undefined
 					? {}
 					: { errorDetail: errorDetail(input.errorDetail, "publish error detail") }),
+				...(input.leaseToken === null || input.leaseToken === undefined
+					? {}
+					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),
+			};
+		}
+		case "surface_execute_ops_action": {
+			return {
+				action: input.action,
+				orchestratorId,
+				profileId: uuid(input.profileId, "surface ops profile id"),
+				jobId: uuid(input.jobId, "surface ops job id"),
+				changeId: uuid(input.changeId, "surface ops change id"),
 				...(input.leaseToken === null || input.leaseToken === undefined
 					? {}
 					: { leaseToken: uuid(input.leaseToken, "surface lease token") }),

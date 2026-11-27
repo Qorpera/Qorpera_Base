@@ -150,6 +150,24 @@ export const QORPERA_QUESTIONS: readonly QorperaQuestion[] = [
 		words: "The most viewed pages from :from to :to (by default the 30 days to today), 10 a site or :limit up to 50.",
 	},
 	{
+		question: "app-health",
+		params: ["site", "from", "to"],
+		columns: ["site", "deployment_kind", "state", "requests", "error_rate_pct", "avg_ms", "p95_ms"],
+		words: "Server and hybrid app health summary (requests, 5xx error rate, average and p95 latency) over the window, by default the last 24 hours.",
+	},
+	{
+		question: "app-latency",
+		params: ["site", "from", "to"],
+		columns: ["site", "hour", "hour_local", "requests", "avg_ms", "p50_ms", "p95_ms", "max_ms"],
+		words: "Server and hybrid app latency percentiles each hour, by default the 48 hours to this one, at most 7 days.",
+	},
+	{
+		question: "app-errors",
+		params: ["site", "from", "to"],
+		columns: ["site", "hour", "hour_local", "requests", "status_2xx", "status_4xx", "status_5xx", "error_rate_pct"],
+		words: "Server and hybrid app HTTP status counts and 5xx error rate each hour, by default the 48 hours to this one, at most 7 days.",
+	},
+	{
 		question: "orders-now",
 		params: ["currency", "test"],
 		columns: [

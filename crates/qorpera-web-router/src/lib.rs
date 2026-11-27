@@ -6,3 +6,4 @@ pub mod ratelimit;
 pub mod routes;
 pub mod security;
 pub mod server;
+pub mod telemetry;

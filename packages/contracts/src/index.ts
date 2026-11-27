@@ -10,6 +10,7 @@ export * from "./cloud-coding-guest.ts";
 export * from "./cloud-coding-session.ts";
 export * from "./cloud-coding-storage.ts";
 export * from "./cloud-machine.ts";
+export * from "./code-git-tokens.ts";
 export * from "./folder-key.ts";
 export * from "./idle-rule.ts";
 export * from "./surface-chart.ts";

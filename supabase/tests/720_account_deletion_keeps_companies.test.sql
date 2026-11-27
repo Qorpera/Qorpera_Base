@@ -55,6 +55,7 @@ select pg_temp.acct_assert(not exists (
 		-- Which of a member's Claude Code workers runs on their Claude plan now (20260930770000): the member's own lease.
 		'qorpera_claude_member_parallel_caps',
 		'qorpera_claude_worker_leases',
+		'qorpera_code_git_tokens',
 		'qorpera_company_creation_requests', 'qorpera_company_founder_seats',
 		'qorpera_decision_votes',
 		-- Which machines a member watched and when (20260930712000): the member's own record, no picture.

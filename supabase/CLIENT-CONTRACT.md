@@ -2442,6 +2442,18 @@ text, an account number, a single payment or the summary's items. Design: the co
   - `site-pages` (`site`, `from`, `to` as `site-days`, `limit` 1 to 50, default 10): `site`, `path` (the file's path in
     the site, `index.html`, `about/index.html`), `views`, `visits` (the visits that began there); the most viewed paths
     a site.
+- The `app-*` questions (20260930940000_git_http_remote_and_ops_telemetry, door `site`) report live hourly HTTP
+  telemetry flushed by `qorpera-web-router` (`qorpera_app_telemetry_hourly`) for the company's deployed `server` and
+  `hybrid` apps (`site` slug optional; every deployed server/hybrid app when omitted).
+  - `app-health` (`site`): `site`, `deployment_kind`, `deployment_state`, `requests_24h`, `error_rate_24h_pct`,
+    `latency_avg_24h_ms`, `latency_p95_24h_ms`, `status_5xx_24h`, `status_4xx_24h`, `last_request_at` (ISO, UTC, or
+    null); one row per deployed server or hybrid app.
+  - `app-latency` (`site`, `from`, `to`; default the 48 hours to this one, at most 7 days): `site`, `hour` (ISO, UTC),
+    `hour_local` (`YYYY-MM-DDTHH:MI`, the company's), `requests`, `avg_ms`, `p50_ms`, `p95_ms`, `max_ms`; every hour,
+    zeros included.
+  - `app-errors` (`site`, `from`, `to` as `app-latency`; default the 48 hours to this one, at most 7 days): `site`,
+    `hour` (ISO, UTC), `hour_local`, `requests`, `status_2xx`, `status_4xx`, `status_5xx`, `error_rate_pct`; every
+    hour, zeros included.
 - The `orders-*` questions (20260930776000_company_numbers_orders, door `orders`) answer any member of the company
   (viewers too) and any run of it (the founder, 15 Nov 2026: everyone in the company, as site visits; the rule lives in
   one SQL function, `qorpera_company_numbers_orders_readable`). They count the company's orders from its Stripe hooks:
@@ -2493,7 +2505,9 @@ text, an account number, a single payment or the summary's items. Design: the co
   (Stripe's or added by hand, live or test): `Not connected: orders count once card payments are connected or an order
   is added by hand`. `site-now`, `site-hours`, `site-days` and `site-pages` while the company has no files site with a
   live version or a live deployment (one taken down later still counts): `Not connected: visits count once the company
-  publishes a website`; `sites` lists the company's sites either way. The `money-*` questions with no bank or a
+  publishes a website`; `sites` lists the company's sites either way. `app-health`, `app-latency` and `app-errors`
+  while the company has no deployed `server` or `hybrid` app (`live_deployment_id is not null`): `Not connected: app
+  server metrics appear once the company deploys a server or hybrid app`. The `money-*` questions with no bank or a
   disconnected one: `Not connected: the bank's numbers come once the company connects its bank` (a bank waiting for
   its first summary, or paused, answers). A connected source with no activity answers its zeros. Every other refusal
   comes first: 22023 (a name of another shape, then the question's parameters), P0002 (no such question, or one the
