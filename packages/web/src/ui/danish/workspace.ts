@@ -219,7 +219,8 @@ export const WORKSPACE: Record<string, string> = {
 	"You sign in at Google once. Everyone in the company and your agents can read this mail.":
 		"Du logger ind hos Google én gang. Alle i virksomheden og jeres agenter kan læse denne post.",
 	"Sign in at Google": "Log ind hos Google",
-	"{address} is connected in Company connections.": "{address} er forbundet under Virksomhedens forbindelser.",
+	"{address} is connected in Company connections. Everyone in the company and your agents can read this mail.":
+		"{address} er forbundet under Virksomhedens forbindelser. Alle i virksomheden og jeres agenter kan læse denne post.",
 	"Bring in {address}": "Hent {address} ind",
 	"Bringing in…": "Henter ind…",
 	"Bringing in your mail from Google": "Henter jeres post fra Google",
@@ -231,11 +232,15 @@ export const WORKSPACE: Record<string, string> = {
 	"Google was not given access. Nothing was brought in.": "Google fik ikke adgang. Intet blev hentet ind.",
 	"This address is already brought in by another company.":
 		"Denne adresse er allerede hentet ind af en anden virksomhed.",
+	"This company has reached its address limit. Remove an address first.":
+		"Virksomheden har nået sin grænse for adresser. Fjern en adresse først.",
+	"This Google connection can no longer be used here. Sign in with Google instead.":
+		"Denne Google-forbindelse kan ikke længere bruges her. Log ind hos Google i stedet.",
 	"Google mail could not be brought in. Try again.": "Posten fra Google kunne ikke hentes ind. Prøv igen.",
 	"The sign-in at Google could not be started. Try again.": "Login hos Google kunne ikke startes. Prøv igen.",
 	"Sign in with {address}.": "Log ind med {address}.",
-	"Remove {name}? The mail already brought in stays, and the sign-in at Google ends.":
-		"Fjern {name}? Den post, der allerede er hentet ind, bliver, og login hos Google ophører.",
+	"Remove {name}? Mail stops coming in from Google. The mail already brought in stays.":
+		"Fjern {name}? Der kommer ikke længere post ind fra Google. Den post, der allerede er hentet ind, bliver.",
 	"Sign in with the Google account this address belongs to.": "Log ind med den Google-konto, adressen hører til.",
 	"No mail matches.": "Ingen post passer.",
 	"Nothing has been sent yet.": "Der er ikke sendt noget endnu.",

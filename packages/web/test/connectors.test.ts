@@ -161,6 +161,17 @@ describe("connector client", () => {
 		});
 		await expect(connectors.beginMailboxSignIn(undefined, "not-a-mailbox")).rejects.toThrow("Invalid mailbox.");
 		expect(cloud.rpc).toHaveBeenCalledTimes(2);
+		const live = new AbortController();
+		await connectors.beginMailboxSignIn(live.signal, id(951));
+		expect(cloud.rpc).toHaveBeenLastCalledWith(
+			"qorpera_begin_google_mailbox",
+			{ p_environment_id: id(11), p_mailbox_id: id(951) },
+			live.signal,
+		);
+		const stopped = new AbortController();
+		stopped.abort();
+		await expect(connectors.beginMailboxSignIn(stopped.signal)).rejects.toThrow();
+		expect(cloud.rpc).toHaveBeenCalledTimes(3);
 		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/oauth/${id(20)}/start?company=${id(10)}`);
 		const body = JSON.parse(String(fetch.mock.calls[0]![1]?.body)) as Record<string, unknown>;
 		expect(body).toMatchObject({

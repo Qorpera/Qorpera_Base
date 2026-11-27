@@ -1,4 +1,5 @@
 import type { Cloud } from "./client.ts";
+import type { HostedConnectorConnection } from "./connectors.ts";
 import {
 	array,
 	boundedInteger,
@@ -62,12 +63,36 @@ export interface GoogleMail {
 	readonly capped: boolean;
 }
 
+export interface ExistingGoogleAccount {
+	readonly secretId: string;
+	readonly address: string;
+}
+
 export interface ConnectedGoogleMailbox {
 	readonly outcome: "linked" | "relinked";
 	readonly mailboxId: string;
 	readonly hookId: string;
 	readonly address: string;
 	readonly secretId: string;
+}
+
+export function reusableGoogleMailAccounts(
+	connections: readonly Pick<
+		HostedConnectorConnection,
+		"secretId" | "ownerKind" | "connectorId" | "status" | "secretName" | "accountLabel"
+	>[],
+): ExistingGoogleAccount[] {
+	return connections
+		.filter(
+			(item) =>
+				item.ownerKind === "company" &&
+				item.connectorId === "gmail" &&
+				item.status === "active" &&
+				!item.secretName.startsWith("mailbox-") &&
+				item.accountLabel !== null &&
+				item.accountLabel.includes("@"),
+		)
+		.map((item) => ({ secretId: item.secretId, address: item.accountLabel as string }));
 }
 
 export interface MailAddress {
@@ -480,8 +505,17 @@ export async function readMailAddresses(
 	return array(answer, "mail addresses").map(parseAddress);
 }
 
-export async function pauseGoogleMailbox(cloud: Cloud, mailboxId: string, paused: boolean): Promise<void> {
-	await cloud.rpc("qorpera_pause_google_mailbox", { p_mailbox_id: mailboxId, p_paused: paused });
+export async function pauseGoogleMailbox(
+	cloud: Cloud,
+	mailboxId: string,
+	paused: boolean,
+	signal?: AbortSignal,
+): Promise<void> {
+	signal?.throwIfAborted();
+	const args = { p_mailbox_id: mailboxId, p_paused: paused };
+	await (signal
+		? cloud.rpc("qorpera_pause_google_mailbox", args, signal)
+		: cloud.rpc("qorpera_pause_google_mailbox", args));
 }
 
 export async function connectExistingGoogleMailbox(
@@ -490,6 +524,7 @@ export async function connectExistingGoogleMailbox(
 	secretId: string,
 	signal?: AbortSignal,
 ): Promise<ConnectedGoogleMailbox> {
+	signal?.throwIfAborted();
 	const args = { p_environment_id: environmentId, p_secret_id: secretId };
 	const answer = cloudRecord(
 		await (signal

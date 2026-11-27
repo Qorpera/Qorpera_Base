@@ -17,7 +17,7 @@ import { createWebConnectors, takeConnectorReturn } from "../cloud/connectors.ts
 import { createDigitalPostKeys, readDigitalPost } from "../cloud/digital-post.ts";
 import { createWebEventHooks } from "../cloud/event-hooks.ts";
 import { interfacePageCalls } from "../cloud/interface-pages.ts";
-import { connectExistingGoogleMailbox, pauseGoogleMailbox } from "../cloud/mail.ts";
+import { connectExistingGoogleMailbox, pauseGoogleMailbox, reusableGoogleMailAccounts } from "../cloud/mail.ts";
 import { createWebMemberNotifications } from "../cloud/member-notifications.ts";
 import { createWebNativeSubscription } from "../cloud/native-subscription.ts";
 import { UUID_PATTERN } from "../cloud/parse.ts";
@@ -3131,19 +3131,8 @@ export function mountApplication(
 					google: {
 						begin: (signal, mailboxId) => connectors.beginMailboxSignIn(signal, mailboxId),
 						finish: (outcome, signal) => connectors.finishSignIn(outcome, signal),
-						pause: (mailboxId, paused) => pauseGoogleMailbox(cloud, mailboxId, paused),
-						existing: async (signal) =>
-							(await connectors.list(signal))
-								.filter(
-									(item) =>
-										item.ownerKind === "company" &&
-										item.connectorId === "gmail" &&
-										item.status === "active" &&
-										!item.secretName.startsWith("mailbox-") &&
-										item.accountLabel !== null &&
-										item.accountLabel.includes("@"),
-								)
-								.map((item) => ({ secretId: item.secretId, address: item.accountLabel as string })),
+						pause: (mailboxId, paused, signal) => pauseGoogleMailbox(cloud, mailboxId, paused, signal),
+						existing: async (signal) => reusableGoogleMailAccounts(await connectors.list(signal)),
 						connectExisting: (secretId, signal) =>
 							connectExistingGoogleMailbox(cloud, environment.environmentId, secretId, signal),
 						go: (url) => location.assign(url),

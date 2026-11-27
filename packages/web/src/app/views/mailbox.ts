@@ -6,6 +6,7 @@ import type { HostedConnectorReturn } from "../../cloud/connectors.ts";
 import type { DigitalPostLetter } from "../../cloud/digital-post.ts";
 import type { EventHook } from "../../cloud/event-hooks.ts";
 import {
+	type ExistingGoogleAccount,
 	GOOGLE_FIRST_IMPORT_LIMIT,
 	type GoogleMail,
 	type MailAccount,
@@ -435,15 +436,12 @@ function pastedRecipients(text: string): string[] {
 	return found;
 }
 
-export interface ExistingGoogleAccount {
-	readonly secretId: string;
-	readonly address: string;
-}
+export type { ExistingGoogleAccount };
 
 export interface GoogleMailboxCalls {
 	readonly begin: (signal: AbortSignal, mailboxId?: string) => Promise<string>;
 	readonly finish: (outcome: HostedConnectorReturn, signal: AbortSignal) => Promise<unknown>;
-	readonly pause: (mailboxId: string, paused: boolean) => Promise<void>;
+	readonly pause: (mailboxId: string, paused: boolean, signal?: AbortSignal) => Promise<void>;
 	readonly existing?: (signal: AbortSignal) => Promise<readonly ExistingGoogleAccount[]>;
 	readonly connectExisting?: (secretId: string, signal: AbortSignal) => Promise<unknown>;
 	readonly go: (url: string) => void;
@@ -944,7 +942,7 @@ function manageOf(page: Page): ManageViews | null {
 				action: (hook) => googleAction(drawn(), calls, hook),
 				removal: (hook) =>
 					googleOf(drawn(), hook)
-						? t("Remove {name}? The mail already brought in stays, and the sign-in at Google ends.", {
+						? t("Remove {name}? Mail stops coming in from Google. The mail already brought in stays.", {
 								name: hook.email ?? hook.name,
 							})
 						: null,
@@ -2055,7 +2053,13 @@ function refusalOf(error: unknown): string | undefined {
 	if (typeof reason === "string") return reason;
 	if (!(error instanceof CloudRpcError)) return undefined;
 	const said = [error.message, error.details, error.hint].join(" ");
-	return GOOGLE_REFUSALS.find((code) => said.includes(code)) ?? (error.code === "42501" ? "not_allowed" : undefined);
+	const matched = GOOGLE_REFUSALS.find((code) => said.includes(code));
+	if (matched) return matched;
+	if (error.code === "42501") return "not_allowed";
+	if (error.code === "54000") return "limit_reached";
+	if (error.code === "22023") return "connection_unavailable";
+	if (error.code === "0A000") return "mail_unavailable";
+	return undefined;
 }
 
 function refusedAddress(error: unknown): string | undefined {
@@ -2081,6 +2085,12 @@ function googleRefusal(reason: unknown, expected?: string): string {
 			return t("This sign-in link is no longer valid. Try again.");
 		case "address_taken":
 			return t("This address is already brought in by another company.");
+		case "limit_reached":
+			return t("This company has reached its address limit. Remove an address first.");
+		case "connection_unavailable":
+			return t("This Google connection can no longer be used here. Sign in with Google instead.");
+		case "mail_unavailable":
+			return t("Company mail is not set up yet.");
 		default:
 			return t("Google mail could not be brought in. Try again.");
 	}
@@ -2170,15 +2180,25 @@ async function connectExistingGoogle(page: Page, google: GoogleMailboxCalls, sec
 	} catch (error) {
 		if (company.signal.aborted) return;
 		ui.googleLinking = null;
-		ui.googleError = googleRefusal(refusalOf(error), refusedAddress(error));
+		const reason = refusalOf(error);
+		ui.googleError = googleRefusal(reason, refusedAddress(error));
+		if (reason === "connection_unavailable") {
+			const kept = manageViews.get(ui)?.existingGoogle;
+			if (kept?.list) kept.list = kept.list.filter((account) => account.secretId !== secretId);
+			ui.google = "open";
+			page.redraw("google-sign-in");
+			return;
+		}
 		page.redraw(`google-existing:${secretId}`);
 	}
 }
 
 function startRefusal(error: unknown): string {
-	return refusalOf(error) === "not_allowed"
-		? t(OWNERS_ONLY)
-		: t("The sign-in at Google could not be started. Try again.");
+	const reason = refusalOf(error);
+	if (reason === "not_allowed" || reason === "limit_reached" || reason === "mail_unavailable") {
+		return googleRefusal(reason);
+	}
+	return t("The sign-in at Google could not be started. Try again.");
 }
 
 function addressOf(page: Page, hook: EventHook): MailAddress | undefined {
@@ -2218,7 +2238,7 @@ function googleAction(page: Page, calls: MailboxManage, hook: EventHook): HookAc
 		label: paused ? t("Resume") : t("Pause"),
 		failed: (error) =>
 			refusalOf(error) === "not_allowed" ? t(OWNERS_ONLY) : t("It could not be changed. Try again."),
-		run: () => client.pause(addressOf(page, hook)?.hookId ?? hook.id, !paused),
+		run: (signal) => client.pause(addressOf(page, hook)?.hookId ?? hook.id, !paused, signal),
 	};
 }
 
@@ -2294,7 +2314,14 @@ function googleRow(page: Page): HTMLElement | null {
 						h(
 							"div",
 							{ class: "mailbox-google-existing-item" },
-							h("p", null, t("{address} is connected in Company connections.", { address: account.address })),
+							h(
+								"p",
+								null,
+								t(
+									"{address} is connected in Company connections. Everyone in the company and your agents can read this mail.",
+									{ address: account.address },
+								),
+							),
 							h(
 								"button",
 								{

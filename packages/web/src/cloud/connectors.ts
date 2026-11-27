@@ -495,13 +495,17 @@ export function createWebConnectors(
 			return start(connectorId, await ticket(connectorId, existingSecretId), returnTo, signal, bank);
 		},
 		async beginMailboxSignIn(signal, mailboxId) {
+			signal?.throwIfAborted();
 			if (mailboxId !== undefined && !UUID_PATTERN.test(mailboxId)) throw new Error("Invalid mailbox.");
 			const returnTo = `${location.origin}/${location.hash}`;
+			const args = {
+				p_environment_id: profile.environmentId,
+				...(mailboxId === undefined ? {} : { p_mailbox_id: mailboxId }),
+			};
 			const issued = parseTicket(
-				await cloud.rpc("qorpera_begin_google_mailbox", {
-					p_environment_id: profile.environmentId,
-					...(mailboxId === undefined ? {} : { p_mailbox_id: mailboxId }),
-				}),
+				await (signal
+					? cloud.rpc("qorpera_begin_google_mailbox", args, signal)
+					: cloud.rpc("qorpera_begin_google_mailbox", args)),
 			);
 			return start("gmail", issued, returnTo, signal, undefined, "mailbox");
 		},

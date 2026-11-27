@@ -12,7 +12,7 @@ import {
 import { type Cloud, CloudRpcError } from "../src/cloud/client.ts";
 import type { HostedConnectorReturn } from "../src/cloud/connectors.ts";
 import type { EventHook } from "../src/cloud/event-hooks.ts";
-import { connectExistingGoogleMailbox } from "../src/cloud/mail.ts";
+import { connectExistingGoogleMailbox, pauseGoogleMailbox, reusableGoogleMailAccounts } from "../src/cloud/mail.ts";
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { h } from "../src/ui/dom.ts";
 import { fixture, id, profileA, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
@@ -234,7 +234,10 @@ describe("Mail at Google under Addresses", () => {
 			{
 				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
 				connectExisting: async () => {
-					const entry = googleAddress({ state: "bringing_in", broughtIn: 0, total: 120, lastWeek: 0 }, existingAddress);
+					const entry = googleAddress(
+						{ state: "bringing_in", broughtIn: 0, total: 120, lastWeek: 0 },
+						existingAddress,
+					);
 					fake.addresses = [entry];
 					hooks.push({
 						id: id(950),
@@ -256,14 +259,14 @@ describe("Mail at Google under Addresses", () => {
 			},
 		);
 		await vi.waitFor(() => expect(button(googleRow(main)!, `Bring in ${existingAddress}`)).toBeDefined());
-		expect(googleRow(main)!.textContent).toContain(`${existingAddress} is connected in Company connections.`);
+		expect(googleRow(main)!.textContent).toContain(
+			`${existingAddress} is connected in Company connections. Everyone in the company and your agents can read this mail.`,
+		);
 		button(googleRow(main)!, `Bring in ${existingAddress}`)!.click();
 		await vi.waitFor(() =>
 			expect(google.connectExisting).toHaveBeenCalledWith(existingSecret, expect.any(AbortSignal)),
 		);
-		await vi.waitFor(() =>
-			expect(topLine(main)?.textContent).toBe("Bringing in your mail from Google · 0 of 120"),
-		);
+		await vi.waitFor(() => expect(topLine(main)?.textContent).toBe("Bringing in your mail from Google · 0 of 120"));
 		await addresses(main, 1);
 		expect(googleRow(main)!.querySelector(".mailbox-google-existing")).toBeNull();
 	});
@@ -271,16 +274,12 @@ describe("Mail at Google under Addresses", () => {
 	it("shows a refusal inline when bringing in an existing company Gmail account fails", async () => {
 		const existingSecret = id(981);
 		const existingAddress = "taken@qorpera.com";
-		const { main } = await mailbox(
-			() => {},
-			"owner",
-			{
-				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
-				connectExisting: async () => {
-					throw Object.assign(new Error("refused"), { reason: "address_taken" });
-				},
+		const { main } = await mailbox(() => {}, "owner", {
+			existing: async () => [{ secretId: existingSecret, address: existingAddress }],
+			connectExisting: async () => {
+				throw Object.assign(new Error("refused"), { reason: "address_taken" });
 			},
-		);
+		});
 		await addresses(main, 1);
 		await vi.waitFor(() => expect(button(googleRow(main)!, `Bring in ${existingAddress}`)).toBeDefined());
 		button(googleRow(main)!, `Bring in ${existingAddress}`)!.click();
@@ -290,9 +289,47 @@ describe("Mail at Google under Addresses", () => {
 			),
 		);
 	});
+
+	it("maps non-retryable RPC errors when bringing in an existing company Gmail account", async () => {
+		const existingSecret = id(982);
+		const existingAddress = "limit@qorpera.com";
+		const rpcCases: [string, string, string, boolean][] = [
+			[
+				"54000",
+				"A company has at most 20 mailboxes",
+				"This company has reached its address limit. Remove an address first.",
+				false,
+			],
+			["0A000", "Company mail is not set up yet", "Company mail is not set up yet.", false],
+			[
+				"22023",
+				"This company has no such Gmail connection",
+				"This Google connection can no longer be used here. Sign in with Google instead.",
+				true,
+			],
+		];
+		for (const [code, message, expected, hidesOffer] of rpcCases) {
+			const { main } = await mailbox(() => {}, "owner", {
+				existing: async () => [{ secretId: existingSecret, address: existingAddress }],
+				connectExisting: async () => {
+					throw new CloudRpcError("qorpera_connect_existing_google_mailbox", { message, code }, 400);
+				},
+			});
+			await addresses(main, 1);
+			await vi.waitFor(() => expect(button(googleRow(main)!, `Bring in ${existingAddress}`)).toBeDefined());
+			button(googleRow(main)!, `Bring in ${existingAddress}`)!.click();
+			await vi.waitFor(() => expect(googleRow(main)!.querySelector(".mailbox-error")?.textContent).toBe(expected));
+			if (hidesOffer) {
+				expect(googleRow(main)!.querySelector(".mailbox-google-existing")).toBeNull();
+				expect(googleRow(main)!.querySelector(".mailbox-google-open")).not.toBeNull();
+			}
+			for (const dispose of cleanup.splice(0).reverse()) dispose();
+			document.body.replaceChildren();
+		}
+	});
 });
 
-describe("connectExistingGoogleMailbox client", () => {
+describe("Google mailbox client helpers", () => {
 	it("parses connected responses and throws structured refusal errors", async () => {
 		const cloud = {
 			rpc: vi
@@ -321,6 +358,83 @@ describe("connectExistingGoogleMailbox client", () => {
 		await expect(connectExistingGoogleMailbox(cloud, id(11), id(952))).rejects.toMatchObject({
 			reason: "address_taken",
 		});
+	});
+
+	it("filters reusable company Gmail accounts and excludes mailbox-owned, member, revoked, and non-email entries", () => {
+		const accounts = reusableGoogleMailAccounts([
+			{
+				secretId: id(1),
+				ownerKind: "company",
+				connectorId: "gmail",
+				status: "active",
+				secretName: "primary",
+				accountLabel: "jonas.mk@qorpera.com",
+			},
+			{
+				secretId: id(2),
+				ownerKind: "company",
+				connectorId: "gmail",
+				status: "active",
+				secretName: "mailbox-a1b2c3d4e5",
+				accountLabel: "hello@qorpera.com",
+			},
+			{
+				secretId: id(3),
+				ownerKind: "member",
+				connectorId: "gmail",
+				status: "active",
+				secretName: "primary",
+				accountLabel: "member@qorpera.com",
+			},
+			{
+				secretId: id(4),
+				ownerKind: "company",
+				connectorId: "google_drive",
+				status: "active",
+				secretName: "primary",
+				accountLabel: "drive@qorpera.com",
+			},
+			{
+				secretId: id(5),
+				ownerKind: "company",
+				connectorId: "gmail",
+				status: "revoked",
+				secretName: "primary",
+				accountLabel: "revoked@qorpera.com",
+			},
+			{
+				secretId: id(6),
+				ownerKind: "company",
+				connectorId: "gmail",
+				status: "active",
+				secretName: "secondary",
+				accountLabel: null,
+			},
+			{
+				secretId: id(7),
+				ownerKind: "company",
+				connectorId: "gmail",
+				status: "active",
+				secretName: "label-only",
+				accountLabel: "not-an-email",
+			},
+		]);
+		expect(accounts).toEqual([{ secretId: id(1), address: "jonas.mk@qorpera.com" }]);
+	});
+
+	it("forwards abort signals on pauseGoogleMailbox and stops before calling rpc when aborted", async () => {
+		const cloud = { rpc: vi.fn(async () => null) } as unknown as Cloud & { rpc: ReturnType<typeof vi.fn> };
+		const live = new AbortController();
+		await pauseGoogleMailbox(cloud, id(950), true, live.signal);
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_pause_google_mailbox",
+			{ p_mailbox_id: id(950), p_paused: true },
+			live.signal,
+		);
+		const stopped = new AbortController();
+		stopped.abort();
+		await expect(pauseGoogleMailbox(cloud, id(950), false, stopped.signal)).rejects.toThrow();
+		expect(cloud.rpc).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -512,11 +626,13 @@ describe("Google mail's states", () => {
 		});
 		button(card(), "Pause")!.click();
 		expect(fake.addresses[0]!.hookId).toBe(hookIds[0]);
-		await vi.waitFor(() => expect(google.pause).toHaveBeenCalledWith(fake.addresses[0]!.hookId, true));
+		await vi.waitFor(() =>
+			expect(google.pause).toHaveBeenCalledWith(fake.addresses[0]!.hookId, true, expect.any(AbortSignal)),
+		);
 		await vi.waitFor(() => expect(texts(card(), ".connection-actions button")).toEqual(["Resume", "Remove"]));
 		expect(card().querySelector(".hook-state")?.textContent).toBe("Paused");
 		button(card(), "Resume")!.click();
-		await vi.waitFor(() => expect(google.pause).toHaveBeenLastCalledWith(hookIds[0], false));
+		await vi.waitFor(() => expect(google.pause).toHaveBeenLastCalledWith(hookIds[0], false, expect.any(AbortSignal)));
 		expect(manage.hooks.setStatus).not.toHaveBeenCalled();
 	});
 
@@ -582,7 +698,7 @@ describe("Google mail's states", () => {
 		button(cardOf(main, hookIds[0]!)!, "Remove")!.click();
 		await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
 		expect(dialog().textContent).toContain(
-			`Remove ${GMAIL}? The mail already brought in stays, and the sign-in at Google ends.`,
+			`Remove ${GMAIL}? Mail stops coming in from Google. The mail already brought in stays.`,
 		);
 		expect(dialog().textContent).not.toContain("Email sent to it afterwards");
 		button(dialog(), "Remove")!.click();
@@ -600,7 +716,7 @@ describe("Google mail's states", () => {
 		button(cardOf(main, hookIds[1]!)!, "Remove")!.click();
 		await vi.waitFor(() => expect(document.querySelector('[role="alertdialog"]')).not.toBeNull());
 		expect(dialog().textContent).toContain(`Remove the mailbox ${ADDRESS.address}?`);
-		expect(dialog().textContent).not.toContain("sign-in at Google");
+		expect(dialog().textContent).not.toContain("Mail stops coming in from Google");
 		button(dialog(), "Remove")!.click();
 		await vi.waitFor(() =>
 			expect(manage.hooks.setStatus).toHaveBeenCalledWith(hookIds[1], "removed", expect.any(AbortSignal)),
