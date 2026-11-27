@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadDeferredStyles, waitForDeferredStyles } from "../src/ui/deferred-styles.ts";
 
 afterEach(() => {
+	vi.useRealTimers();
 	for (const el of document.head.querySelectorAll('meta[name="qorpera-deferred-css"], link[rel="stylesheet"]')) {
 		el.remove();
 	}
@@ -52,5 +53,24 @@ describe("deferred stylesheet loading", () => {
 		)!;
 		link.dispatchEvent(new Event("error"));
 		await expect(pending).resolves.toBeUndefined();
+	});
+
+	it("resolves after the fallback timeout if a stylesheet never fires load or error", async () => {
+		vi.useFakeTimers();
+		const meta = document.createElement("meta");
+		meta.name = "qorpera-deferred-css";
+		meta.content = "./build/deferred-STALL1.css";
+		document.head.append(meta);
+
+		let done = false;
+		const pending = waitForDeferredStyles().then(() => {
+			done = true;
+		});
+		await Promise.resolve();
+		expect(done).toBe(false);
+
+		await vi.advanceTimersByTimeAsync(5_000);
+		await pending;
+		expect(done).toBe(true);
 	});
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
 	CloudToolRefusal,
 } from "../src/cloud-native-tool-boundary.ts";
 import type { CloudNativeToolOperations } from "../src/cloud-native-tool-operations.ts";
+import { CloudPictureChannel } from "../src/cloud-picture-channel.ts";
 import { CLOUD_RUNTIME_TOOL_OPERATIONS } from "../src/cloud-runtime-observability.ts";
 import type { StudioChatGptVoiceMachine } from "../src/cloud-studio-voice-recorder.ts";
 import {
@@ -76,6 +77,59 @@ function makeValidPng(): Buffer {
 }
 
 const VALID_PNG = makeValidPng();
+
+function makeValidGlb(): Buffer {
+	const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0.5, 1, 0]);
+	const indices = new Uint16Array([0, 1, 2, 0]);
+	const posBytes = Buffer.from(positions.buffer);
+	const idxBytes = Buffer.from(indices.buffer);
+	const binRaw = Buffer.concat([posBytes, idxBytes]);
+	const binPad = (4 - (binRaw.byteLength % 4)) % 4;
+	const binChunk = Buffer.concat([binRaw, Buffer.alloc(binPad)]);
+	const gltf = {
+		asset: { version: "2.0" },
+		scene: 0,
+		scenes: [{ nodes: [0] }],
+		nodes: [{ name: "Band", mesh: 0 }],
+		materials: [
+			{
+				name: "band_fabric",
+				pbrMetallicRoughness: { baseColorFactor: [0.6, 0.55, 0.5, 1], roughnessFactor: 0.7 },
+			},
+		],
+		meshes: [
+			{
+				primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }],
+			},
+		],
+		buffers: [{ byteLength: binChunk.byteLength }],
+		bufferViews: [
+			{ buffer: 0, byteOffset: 0, byteLength: posBytes.byteLength },
+			{ buffer: 0, byteOffset: posBytes.byteLength, byteLength: 6 },
+		],
+		accessors: [
+			{ bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
+			{ bufferView: 1, componentType: 5123, count: 3, type: "SCALAR" },
+		],
+	};
+	const jsonRaw = Buffer.from(JSON.stringify(gltf), "utf8");
+	const jsonPad = (4 - (jsonRaw.byteLength % 4)) % 4;
+	const jsonChunk = Buffer.concat([jsonRaw, Buffer.alloc(jsonPad, 0x20)]);
+	const totalLen = 12 + 8 + jsonChunk.byteLength + 8 + binChunk.byteLength;
+	const header = Buffer.alloc(12);
+	header.write("glTF", 0, "ascii");
+	header.writeUInt32LE(2, 4);
+	header.writeUInt32LE(totalLen, 8);
+	const jHead = Buffer.alloc(8);
+	jHead.writeUInt32LE(jsonChunk.byteLength, 0);
+	jHead.writeUInt32LE(0x4e4f534a, 4);
+	const bHead = Buffer.alloc(8);
+	bHead.writeUInt32LE(binChunk.byteLength, 0);
+	bHead.writeUInt32LE(0x004e4942, 4);
+	return Buffer.concat([header, jHead, jsonChunk, bHead, binChunk]);
+}
+
+const VALID_GLB = makeValidGlb();
 
 const CONTEXT: CloudToolContext = {
 	companyId: "11111111-1111-4111-8111-111111111111",
@@ -223,16 +277,30 @@ function makeShellMachine(
 	};
 }
 
-function writeFakeChromium(dir: string, scrollHeight = 2200): string {
+function writeFakeChromium(
+	dir: string,
+	scrollHeight = 2200,
+	evalPayload?: {
+		readonly scrollHeight: number;
+		readonly brokenImages?: readonly string[];
+		readonly stage3dErrors?: readonly string[];
+	},
+	fetchPaths?: readonly string[],
+	fetchOutFile?: string,
+): string {
 	const fakeChrome = join(dir, "fake-chromium.mjs");
+	const evalValue = evalPayload ?? scrollHeight;
 	writeFileSync(
 		fakeChrome,
 		[
 			"#!/usr/bin/env node",
 			'import http from "node:http";',
+			'import fs from "node:fs";',
 			'import { createHash } from "node:crypto";',
 			`const PNG_B64 = ${JSON.stringify(VALID_PNG.toString("base64"))};`,
-			`const SCROLL_H = ${scrollHeight};`,
+			`const EVAL_VAL = ${JSON.stringify(evalValue)};`,
+			`const FETCH_PATHS = ${JSON.stringify(fetchPaths ?? [])};`,
+			`const FETCH_OUT = ${JSON.stringify(fetchOutFile ?? "")};`,
 			"const server = http.createServer((req, res) => {",
 			'  if (req.url === "/json/list") {',
 			"    const port = server.address().port;",
@@ -264,8 +332,24 @@ function writeFakeChromium(dir: string, scrollHeight = 2200): string {
 			"      buf = buf.subarray(offset + (masked ? 4 : 0) + len);",
 			"      if ((chunk[0] & 0x0f) === 8) { socket.end(); return; }",
 			'      const msg = JSON.parse(payload.toString("utf8"));',
-			'      if (msg.method === "Page.navigate") { sendFrame({ id: msg.id, result: {} }); sendFrame({ method: "Page.loadEventFired", params: {} }); }',
-			'      else if (msg.method === "Runtime.evaluate") sendFrame({ id: msg.id, result: { result: { value: SCROLL_H } } });',
+			'      if (msg.method === "Page.navigate") {',
+			"        const navUrl = msg.params && msg.params.url;",
+			"        void (async () => {",
+			"          if (navUrl && FETCH_PATHS.length > 0) {",
+			"            const origin = new URL(navUrl).origin;",
+			"            const results = {};",
+			"            for (const p of FETCH_PATHS) {",
+			"              const r = await fetch(origin + p);",
+			"              const b = Buffer.from(await r.arrayBuffer());",
+			'              results[p] = { status: r.status, sha256: createHash("sha256").update(b).digest("hex"), bytes: b.byteLength };',
+			"            }",
+			"            if (FETCH_OUT) fs.writeFileSync(FETCH_OUT, JSON.stringify(results));",
+			"          }",
+			"          sendFrame({ id: msg.id, result: {} });",
+			'          sendFrame({ method: "Page.loadEventFired", params: {} });',
+			"        })();",
+			"      }",
+			'      else if (msg.method === "Runtime.evaluate") sendFrame({ id: msg.id, result: { result: { value: EVAL_VAL } } });',
 			'      else if (msg.method === "Page.captureScreenshot") sendFrame({ id: msg.id, result: { data: PNG_B64 } });',
 			"      else sendFrame({ id: msg.id, result: {} });",
 			"    }",
@@ -920,6 +1004,931 @@ describe("Studio visual inspect & draw tools", () => {
 			await expect(
 				composeLayout.execute({ operations: [{ op: "rename_tab", tabId: "plan", title: "Renamed" }] }, CONTEXT),
 			).rejects.toThrow("LAYOUT_READ_FAILED");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("renders stage_3d GLB, swatch_row, type_specimen, live modules, optionGroup inspect_surface, and broken-image warnings", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-3d-"));
+		try {
+			writeFileSync(join(dir, "band.glb"), VALID_GLB);
+
+			const rendered3d = renderStudioPreviewHtml({
+				snapshot: {
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/layout.json": JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [
+								{
+									id: "overview",
+									title: "Overview",
+									blocks: [
+										{ type: "stage_3d", model: "object.json" },
+										{ type: "title", name: "overview.json#/name", line: "overview.json#/line" },
+										{ type: "swatch_row", from: "overview.json#/colourways" },
+										{ type: "type_specimen", from: "type.json" },
+										{ type: "module", id: "fit", from: "modules/fit", heading: "Fit guide" },
+									],
+								},
+							],
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "models/band.glb",
+							tint: ["band_fabric"],
+							parts: [{ name: "Band", node: "Band" }],
+						}),
+						"surfaces/thetabands/overview.json": JSON.stringify({
+							name: "ThetaBands Soft Core",
+							line: "A soft EEG headband for meditation.",
+							colourways: [
+								{ name: "Sandstone", hex: "#c8b8a2" },
+								{ name: "Night", hex: "#1f242c" },
+							],
+						}),
+						"surfaces/thetabands/type.json": JSON.stringify({ Display: "Newsreader", Body: "Inter" }),
+						"surfaces/thetabands/modules/fit/index.html": "<!doctype html><html><body>Fit module</body></html>",
+					},
+					binaries: {
+						"surfaces/thetabands/models/band.glb": { bytes: VALID_GLB, mediaType: "model/gltf-binary" },
+					},
+					knownBinaries: {},
+				},
+				theme: "light",
+				assetUrls: {
+					"surfaces/thetabands/models/band.glb": "/staged-asset/models/band.glb",
+					"surfaces/thetabands/modules/fit/index.html": "/staged/modules/fit/index.html",
+				},
+			});
+
+			expect(rendered3d.html).toContain('data-glb-url="/staged-asset/models/band.glb"');
+			expect(rendered3d.html).toContain('data-tint-hex="#c8b8a2"');
+			expect(rendered3d.html).toContain('data-tint="[&#34;band_fabric&#34;]"');
+			expect(rendered3d.html).toContain("Sandstone");
+			expect(rendered3d.html).toContain("Newsreader");
+			expect(rendered3d.html).toContain('<iframe class="pv-module"');
+			expect(rendered3d.html).toContain('src="/staged/modules/fit/index.html"');
+			expect(rendered3d.html).not.toContain("HTML MODULE ·");
+			expect(rendered3d.html).toContain("renderStage");
+			expect(rendered3d.warnings).toEqual([]);
+
+			const renderedStandIn = renderStudioPreviewHtml({
+				snapshot: {
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/layout.json": JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [
+								{ id: "overview", title: "Overview", blocks: [{ type: "stage_3d", model: "object.json" }] },
+							],
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({ kind: "headband", dimensions: "180 x 35 mm" }),
+					},
+					binaries: {},
+					knownBinaries: {},
+				},
+				theme: "light",
+			});
+			expect(renderedStandIn.html).toContain("Stand-in preview");
+			expect(renderedStandIn.warnings.some((w) => w.includes("stand-in"))).toBe(true);
+
+			const fakeChrome = writeFakeChromium(dir, 960, {
+				scrollHeight: 960,
+				brokenImages: ["/staged/pictures/missing.png"],
+				stage3dErrors: ["glTF missing mesh"],
+			});
+			const recordedCommands: string[] = [];
+			const recordedPatches: {
+				readonly changeId?: string | null;
+				readonly title: string;
+				readonly summary: string;
+			}[] = [];
+			const optChangeId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+			const machine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				recordedCommands,
+			);
+			const pictures = new CloudPictureChannel();
+			pictures.attach(async () => ({ png: VALID_PNG, revisedPrompt: "Studio render", transparent: false }));
+			const folder = {
+				async list() {
+					return { entries: [] };
+				},
+				async readRange() {
+					return VALID_PNG;
+				},
+				async readText() {
+					return null;
+				},
+			} as unknown as CloudCompanyFolderClient;
+
+			const prepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					stageBytes: async (bytes, mediaType) => {
+						const sha = createHash("sha256").update(bytes).digest("hex");
+						return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+					},
+					stageSurfacePatch: async (_sid, req) => {
+						recordedPatches.push({ changeId: req.changeId, title: req.title, summary: req.summary });
+						return {
+							changeId: req.changeId ?? optChangeId,
+							seq: recordedPatches.length,
+							openChangeCount: 1,
+							updated: Boolean(req.changeId),
+						};
+					},
+				},
+				folder,
+				pictures,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+
+			const tools = prepared.buildTools(
+				machine.identity,
+				machine.operations as unknown as CloudNativeToolOperations,
+				machine,
+			);
+			const byName = new Map(tools.map((t) => [t.name, t]));
+			const stagePatch = byName.get("stage_surface_patch")!;
+			const stageArtifact = byName.get("stage_surface_artifact")!;
+			const makePicture = byName.get("make_picture")!;
+			const inspectSurface = byName.get("inspect_surface")!;
+
+			const parsedOpt = stagePatch.parseArguments({
+				title: "Soft Core Headband",
+				summary: "All-soft braided knit band with recessed pod.",
+				optionGroup: "band-concepts",
+				optionGroupTitle: "Headband concepts",
+				ops: [
+					{
+						op: "write_text",
+						path: "specs.json",
+						content: JSON.stringify({
+							overview: { tagline: "Soft Core braided knit EEG band." },
+							colorways: [{ name: "Sandstone", hex: "#c8b8a2" }],
+						}),
+					},
+					{
+						op: "write_text",
+						path: "object.json",
+						content: JSON.stringify({ model: "models/band.glb", parts: [{ name: "Band", node: "Band" }] }),
+					},
+				],
+			});
+			await stagePatch.prepare?.(parsedOpt, CONTEXT);
+			await stagePatch.execute(parsedOpt, CONTEXT);
+
+			await stageArtifact.execute(
+				{ sourcePath: "band.glb", destPath: "models/band.glb", changeId: optChangeId },
+				CONTEXT,
+			);
+			await makePicture.execute(
+				makePicture.parseArguments({
+					path: "pictures/soft-core-hero.png",
+					prompt: "Studio render of Soft Core band.",
+					changeId: optChangeId,
+				}),
+				CONTEXT,
+			);
+
+			expect(recordedPatches[1]).toEqual({
+				changeId: optChangeId,
+				title: "Soft Core Headband",
+				summary: "All-soft braided knit band with recessed pod.",
+			});
+			expect(recordedPatches[2]).toEqual({
+				changeId: optChangeId,
+				title: "Soft Core Headband",
+				summary: "All-soft braided knit band with recessed pod.",
+			});
+
+			recordedCommands.length = 0;
+			const defaultShot = await inspectSurface.execute({ tab: "overview" }, CONTEXT);
+			expect(defaultShot.kind).toBe("json");
+			const defaultHtml = gunzipSync(
+				Buffer.from(
+					recordedCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(defaultHtml).not.toContain("soft-core-hero.png");
+			expect(defaultHtml).not.toContain("models/band.glb");
+
+			recordedCommands.length = 0;
+			const optionShot = await inspectSurface.execute({ tab: "overview", changeId: optChangeId }, CONTEXT);
+			expect(optionShot.kind).toBe("json");
+			if (optionShot.kind === "json") {
+				const val = optionShot.value as Record<string, JsonValue>;
+				const warns = val.warnings as string[];
+				expect(warns.some((w) => w.includes("Broken images detected (1): /staged/pictures/missing.png"))).toBe(
+					true,
+				);
+				expect(warns.some((w) => w.includes("3D stage render failed: glTF missing mesh"))).toBe(true);
+			}
+			const optionHtml = gunzipSync(
+				Buffer.from(
+					recordedCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(optionHtml).toContain("Soft Core");
+			expect(optionHtml).toContain('data-glb-url="/staged-asset/models/band.glb"');
+			expect(optionHtml).toContain("/staged/pictures/soft-core-hero.png");
+
+			const stagedJson = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						recordedCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string; text?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(stagedJson.local["models/band.glb"]).toEqual({
+				src: "band.glb",
+				sha256: createHash("sha256").update(VALID_GLB).digest("hex"),
+			});
+			expect((stagedJson.files["pictures/soft-core-hero.png"]?.b64 ?? "").length).toBeGreaterThan(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("clears stale local assets on make_picture overwrite, checks disk sha-256, respects replaceAll, gates make_picture instructions, and validates same-turn option layout follow-ups", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-review-fixes-"));
+		try {
+			const altPng = Buffer.from(VALID_PNG);
+			const makeColorPng = (r: number, g: number, b: number): Buffer => {
+				const ihdr = Buffer.alloc(13);
+				ihdr.writeUInt32BE(2, 0);
+				ihdr.writeUInt32BE(2, 4);
+				ihdr[8] = 8;
+				ihdr[9] = 6;
+				const raw = Buffer.alloc((1 + 2 * 4) * 2, 0xff);
+				raw[0] = 0;
+				raw[9] = 0;
+				for (const off of [1, 5, 10, 14]) {
+					raw[off] = r;
+					raw[off + 1] = g;
+					raw[off + 2] = b;
+				}
+				return Buffer.concat([
+					Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+					pngChunk("IHDR", ihdr),
+					pngChunk("IDAT", deflateSync(raw)),
+					pngChunk("IEND", Buffer.alloc(0)),
+				]);
+			};
+			const blenderPng = makeColorPng(10, 20, 30);
+			const generatedPng = makeColorPng(200, 100, 50);
+			const mutatedPng = makeColorPng(1, 2, 3);
+			const largeGlb = Buffer.concat([VALID_GLB, Buffer.alloc(160_000, 0)]);
+			largeGlb.writeUInt32LE(largeGlb.byteLength, 8);
+			writeFileSync(join(dir, "hero.png"), blenderPng);
+			writeFileSync(join(dir, "large.glb"), largeGlb);
+			const fetchOut = join(dir, "fetches.json");
+			const fakeChrome = writeFakeChromium(
+				dir,
+				900,
+				undefined,
+				["/staged-asset/renders/hero.png", "/staged-asset/models/large.glb"],
+				fetchOut,
+			);
+			const folder = {
+				async list() {
+					return { entries: [] };
+				},
+				async readRange() {
+					return altPng;
+				},
+				async readText() {
+					return null;
+				},
+			} as unknown as CloudCompanyFolderClient;
+
+			const withoutPics = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					stageSurfacePatch: async () => ({
+						changeId: "11111111-1111-4111-8111-111111111119",
+						seq: 1,
+						openChangeCount: 1,
+					}),
+				},
+				folder,
+				isClaudeTurn: true,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+			expect(withoutPics.instructions).not.toContain("make_picture");
+			expect(withoutPics.claudeSystemNote).not.toContain("make_picture");
+
+			const priorOptId = "12121212-1212-4121-8121-121212121212";
+			const optBId = "34343434-3434-4343-8343-343434343434";
+			const sameTurnOptId = "56565656-5656-4565-8565-565656565656";
+			let nextOptSeq = 0;
+			const recordedCommands: string[] = [];
+			const machine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				recordedCommands,
+			);
+			const pictures = new CloudPictureChannel();
+			pictures.attach(async () => ({ png: generatedPng, revisedPrompt: "Studio render", transparent: false }));
+			const prepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					openLayoutOps: [],
+					sessionOpenChanges: [
+						{
+							changeId: priorOptId,
+							seq: 1,
+							status: "open",
+							title: "Prior option",
+							summary: "Earlier variant",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							optionGroupKey: "concepts",
+							affectedPaths: ["renders/hero.png", "specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "write_file",
+									path: "renders/hero.png",
+									file: {
+										manifestSha256: "9".repeat(64),
+										fileSha256: "8".repeat(64),
+										bytes: 4096,
+										mediaType: "image/png",
+									},
+								},
+								{
+									op: "write_text",
+									path: "specs.json",
+									content: JSON.stringify({ overview: { tagline: "OLD_REPLACED_TAGLINE" } }),
+								},
+							],
+							baseFiles: null,
+						},
+					],
+					stageBytes: async (bytes, mediaType) => {
+						const sha = createHash("sha256").update(bytes).digest("hex");
+						return { manifestSha256: sha, fileSha256: sha, bytes: bytes.byteLength, mediaType };
+					},
+					stageSurfacePatch: async (_sid, req) => {
+						nextOptSeq += 1;
+						const changeId =
+							req.changeId ??
+							(req.optionGroup === "concepts"
+								? optBId
+								: req.optionGroup === "layout-opts"
+									? sameTurnOptId
+									: "99999999-9999-4999-8999-999999999999");
+						return { changeId, seq: nextOptSeq, openChangeCount: 2, updated: Boolean(req.changeId) };
+					},
+				},
+				folder,
+				pictures,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+
+			const tools = prepared.buildTools(
+				machine.identity,
+				machine.operations as unknown as CloudNativeToolOperations,
+				machine,
+			);
+			const byName = new Map(tools.map((t) => [t.name, t]));
+			const stageArtifact = byName.get("stage_surface_artifact")!;
+			const stagePatch = byName.get("stage_surface_patch")!;
+			const makePicture = byName.get("make_picture")!;
+			const inspectSurface = byName.get("inspect_surface")!;
+
+			await stageArtifact.execute(
+				{ sourcePath: "hero.png", destPath: "renders/hero.png", createNew: true },
+				CONTEXT,
+			);
+			await stageArtifact.execute(
+				{ sourcePath: "large.glb", destPath: "models/large.glb", createNew: true },
+				CONTEXT,
+			);
+
+			writeFileSync(join(dir, "hero.png"), mutatedPng);
+			writeFileSync(join(dir, "large.glb"), Buffer.concat([largeGlb.subarray(0, 16), Buffer.alloc(160_000, 7)]));
+			const mutatedShot = await inspectSurface.execute({ tab: "overview" }, CONTEXT);
+			expect(mutatedShot.kind).toBe("json");
+			if (mutatedShot.kind === "json") {
+				const warns = (mutatedShot.value as Record<string, JsonValue>).warnings as string[];
+				expect(warns.some((w) => w.includes("models/large.glb") && w.includes("changed on disk"))).toBe(true);
+			}
+			const fetched = JSON.parse(execFileSync("cat", [fetchOut], { encoding: "utf8" })) as Record<
+				string,
+				{ status: number; sha256: string }
+			>;
+			expect(fetched["/staged-asset/renders/hero.png"]?.status).toBe(200);
+			expect(fetched["/staged-asset/renders/hero.png"]?.sha256).toBe(
+				createHash("sha256").update(blenderPng).digest("hex"),
+			);
+			expect(fetched["/staged-asset/models/large.glb"]?.status).toBe(404);
+
+			await makePicture.execute(
+				makePicture.parseArguments({
+					path: "renders/hero.png",
+					prompt: "Option B hero render",
+					optionGroup: "concepts",
+					optionGroupTitle: "Concepts",
+				}),
+				CONTEXT,
+			);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: optBId }, CONTEXT);
+			const optBStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						recordedCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(optBStaged.local["renders/hero.png"]).toBeUndefined();
+			expect(optBStaged.files["renders/hero.png"]?.b64).toBe(generatedPng.toString("base64"));
+
+			await makePicture.execute(
+				makePicture.parseArguments({ path: "renders/hero.png", prompt: "Default override", createNew: true }),
+				CONTEXT,
+			);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview" }, CONTEXT);
+			const defaultOverwritten = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						recordedCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(defaultOverwritten.local["renders/hero.png"]).toBeUndefined();
+			expect(defaultOverwritten.files["renders/hero.png"]?.b64).toBe(generatedPng.toString("base64"));
+
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: priorOptId }, CONTEXT);
+			const priorStagedCmds = recordedCommands.filter((cmd) => cmd.includes("staged.json.gz.b64"));
+			expect(priorStagedCmds.length).toBeGreaterThan(0);
+			const priorStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						priorStagedCmds.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as { files: Record<string, { b64?: string }>; local: Record<string, { src: string; sha256: string }> };
+			expect(priorStaged.files["renders/hero.png"]).toBeUndefined();
+			expect(priorStaged.local["renders/hero.png"]).toBeUndefined();
+
+			const defaultSpecsPatch = stagePatch.parseArguments({
+				title: "Default specs update",
+				summary: "Adds default product tagline",
+				createNew: true,
+				ops: [
+					{
+						op: "write_text",
+						path: "specs.json",
+						content: JSON.stringify({ overview: { tagline: "DEFAULT_TURN_TAGLINE" } }),
+					},
+				],
+			});
+			await stagePatch.prepare?.(defaultSpecsPatch, CONTEXT);
+			await stagePatch.execute(defaultSpecsPatch, CONTEXT);
+
+			const replacePatch = stagePatch.parseArguments({
+				title: "Prior option replaced",
+				summary: "Replaced specs cleanly",
+				changeId: priorOptId,
+				replaceAll: true,
+				ops: [
+					{
+						op: "write_text",
+						path: "object.json",
+						content: JSON.stringify({ kind: "headband" }),
+					},
+				],
+			});
+			await stagePatch.prepare?.(replacePatch, CONTEXT);
+			await stagePatch.execute(replacePatch, CONTEXT);
+			recordedCommands.length = 0;
+			await inspectSurface.execute({ tab: "overview", changeId: priorOptId }, CONTEXT);
+			const replacedHtml = gunzipSync(
+				Buffer.from(
+					recordedCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(replacedHtml).not.toContain("OLD_REPLACED_TAGLINE");
+			expect(replacedHtml).toContain("DEFAULT_TURN_TAGLINE");
+
+			const createOptLayout = stagePatch.parseArguments({
+				title: "Custom layout option",
+				summary: "Adds custom tab layout",
+				optionGroup: "layout-opts",
+				optionGroupTitle: "Layout options",
+				ops: [
+					{
+						op: "write_text",
+						path: "layout.json",
+						content: JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [{ id: "alt", title: "Alt", blocks: [{ type: "artifacts", heading: "Visuals" }] }],
+						}),
+					},
+				],
+			});
+			await stagePatch.prepare?.(createOptLayout, CONTEXT);
+			await stagePatch.execute(createOptLayout, CONTEXT);
+
+			const partialTabsPatch = {
+				tabs: [{ id: "alt-2", title: "Alt 2", blocks: [{ type: "artifacts", heading: "Visuals" }] }],
+			};
+			const defaultWithoutSchema = stagePatch.parseArguments({
+				title: "Missing schema on default",
+				summary: "Should fail without prior layout.json schema",
+				createNew: true,
+				ops: [{ op: "merge_json", path: "layout.json", patch: partialTabsPatch }],
+			});
+			await expect(stagePatch.prepare?.(defaultWithoutSchema, CONTEXT)).rejects.toBeInstanceOf(CloudToolRefusal);
+
+			const followUpMerge = stagePatch.parseArguments({
+				title: "Custom layout option",
+				summary: "Follow-up merge on same-turn option layout",
+				changeId: sameTurnOptId,
+				ops: [{ op: "merge_json", path: "layout.json", patch: partialTabsPatch }],
+			});
+			const followUpPrepared = (await stagePatch.prepare?.(followUpMerge, CONTEXT)) as {
+				layoutUnchecked?: boolean;
+			};
+			expect(followUpPrepared).toBeDefined();
+			expect(followUpPrepared.layoutUnchecked).toBeUndefined();
+
+			const siblingId = "78787878-7878-4787-8787-787878787878";
+			const nonOptReplaceId = "89898989-8989-4898-8898-898989898989";
+			const baseSpecs = JSON.stringify({
+				overview: { tagline: "BASE_TAGLINE", weight: "42 g" },
+			});
+			const siblingFolder = {
+				async list(parent: string | null) {
+					if (parent === "surfaces/thetabands") {
+						return {
+							entries: [
+								{ path: "surfaces/thetabands/specs.json", kind: "file", file: { bytes: baseSpecs.length } },
+							],
+						};
+					}
+					return { entries: [] };
+				},
+				async readRange(entry: { readonly path: string }) {
+					if (entry.path === "surfaces/thetabands/specs.json") return Buffer.from(baseSpecs, "utf8");
+					return altPng;
+				},
+				async readText(path: string) {
+					return path === "surfaces/thetabands/specs.json" ? { text: baseSpecs } : null;
+				},
+			} as unknown as CloudCompanyFolderClient;
+			const siblingCommands: string[] = [];
+			const siblingMachine = makeShellMachine(
+				dir,
+				{ ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome },
+				siblingCommands,
+			);
+			const siblingPrepared = await prepareSurfaceCodingWorkspace({
+				workspaceKind: "surface_folder",
+				surfaceSession: {
+					sessionId: "44444444-4444-4444-8444-444444444444",
+					surfaceSlug: "thetabands",
+					surfaceTitle: "ThetaBands",
+					surfaceKind: "product",
+					surfaceIcon: "product",
+					surfaceIsGlobal: false,
+					briefMarkdown: null,
+					folderRoot: "surfaces/thetabands",
+					sourceKind: "folder",
+					openLayoutOps: [],
+					sessionOpenChanges: [
+						{
+							changeId: siblingId,
+							seq: 1,
+							status: "open",
+							title: "Sibling merge change",
+							summary: "Merges tagline",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							affectedPaths: ["specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "merge_json",
+									path: "specs.json",
+									patch: { overview: { tagline: "SIBLING_MERGED_TAGLINE" } },
+								},
+							],
+							baseFiles: null,
+						},
+						{
+							changeId: nonOptReplaceId,
+							seq: 2,
+							status: "open",
+							title: "Non-option change",
+							summary: "Will be replaced",
+							kind: "folder_patch",
+							actionKind: null,
+							parentSha: null,
+							headSha: null,
+							affectedPaths: ["specs.json"],
+							previewBaseChangeIds: [],
+							patchManifest: [
+								{
+									op: "write_text",
+									path: "specs.json",
+									content: JSON.stringify({ overview: { tagline: "NON_OPT_OLD_TAGLINE" } }),
+								},
+							],
+							baseFiles: null,
+						},
+					],
+					stageSurfacePatch: async (_sid, req) => ({
+						changeId: req.changeId ?? nonOptReplaceId,
+						seq: 3,
+						openChangeCount: 2,
+						updated: Boolean(req.changeId),
+					}),
+				},
+				folder: siblingFolder,
+				isClaudeTurn: false,
+				newDisk: false,
+				signal: CONTEXT.signal,
+			});
+			const siblingTools = new Map(
+				siblingPrepared
+					.buildTools(
+						siblingMachine.identity,
+						siblingMachine.operations as unknown as CloudNativeToolOperations,
+						siblingMachine,
+					)
+					.map((t) => [t.name, t]),
+			);
+			const siblingStagePatch = siblingTools.get("stage_surface_patch")!;
+			const siblingInspect = siblingTools.get("inspect_surface")!;
+			const replaceNonOpt = siblingStagePatch.parseArguments({
+				title: "Non-option change",
+				summary: "Replaced with 3D object only",
+				changeId: nonOptReplaceId,
+				replaceAll: true,
+				ops: [{ op: "write_text", path: "object.json", content: JSON.stringify({ kind: "headband" }) }],
+			});
+			await siblingStagePatch.prepare?.(replaceNonOpt, CONTEXT);
+			await siblingStagePatch.execute(replaceNonOpt, CONTEXT);
+			siblingCommands.length = 0;
+			await siblingInspect.execute({ tab: "overview", changeId: nonOptReplaceId }, CONTEXT);
+			const siblingHtml = gunzipSync(
+				Buffer.from(
+					siblingCommands
+						.filter((cmd) => cmd.includes("index.html.gz.b64"))
+						.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+						.join(""),
+					"base64",
+				),
+			).toString("utf8");
+			expect(siblingHtml).toContain("SIBLING_MERGED_TAGLINE");
+			expect(siblingHtml).toContain("42 g");
+			expect(siblingHtml).not.toContain("NON_OPT_OLD_TAGLINE");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("inspect_surface accounts for base64+gzip expansion and keeps 8 incompressible staged PNGs plus local Blender renders within upload chunk bounds", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qorpera-inspect-budget-"));
+		try {
+			const fakeChrome = writeFakeChromium(dir, 1200);
+			const makeIncompressiblePng = (): Buffer => {
+				const buf = randomBytes(23_500);
+				VALID_PNG.copy(buf, 0);
+				return buf;
+			};
+			const binaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
+			const localAssetPaths: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
+			for (let i = 0; i < 8; i += 1) {
+				binaries[`surfaces/thetabands/pictures/shot-${i}.png`] = {
+					bytes: makeIncompressiblePng(),
+					mediaType: "image/png",
+				};
+			}
+			for (let i = 0; i < 2; i += 1) {
+				const bytes = makeIncompressiblePng();
+				const file = `render-${i}.png`;
+				writeFileSync(join(dir, file), bytes);
+				const full = `surfaces/thetabands/renders/${file}`;
+				binaries[full] = { bytes, mediaType: "image/png" };
+				localAssetPaths[full] = {
+					sourcePath: file,
+					sha256: createHash("sha256").update(bytes).digest("hex"),
+				};
+			}
+			const bigGlb = Buffer.concat([VALID_GLB, Buffer.alloc(500_000, 0)]);
+			bigGlb.writeUInt32LE(bigGlb.byteLength, 8);
+			writeFileSync(join(dir, "thetaband.glb"), bigGlb);
+			localAssetPaths["surfaces/thetabands/thetaband.glb"] = {
+				sourcePath: "thetaband.glb",
+				sha256: createHash("sha256").update(bigGlb).digest("hex"),
+			};
+
+			const commands: string[] = [];
+			const tool = createInspectSurfaceTool({
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, commands),
+				loadSnapshot: async () => ({
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "thetaband.glb",
+							parts: [{ node: "Band" }],
+						}),
+						"surfaces/thetabands/specs.json": JSON.stringify({
+							overview: { tagline: "Soft knit meditation headband.", weight: "44 g" },
+						}),
+					},
+					binaries,
+					localAssetPaths,
+					knownBinaries: {},
+				}),
+				pollMs: 10,
+			});
+
+			const res = await tool.execute({ tab: "overview", viewport: "desktop" }, CONTEXT);
+			expect(res.kind).toBe("json");
+			const stagedChunks = commands.filter((cmd) => cmd.includes("staged.json.gz.b64"));
+			expect(stagedChunks.length).toBeGreaterThan(16);
+			expect(stagedChunks.length).toBeLessThanOrEqual(34);
+			const stagedJson = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						stagedChunks.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "").join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(Object.keys(stagedJson.files).filter((k) => k.startsWith("pictures/"))).toHaveLength(8);
+			expect(stagedJson.local["thetaband.glb"]?.src).toBe("thetaband.glb");
+			expect(stagedJson.local["renders/render-0.png"]?.src).toBe("render-0.png");
+
+			const tightBinaries: Record<string, { readonly bytes: Uint8Array; readonly mediaType: string }> = {};
+			const tightLocal: Record<string, { readonly sourcePath: string; readonly sha256: string }> = {};
+			for (let i = 0; i < 4; i += 1) {
+				tightBinaries[`surfaces/thetabands/pictures/pic-${i}.png`] = {
+					bytes: makeIncompressiblePng(),
+					mediaType: "image/png",
+				};
+			}
+			const fallbackGlb = Buffer.concat([VALID_GLB, randomBytes(130_000)]);
+			fallbackGlb.writeUInt32LE(fallbackGlb.byteLength, 8);
+			writeFileSync(join(dir, "fallback.glb"), fallbackGlb);
+			tightBinaries["surfaces/thetabands/fallback.glb"] = {
+				bytes: fallbackGlb,
+				mediaType: "model/gltf-binary",
+			};
+			tightLocal["surfaces/thetabands/fallback.glb"] = {
+				sourcePath: "fallback.glb",
+				sha256: createHash("sha256").update(fallbackGlb).digest("hex"),
+			};
+			const smallRender = makeIncompressiblePng();
+			writeFileSync(join(dir, "detail.png"), smallRender);
+			tightBinaries["surfaces/thetabands/renders/detail.png"] = {
+				bytes: smallRender,
+				mediaType: "image/png",
+			};
+			tightLocal["surfaces/thetabands/renders/detail.png"] = {
+				sourcePath: "detail.png",
+				sha256: createHash("sha256").update(smallRender).digest("hex"),
+			};
+			const moduleHtml = `<!doctype html><html><body>${"m".repeat(60_000)}</body></html>`;
+			const tightCommands: string[] = [];
+			const tightTool = createInspectSurfaceTool({
+				machine: makeShellMachine(dir, { ...process.env, QORPERA_INSPECT_CHROMIUM: fakeChrome }, tightCommands),
+				loadSnapshot: async () => ({
+					surfaceTitle: "ThetaBands",
+					folderRoot: "surfaces/thetabands",
+					starter: "product",
+					files: {
+						"surfaces/thetabands/layout.json": JSON.stringify({
+							schema: SURFACE_LAYOUT_SCHEMA,
+							tabs: [
+								{
+									id: "overview",
+									title: "Overview",
+									blocks: [
+										{ type: "stage_3d", model: "object.json" },
+										{ type: "module", id: "fit", from: "modules/fit", heading: "Fit" },
+										{ type: "artifacts", heading: "Visuals" },
+									],
+								},
+							],
+						}),
+						"surfaces/thetabands/object.json": JSON.stringify({
+							model: "fallback.glb",
+							parts: [{ node: "Band" }],
+						}),
+						"surfaces/thetabands/modules/fit/index.html": moduleHtml,
+					},
+					binaries: tightBinaries,
+					localAssetPaths: tightLocal,
+					knownBinaries: {},
+				}),
+				pollMs: 10,
+			});
+
+			const tightRes = await tightTool.execute({ tab: "overview", viewport: "desktop" }, CONTEXT);
+			expect(tightRes.kind).toBe("json");
+			const tightStaged = JSON.parse(
+				gunzipSync(
+					Buffer.from(
+						tightCommands
+							.filter((cmd) => cmd.includes("staged.json.gz.b64"))
+							.map((cmd) => cmd.match(/printf '%s' '([^']+)' >> /)?.[1] ?? "")
+							.join(""),
+						"base64",
+					),
+				).toString("utf8"),
+			) as {
+				files: Record<string, { b64?: string; text?: string }>;
+				local: Record<string, { src: string; sha256: string }>;
+			};
+			expect(tightStaged.files["modules/fit/index.html"]?.text).toBe(moduleHtml);
+			expect(tightStaged.files["renders/detail.png"]?.b64).toBeTruthy();
+			expect(tightStaged.files["fallback.glb"]).toBeUndefined();
+			expect(tightStaged.local["fallback.glb"]?.src).toBe("fallback.glb");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

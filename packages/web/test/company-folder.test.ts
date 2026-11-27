@@ -350,7 +350,7 @@ const viewerOpen = (host: HTMLElement) => host.querySelector<HTMLDialogElement>(
 describe("a folder-v2 company's Company File", () => {
 	it("lists the top folder, folders first, and enters a folder", async () => {
 		const { fake, host } = await opened();
-		expect(host.querySelector("h1")?.textContent).toBe("Company File");
+		expect(host.querySelector("h1")?.textContent).toBe("Company files");
 		expect(rows(host)).toEqual(["big", "notes", "logo.png", "readme.txt"]);
 		expect(fake.client.list).toHaveBeenCalledWith(null, null, 200, expect.any(AbortSignal));
 		expect(host.querySelector(".files-list")?.classList.contains("is-grid")).toBe(true);

@@ -52,8 +52,7 @@ begin
 
 	-- Saved: the version keeps the folded key, and the routine listens while the todo is open.
 	u := jsonb_build_array(pg_temp.routine(p, pg_temp.rparse(el, 'Review the landing page', pg_temp.after(soon, todo))));
-	perform pg_temp.expect(pg_temp.commit(a, 'l1-save-1', u), 1, 'denied', 'review_required');
-	perform pg_temp.expect(pg_temp.reviewed(a, 'l1-save-2', u), 1, 'saved');
+	perform pg_temp.expect(pg_temp.commit(a, 'l1-save-1', u), 1, 'saved');
 	v := pg_temp.rv(el);
 	if v.triggers is distinct from jsonb_build_array(jsonb_build_object('id','file','kind','once','at',soon,
 			'after','qorperaos/agents/otto/todos/landing-page.md','timeZone','Europe/Copenhagen','replyPolicy','optional')) then

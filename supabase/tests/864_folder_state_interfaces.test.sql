@@ -509,19 +509,19 @@ declare
 	g jsonb := pg_temp.agent_run('63400000-0000-4000-8000-0000000000a1', '63400000-0000-4000-8000-000000000001');
 begin
 	for v_case in select * from (values
-		('QorperaOS/interfaces/new/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000006', 'New', false), 'delegation'),
+		('QorperaOS/interfaces/new/interface.toml', pg_temp.iface('86400000-0000-4000-8000-000000000006', 'New', false), 'plain'),
 		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"name":"Pulse now","about":"What happens."}', 'plain'),
-		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"buttons":[]}', 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"buttons":[]}', 'plain'),
 		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["ask-keeper"]'), 'plain'),
-		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["take"]'), 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,0,buttons}', '["take"]'), 'plain'),
 		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks,1,buttons}', '[]'), 'plain'),
 		('QorperaOS/interfaces/pulse/interface.toml', jsonb_set(v_pulse, '{views,0,blocks}',
 			(select jsonb_agg(b order by n desc) from jsonb_array_elements(v_pulse -> 'views' -> 0 -> 'blocks') with ordinality x(b, n))), 'plain'),
-		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"access":{"members":"owners","agents":"all","edit":"anyone"}}', 'delegation'),
-		('QorperaOS/tables/new/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000016'), 'delegation'),
+		('QorperaOS/interfaces/pulse/interface.toml', v_pulse || '{"access":{"members":"owners","agents":"all","edit":"anyone"}}', 'plain'),
+		('QorperaOS/tables/new/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000016'), 'plain'),
 		('QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"name":"Figures"}', 'plain'),
-		('QorperaOS/tables/figures/table.toml', jsonb_set(pg_temp.tbl('86400000-0000-4000-8000-000000000011'), '{columns,4,optional}', 'false'), 'delegation'),
-		('QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"write":{"agents":"none","members":"all"}}', 'delegation'),
+		('QorperaOS/tables/figures/table.toml', jsonb_set(pg_temp.tbl('86400000-0000-4000-8000-000000000011'), '{columns,4,optional}', 'false'), 'plain'),
+		('QorperaOS/tables/figures/table.toml', pg_temp.tbl('86400000-0000-4000-8000-000000000011') || '{"write":{"agents":"none","members":"all"}}', 'plain'),
 		('QorperaOS/tables/figures/rows.csv', pg_temp.fixture('rows-empty'), 'plain'),
 		('QorperaOS/interfaces/order.md', pg_temp.fixture('order'), 'plain')) as c(path, parse, class) loop
 		v_unit := jsonb_build_object('op','write','path',v_case.path,'structured',jsonb_build_array(pg_temp.p16_entry(v_case.path, v_case.parse)));

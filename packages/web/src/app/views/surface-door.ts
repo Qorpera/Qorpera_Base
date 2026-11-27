@@ -12,6 +12,45 @@ import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN, SITE_DOOR_URL } from 
 
 export const IDENTITY_TOKENS_CSS_MESSAGE = "qorpera:identity-tokens-css";
 
+const PRECONNECTED_ORIGINS = new Set<string>();
+const MAX_PRECONNECTED_ORIGINS = 32;
+
+export function preconnectPreviewOrigin(urlOrOrigin: string | null | undefined): void {
+	if (!urlOrOrigin || typeof document === "undefined" || !document.head) return;
+	let origin: string;
+	try {
+		const parsed = new URL(urlOrOrigin);
+		if (parsed.protocol !== "https:") return;
+		origin = parsed.origin;
+	} catch {
+		return;
+	}
+	if (PRECONNECTED_ORIGINS.has(origin)) return;
+	if (PRECONNECTED_ORIGINS.size >= MAX_PRECONNECTED_ORIGINS) return;
+	PRECONNECTED_ORIGINS.add(origin);
+	const link = document.createElement("link");
+	link.rel = "preconnect";
+	link.href = origin;
+	document.head.append(link);
+}
+
+export function previewSlotOriginFromSiteUrl(liveUrl: string | null | undefined, slot = 0): string | null {
+	if (!liveUrl || slot < 0 || slot > 7) return null;
+	try {
+		const parsed = new URL(liveUrl);
+		if (parsed.protocol !== "https:") return null;
+		const dot = parsed.hostname.indexOf(".");
+		if (dot <= 0) return null;
+		const slug = parsed.hostname.slice(0, dot);
+		const domain = parsed.hostname.slice(dot + 1);
+		if (domain !== "qorpera.site" && domain !== "qorpera.com") return null;
+		if (slug.includes("--")) return null;
+		return `https://${slug}--p${slot}.${domain}`;
+	} catch {
+		return null;
+	}
+}
+
 export function applyIdentityTokensToFrame(
 	iframe: HTMLIFrameElement,
 	tokens: CompiledIdentityTokens | null,
@@ -22,7 +61,7 @@ export function applyIdentityTokensToFrame(
 	if (injectStyle) {
 		try {
 			const doc = iframe.contentDocument;
-			if (doc?.head) {
+			if (doc?.head && !doc.URL.includes("/site-door/")) {
 				let style = doc.head.querySelector<HTMLStyleElement>("style[data-qorpera-identity-tokens]");
 				if (css) {
 					if (!style) {
@@ -223,6 +262,7 @@ export class SurfaceDoorStage {
 	}
 
 	#show(frame: SurfacePreviewFrameState, title: string): void {
+		if (frame.doorActionUrl) preconnectPreviewOrigin(frame.doorActionUrl);
 		const previewId = frame.previewId ?? "";
 		if (frame.status === "ready" && (previewId || (frame.doorActionUrl && frame.memberPass))) {
 			const path = frame.activeRoute.startsWith("/") ? frame.activeRoute : "/";

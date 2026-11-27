@@ -22,7 +22,13 @@ import { htmlDocumentTitle, PDF_FILE_RE } from "./surface-blocks/artifacts.ts";
 import { readableName } from "./surface-blocks/context.ts";
 import { formatPdfBytes, SurfacePdfViewer } from "./surface-blocks/pdf.ts";
 import { surfaceTile } from "./surface-rail.ts";
-import { compiledTokensCssFrom, prepareStudioHtmlPreview } from "./surface-studio-html.ts";
+import {
+	compiledTokensCssFrom,
+	prepareStudioHtmlPreview,
+	resolveStudioFrameAssetPath,
+	studioAssetMimeType,
+	studioFrameBase,
+} from "./surface-studio-html.ts";
 
 export interface SurfaceReportOptions {
 	readonly store: SurfacesStore;
@@ -762,17 +768,40 @@ export class SurfaceReportView {
 		htmlPath: string,
 		title: string,
 		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
 		compiledTokensCss: string,
+		folderRoot: string | null | undefined,
 	): HTMLElement {
-		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
+		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss, binaries, folderRoot);
 		if (live === null) {
 			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
 		}
-		const frame = new AppFrame(
-			{ html: live },
+		const base = studioFrameBase(htmlPath, folderRoot);
+		const frame: AppFrame = new AppFrame(
+			{ html: live, base },
 			t("Page: {name}", { name: title }),
 			"report-html-frame studio-html-frame",
-			async () => ({ ok: false, error: t("This page can't be shown here.") }),
+			async (call) => {
+				if (call.method !== "file") return { ok: false, error: t("This page can't be shown here.") };
+				const rawPath = typeof call.params.path === "string" ? call.params.path : "";
+				const rawBase = typeof call.params.base === "string" ? call.params.base : "";
+				const key = resolveStudioFrameAssetPath(folderRoot, rawBase, rawPath);
+				if (!key) return { ok: false, error: t("This file isn't available.") };
+				if (Object.hasOwn(binaries, key)) {
+					const ref = binaries[key]!;
+					try {
+						const bytes = await this.#options.store.readStudioBinary(ref, frame.signal);
+						if (frame.signal.aborted) return { ok: false, error: t("This file isn't available.") };
+						return { ok: true, value: new Blob([new Uint8Array(bytes)], { type: ref.mediaType }) };
+					} catch {
+						return { ok: false, error: t("This file isn't available.") };
+					}
+				}
+				if (Object.hasOwn(files, key)) {
+					return { ok: true, value: new Blob([files[key]!], { type: studioAssetMimeType(key) }) };
+				}
+				return { ok: false, error: t("This file isn't available.") };
+			},
 			() => undefined,
 			{ again: true },
 		);
@@ -1166,16 +1195,8 @@ export class SurfaceReportView {
 				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
 				if (activeRec?.status === "queued" || activeRec?.status === "running") {
 					reconcilingPreview = true;
-					this.#pendingRetryTarget = null;
-				} else if (activeRec?.status === "failed") {
-					reconciliationFailed = true;
-					this.#pendingRetryTarget = {
-						changeIds: activeRec.selectedChangeIds,
-						paths: activeRec.conflictPaths ?? [],
-					};
-				} else {
-					this.#pendingRetryTarget = null;
 				}
+				this.#pendingRetryTarget = null;
 			}
 		}
 
@@ -1396,7 +1417,15 @@ export class SurfaceReportView {
 					h("h2", null, htmlDoc.title),
 					htmlDoc.changed ? h("span", { class: "studio-changed-pill" }, t("Updated")) : null,
 				),
-				this.#createHtmlFrame(htmlDoc.html, htmlDoc.path, htmlDoc.title, composition.files, compiledTokensCss),
+				this.#createHtmlFrame(
+					htmlDoc.html,
+					htmlDoc.path,
+					htmlDoc.title,
+					composition.files,
+					composition.binaries,
+					compiledTokensCss,
+					surface.folderRoot,
+				),
 			);
 			children.push(h("div", { class: "report-layout is-html" }, card));
 			return { children, leavingSkeleton };

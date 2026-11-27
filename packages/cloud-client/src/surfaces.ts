@@ -129,6 +129,34 @@ function automationOf(data: unknown, name: string): SurfaceAutomationSummary {
 	return parseSurfaceAutomationSummary((data as Record<string, unknown>).automation, "automation");
 }
 
+function abortReason(signal: AbortSignal): unknown {
+	return signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError");
+}
+
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		void promise.catch(() => undefined);
+		return Promise.reject(abortReason(signal));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = (): void => {
+			void promise.catch(() => undefined);
+			reject(abortReason(signal));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(error);
+			},
+		);
+	});
+}
+
 export class CloudSurfacesClient {
 	readonly #supabase: SupabaseClient;
 
@@ -136,16 +164,23 @@ export class CloudSurfacesClient {
 		this.#supabase = supabase;
 	}
 
-	async #rpc(name: string, args: Record<string, unknown>): Promise<unknown> {
-		const { data, error } = await this.#supabase.rpc(name, args);
+	async #rpc(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		if (signal?.aborted) throw abortReason(signal);
+		const call = this.#supabase.rpc(name, args);
+		const target =
+			signal && call && typeof (call as { abortSignal?: unknown }).abortSignal === "function"
+				? call.abortSignal(signal)
+				: call;
+		const pending = Promise.resolve(target);
+		const { data, error } = signal ? await raceAbort(pending, signal) : await pending;
 		if (error) {
 			throw new CloudSurfacesError(error.message || `${name} failed`, error.code ?? null);
 		}
 		return data;
 	}
 
-	async isSurfacesEnabled(): Promise<boolean> {
-		const data = await this.#rpc("qorpera_surfaces_enabled", {});
+	async isSurfacesEnabled(signal?: AbortSignal): Promise<boolean> {
+		const data = await this.#rpc("qorpera_surfaces_enabled", {}, signal);
 		return data === true;
 	}
 
@@ -172,8 +207,8 @@ export class CloudSurfacesClient {
 		};
 	}
 
-	async listSurfaces(companyId: string): Promise<SurfaceSummary[]> {
-		const data = await this.#rpc("qorpera_list_surfaces", { p_company_id: companyId });
+	async listSurfaces(companyId: string, signal?: AbortSignal): Promise<SurfaceSummary[]> {
+		const data = await this.#rpc("qorpera_list_surfaces", { p_company_id: companyId }, signal);
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_surfaces payload");
 		return data.map((item, index) => parseSurfaceSummary(item, `surfaces[${index}]`));
 	}
@@ -194,14 +229,14 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
-	async bootstrapCompanySurfaces(companyId: string): Promise<SurfaceSummary[]> {
-		const data = await this.#rpc("qorpera_bootstrap_company_surfaces", { p_company_id: companyId });
+	async bootstrapCompanySurfaces(companyId: string, signal?: AbortSignal): Promise<SurfaceSummary[]> {
+		const data = await this.#rpc("qorpera_bootstrap_company_surfaces", { p_company_id: companyId }, signal);
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_bootstrap_company_surfaces payload");
 		return data.map((item, index) => parseSurfaceSummary(item, `surfaces[${index}]`));
 	}
 
-	async getSurfaceWorkspace(surfaceId: string): Promise<SurfaceWorkspace> {
-		const data = await this.#rpc("qorpera_get_surface_workspace", { p_surface_id: surfaceId });
+	async getSurfaceWorkspace(surfaceId: string, signal?: AbortSignal): Promise<SurfaceWorkspace> {
+		const data = await this.#rpc("qorpera_get_surface_workspace", { p_surface_id: surfaceId }, signal);
 		return parseSurfaceWorkspace(data, "workspace");
 	}
 
@@ -306,8 +341,8 @@ export class CloudSurfacesClient {
 		return parseSurfaceSession(data, "session");
 	}
 
-	async unseenSurfaceNotes(companyId: string): Promise<SurfaceUnseenNote[]> {
-		const data = await this.#rpc("qorpera_surface_unseen_notes", { p_profile_id: companyId });
+	async unseenSurfaceNotes(companyId: string, signal?: AbortSignal): Promise<SurfaceUnseenNote[]> {
+		const data = await this.#rpc("qorpera_surface_unseen_notes", { p_profile_id: companyId }, signal);
 		return parseSurfaceUnseenNotes(data);
 	}
 
@@ -449,8 +484,8 @@ export class CloudSurfacesClient {
 		return parseSurfaceSummary(data, "surface");
 	}
 
-	async listAutomations(companyId: string): Promise<SurfaceAutomationSummary[]> {
-		const data = await this.#rpc("qorpera_list_automations", { p_company_id: companyId });
+	async listAutomations(companyId: string, signal?: AbortSignal): Promise<SurfaceAutomationSummary[]> {
+		const data = await this.#rpc("qorpera_list_automations", { p_company_id: companyId }, signal);
 		if (!Array.isArray(data)) throw new CloudSurfacesError("Invalid qorpera_list_automations payload");
 		return data.map((item, index) => parseSurfaceAutomationSummary(item, `automations[${index}]`));
 	}
@@ -507,8 +542,8 @@ export class CloudSurfacesClient {
 		return data === true;
 	}
 
-	async getMigrationChecklist(companyId: string): Promise<SurfaceMigrationChecklist> {
-		const data = await this.#rpc("qorpera_surface_migration_checklist", { p_company_id: companyId });
+	async getMigrationChecklist(companyId: string, signal?: AbortSignal): Promise<SurfaceMigrationChecklist> {
+		const data = await this.#rpc("qorpera_surface_migration_checklist", { p_company_id: companyId }, signal);
 		return parseSurfaceMigrationChecklist(data, "migrationChecklist");
 	}
 

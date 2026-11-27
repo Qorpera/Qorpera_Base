@@ -25,6 +25,7 @@ import {
 import { type EChartsCoreOption, graphic, use } from "echarts/core";
 import { LabelLayout } from "echarts/features";
 import { SVGRenderer } from "echarts/renderers";
+import { h } from "../../../ui/dom.ts";
 import { type ChartMount, type ChartSize, type ChartTheme, createChartHost, tint } from "./strategy-charts.ts";
 
 use([
@@ -55,8 +56,29 @@ function still(): boolean {
 	return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+function tipElement(
+	heading: string,
+	rows: readonly { readonly label?: string; readonly value: string; readonly color?: string }[],
+	headingColor?: string,
+): HTMLElement {
+	const dot = headingColor ? h("i", { class: "studio-chart-tip-dot" }) : null;
+	if (dot && headingColor) dot.style.backgroundColor = headingColor;
+	const head = heading
+		? h("div", { class: `studio-chart-tip-head${rows.length ? "" : " is-solo"}` }, dot, h("span", null, heading))
+		: null;
+	const body = rows.map((row) => {
+		const rowDot = row.color ? h("i", { class: "studio-chart-tip-dot" }) : null;
+		if (rowDot && row.color) rowDot.style.backgroundColor = row.color;
+		const val = h("b", { class: "studio-chart-tip-val" }, row.value);
+		if (!row.label) return h("div", { class: "studio-chart-tip-row is-plain" }, rowDot, val);
+		return h(
+			"div",
+			{ class: "studio-chart-tip-row" },
+			h("span", { class: "studio-chart-tip-label" }, rowDot, rowDot ? " " : null, row.label),
+			val,
+		);
+	});
+	return h("div", { class: "studio-chart-tip" }, head, ...body);
 }
 
 export interface SurfaceChartPaint {
@@ -381,9 +403,8 @@ function buildCartesianOption(
 							const x = typeof vals[0] === "number" ? formatChartValue(vals[0]) : "";
 							const y = typeof vals[1] === "number" ? formatChartValue(vals[1], doc.unit) : "";
 							const z = typeof vals[2] === "number" ? ` · ${formatChartValue(vals[2])}` : "";
-							const heading = escapeHtml(item.name || item.seriesName || "");
-							const dot = `<i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${escapeHtml(String(item.color ?? theme.accent))};margin-right:7px"></i>`;
-							return `<div style="font-weight:700;margin-bottom:4px">${dot}${heading}</div><div style="color:${theme.muted}">${escapeHtml(x)} × <b style="color:${theme.text}">${escapeHtml(y)}</b>${escapeHtml(z)}</div>`;
+							const heading = item.name || item.seriesName || "";
+							return tipElement(heading, [{ label: x, value: `${y}${z}` }], String(item.color ?? theme.accent));
 						},
 					}
 				: {
@@ -392,8 +413,29 @@ function buildCartesianOption(
 							lineStyle: { color: tint(theme.text, 0.28), type: [3, 3] },
 							shadowStyle: { color: tint(theme.text, theme.dark ? 0.06 : 0.04) },
 						},
-						valueFormatter: (value: unknown) =>
-							typeof value === "number" ? formatChartValue(value, doc.unit) : "–",
+						formatter: (params: unknown) => {
+							const entries = (Array.isArray(params) ? params : [params]) as {
+								axisValueLabel?: string;
+								name?: string;
+								seriesName?: string;
+								value?: unknown;
+								color?: unknown;
+							}[];
+							const first = entries[0];
+							if (!first) return "";
+							const heading = String(first.axisValueLabel ?? first.name ?? "");
+							const rows = entries.map((entry) => {
+								const rawVal = Array.isArray(entry.value) ? entry.value[1] : entry.value;
+								const valueText = typeof rawVal === "number" ? formatChartValue(rawVal, doc.unit) : "–";
+								const color = typeof entry.color === "string" ? entry.color : theme.accent;
+								return {
+									...(entry.seriesName ? { label: entry.seriesName } : {}),
+									value: valueText,
+									color,
+								};
+							});
+							return tipElement(heading, rows);
+						},
 					}),
 		},
 		xAxis: doc.kind === "scatter" ? scatterXAxis : horizontal ? valueAxis : categoryAxis,
@@ -439,10 +481,9 @@ function buildPieOption(
 			trigger: "item",
 			formatter: (params: unknown) => {
 				const item = params as { name?: string; value?: number; percent?: number; color?: string };
-				const dot = `<i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${escapeHtml(String(item.color ?? theme.accent))};margin-right:7px"></i>`;
 				const valueText = typeof item.value === "number" ? formatChartValue(item.value, doc.unit) : "–";
 				const pct = typeof item.percent === "number" ? ` (${item.percent}%)` : "";
-				return `<div style="font-weight:700;margin-bottom:3px">${dot}${escapeHtml(item.name ?? "")}</div><div><b>${escapeHtml(valueText)}</b><span style="color:${theme.muted}">${escapeHtml(pct)}</span></div>`;
+				return tipElement(item.name ?? "", [{ value: `${valueText}${pct}` }], String(item.color ?? theme.accent));
 			},
 		},
 		series: [
@@ -496,10 +537,10 @@ function buildSankeyOption(
 				};
 				if (item.dataType === "edge" && item.data) {
 					const val = typeof item.data.value === "number" ? formatChartValue(item.data.value, doc.unit) : "";
-					return `<div style="font-weight:700;margin-bottom:3px">${escapeHtml(item.data.source ?? "")} → ${escapeHtml(item.data.target ?? "")}</div><div><b>${escapeHtml(val)}</b></div>`;
+					return tipElement(`${item.data.source ?? ""} → ${item.data.target ?? ""}`, [{ value: val }]);
 				}
 				const val = typeof item.value === "number" ? formatChartValue(item.value, doc.unit) : "";
-				return `<div style="font-weight:700;margin-bottom:3px">${escapeHtml(item.name ?? "")}</div><div><b>${escapeHtml(val)}</b></div>`;
+				return tipElement(item.name ?? "", [{ value: val }]);
 			},
 		},
 		series: [
@@ -537,7 +578,20 @@ function buildRadarOption(
 		animation: !still(),
 		animationDuration: 520,
 		legend: legendOption(theme, showLegend),
-		tooltip: { ...tooltipStyle(theme), trigger: "item" },
+		tooltip: {
+			...tooltipStyle(theme),
+			trigger: "item",
+			formatter: (params: unknown) => {
+				const item = params as { name?: string; value?: readonly number[]; color?: string };
+				const indicators = doc.indicators ?? [];
+				const values = Array.isArray(item.value) ? item.value : [];
+				const rows = indicators.map((indicator, idx) => ({
+					label: indicator.name,
+					value: typeof values[idx] === "number" ? formatChartValue(values[idx], doc.unit) : "–",
+				}));
+				return tipElement(item.name ?? "", rows, typeof item.color === "string" ? item.color : theme.accent);
+			},
+		},
 		radar: {
 			center: ["50%", showLegend ? "54%" : "50%"],
 			radius: "66%",
@@ -592,9 +646,8 @@ function buildFunnelOption(
 			trigger: "item",
 			formatter: (params: unknown) => {
 				const item = params as { name?: string; value?: number; color?: string };
-				const dot = `<i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${escapeHtml(String(item.color ?? theme.accent))};margin-right:7px"></i>`;
 				const valueText = typeof item.value === "number" ? formatChartValue(item.value, doc.unit) : "–";
-				return `<div style="font-weight:700;margin-bottom:3px">${dot}${escapeHtml(item.name ?? "")}</div><div><b>${escapeHtml(valueText)}</b></div>`;
+				return tipElement(item.name ?? "", [{ value: valueText }], String(item.color ?? theme.accent));
 			},
 		},
 		series: [
@@ -640,11 +693,12 @@ function buildHeatmapOption(
 	const max = values.length > 0 ? Math.max(...values) : 1;
 	const xCats = doc.xCategories ?? [];
 	const yCats = doc.yCategories ?? [];
+	const rotateX = xCats.length > 6 ? 30 : 0;
 	const axisText = { color: theme.muted, fontFamily: theme.font, fontSize: 11.5 };
 	return {
 		animation: !still(),
 		animationDuration: 420,
-		grid: { left: 96, right: 24, top: 18, bottom: 56 },
+		grid: { left: 96, right: 24, top: 18, bottom: rotateX ? 88 : 56 },
 		tooltip: {
 			...tooltipStyle(theme),
 			position: "top",
@@ -654,7 +708,7 @@ function buildHeatmapOption(
 				if (!cell) return "";
 				const x = xCats[cell[0]] ?? String(cell[0]);
 				const y = yCats[cell[1]] ?? String(cell[1]);
-				return `<div style="font-weight:700;margin-bottom:3px">${escapeHtml(y)} × ${escapeHtml(x)}</div><div><b>${escapeHtml(formatChartValue(cell[2], doc.unit))}</b></div>`;
+				return tipElement(`${y} × ${x}`, [{ value: formatChartValue(cell[2], doc.unit) }]);
 			},
 		},
 		xAxis: {
@@ -662,7 +716,7 @@ function buildHeatmapOption(
 			data: xCats,
 			axisTick: { show: false },
 			axisLine: { show: false },
-			axisLabel: { ...axisText, hideOverlap: true },
+			axisLabel: { ...axisText, interval: 0, rotate: rotateX, overflow: "truncate", width: 88 },
 			splitArea: { show: true, areaStyle: { color: [tint(theme.text, 0.015), "transparent"] } },
 		},
 		yAxis: {

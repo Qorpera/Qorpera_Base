@@ -2103,9 +2103,17 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 		return { ...f, calls, commits };
 	}
 	const card = () => document.querySelector(".company-notices .company-notice p")?.textContent;
+	const openAccountSettings = () => {
+		document.querySelector<HTMLButtonElement>(".account-trigger")!.click();
+		expect(document.querySelector('[data-account-action="settings"] .account-count')?.textContent).toBe("1");
+		document.querySelector<HTMLButtonElement>('[data-account-action="settings"]')!.click();
+	};
 
-	it("asks the signed-in member about their own routine, and an owner's Turn on starts it", async () => {
+	it("asks the signed-in member about their own routine in Settings, and an owner's Turn on starts it", async () => {
 		const f = planApp();
+		await vi.waitFor(() => expect(document.querySelector(".account-health-dot")).not.toBeNull(), { timeout: 3000 });
+		expect(card()).toBeUndefined();
+		openAccountSettings();
 		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
 		expect(f.calls).toContain("qorpera_record_chatgpt_plan_routine_offer");
 		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
@@ -2128,6 +2136,9 @@ describe("a ChatGPT plan's first-routine card in the app", () => {
 
 	it("turns the plan on for a member who does not save routines, and says to ask the agent", async () => {
 		const f = planApp({ ...team.capabilities, authorize: false });
+		await vi.waitFor(() => expect(document.querySelector(".account-health-dot")).not.toBeNull(), { timeout: 3000 });
+		expect(card()).toBeUndefined();
+		openAccountSettings();
 		await vi.waitFor(() => expect(card()).toContain("Morning brief can run while you're away."), { timeout: 3000 });
 		document.querySelector<HTMLButtonElement>('[data-action="turn-on-plan"]')!.click();
 		await vi.waitFor(
@@ -2557,5 +2568,99 @@ describe("cold-boot waterfall optimizations", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+
+	it("recovers thread and surface loading after an A -> B -> A warm switch interrupts an in-flight thread load", async () => {
+		const site = surfaceSummary({
+			id: id(801),
+			slug: "website",
+			title: "Website",
+			archetype: "live_build",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([site]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockResolvedValue(
+			surfaceWorkspace([], { surface: site }),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+		let tailAttempt = 0;
+		vi.mocked(f.api.readSessionEventsTail).mockImplementation((_id, _before, _limit, signal) => {
+			tailAttempt += 1;
+			if (tailAttempt === 1) {
+				return new Promise((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				});
+			}
+			return Promise.resolve([event(1, "Recovered after warm switch")]);
+		});
+
+		await draw();
+		await draw();
+		expect(tailAttempt).toBe(1);
+		expect(f.root.querySelector(".skeleton-messages")).not.toBeNull();
+
+		location.hash = `#/c/${profileB.profileId}/team`;
+		await draw();
+		await draw();
+		expect(f.root.querySelector(".rail-company-name")?.textContent).toBe(profileB.profileName);
+
+		location.hash = `#/c/${profileA.profileId}/chat/${session.sessionId}`;
+		await draw();
+		await draw();
+		expect(f.root.querySelector(".skeleton-messages")).toBeNull();
+		expect(f.root.textContent).toContain("Recovered after warm switch");
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		await draw();
+		expect(f.root.querySelector(".surface-page")).not.toBeNull();
+	});
+
+	it("replaces stale thread DOM with a page skeleton when navigating to a surface while SurfacesStore is loading", async () => {
+		const enabled = deferred<boolean>();
+		const site = surfaceSummary({
+			id: id(802),
+			slug: "website",
+			title: "Website",
+			archetype: "live_build",
+			siteSlug: null,
+			liveUrl: null,
+		});
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockReturnValue(enabled.promise);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([site]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockResolvedValue(
+			surfaceWorkspace([], { surface: site }),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		const f = mounted(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		await draw();
+		await draw();
+		expect(f.root.querySelector("main .thread")).not.toBeNull();
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		expect(f.root.querySelector("main .thread")).toBeNull();
+		expect(f.root.querySelector("main .skeleton-page")).not.toBeNull();
+
+		enabled.resolve(true);
+		await draw();
+		await draw();
+		expect(f.root.querySelector("main .surface-page")).not.toBeNull();
 	});
 });

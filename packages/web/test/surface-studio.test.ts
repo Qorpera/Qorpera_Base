@@ -741,6 +741,27 @@ describe("SurfaceStudioView", () => {
 		);
 		expect(cased).toContain('content: "<\\/STYLE>";');
 		expect(cased).toContain('const tag = "<\\/SCRIPT>";');
+
+		const pngRef = {
+			manifestSha256: "a".repeat(64),
+			fileSha256: "b".repeat(64),
+			bytes: 4096,
+			mediaType: "image/png",
+		};
+		const withBinaries = prepareStudioHtmlPreview(
+			'<!doctype html><html><body><img src="img/hero.png"><img src="../outside.png"></body></html>',
+			"surfaces/headband/modules/pod/index.html",
+			{},
+			"",
+			{
+				"surfaces/headband/modules/pod/img/hero.png": pngRef,
+				"surfaces/outside.png": pngRef,
+			},
+			"surfaces/headband",
+		);
+		expect(withBinaries).toContain('data-qorpera-src="modules/pod/img/hero.png"');
+		expect(withBinaries).not.toContain('src="img/hero.png"');
+		expect(withBinaries).not.toContain('data-qorpera-src="outside.png"');
 	});
 
 	it("hands the page frame only text that reads back as the page it checked", () => {
@@ -1784,7 +1805,7 @@ describe("SurfaceStudioView", () => {
 		});
 		document.body.append(view.el);
 		expect(view.el.querySelector(".skeleton-surface-studio")).not.toBeNull();
-		await new Promise((resolve) => setTimeout(resolve, 40));
+		await vi.waitFor(() => expect(view.el.querySelectorAll(".studio-html-card")).toHaveLength(2), { timeout: 2000 });
 		expect(view.el.querySelector(".skeleton-surface-studio")).toBeNull();
 		const htmlCards = [...view.el.querySelectorAll<HTMLElement>(".studio-html-card")];
 		expect(htmlCards).toHaveLength(2);
@@ -2347,6 +2368,83 @@ describe("SurfaceReportView", () => {
 		mdPills[1]!.click();
 		expect(mdView.el.querySelector(".report-article")?.textContent).toContain("Beta body.");
 		mdView.dispose();
+		store.dispose();
+	});
+
+	it("does not pin a failed reconciliation banner when the current preview selection composes cleanly", async () => {
+		const brandSurface = summary({
+			id: BRAND_ID,
+			slug: "identity",
+			title: "Identity",
+			archetype: "studio",
+			folderRoot: "identity",
+		});
+		const recId = "77777777-7777-4777-8777-777777777777";
+		const s1 = session(["staged"], {
+			id: "11111111-1111-4111-8111-111111111111",
+			surfaceId: BRAND_ID,
+			changes: [
+				{
+					id: CHANGES[0],
+					sessionId: "11111111-1111-4111-8111-111111111111",
+					surfaceId: BRAND_ID,
+					seq: 1,
+					kind: "folder_patch",
+					title: "Update voice",
+					summary: "",
+					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: null,
+					affectedPaths: ["identity/voice.md"],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
+					patchManifest: [{ op: "write_text", path: "identity/voice.md", content: "# Voice\nCalm.\n" }],
+					createdAt: "2026-11-26T00:00:00Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const ws = workspace([s1], {
+			surface: brandSurface,
+			reconciliations: [
+				{
+					id: recId,
+					surfaceId: BRAND_ID,
+					compositionKey: "stale-failed",
+					baseFingerprint: "folder-rev:0",
+					selectedChangeIds: [CHANGES[0]],
+					status: "failed",
+					patchManifest: null,
+					commitSha: null,
+					treeSha: null,
+					conflictPaths: ["identity/voice.md"],
+					errorDetail: "Couldn't update preview",
+					updatedAt: "2026-11-26T00:00:01Z",
+				},
+			],
+		});
+		const store = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [brandSurface]),
+				getSurfaceWorkspace: vi.fn(async () => ws),
+			}),
+		);
+		await store.load();
+		await store.openSurface("identity");
+		const view = new SurfaceStudioView({
+			store,
+			surface: brandSurface,
+			signal: new AbortController().signal,
+			baseFiles: { "identity/voice.md": "# Voice\nOriginal.\n" },
+			timeSlice: false,
+		});
+		document.body.append(view.el);
+		view.update();
+		expect(view.el.querySelector(".studio-reconcile-retry")).toBeNull();
+		view.dispose();
 		store.dispose();
 	});
 });

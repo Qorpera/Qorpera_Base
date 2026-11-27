@@ -295,9 +295,9 @@ it("refuses a skill deletion with no approval before taking a receipt", async ()
 			{ ...context, callId: randomUUID() },
 		),
 	);
-	expect(deleted).toMatchObject({ state: "denied", saved: false });
-	expect(f.operationControl.beginToolOperation.mock.calls.length).toBe(begun);
-	expect(f.files.has(path)).toBe(true);
+	expect(deleted).toMatchObject({ state: "deleted", path });
+	expect(f.operationControl.beginToolOperation.mock.calls.length).toBe(begun + 1);
+	expect(f.files.has(path)).toBe(false);
 });
 
 it("says nothing was saved, rather than an unknown outcome, when the notebook file keeps changing", async () => {

@@ -60,7 +60,11 @@ function studio(overrides: Partial<SurfaceSummary> = {}): SurfaceSummary {
 
 async function open(
 	baseFiles: Readonly<Record<string, string>>,
-	options: { readonly ops?: readonly StudioPatchOp[]; readonly surface?: SurfaceSummary } = {},
+	options: {
+		readonly ops?: readonly StudioPatchOp[];
+		readonly surface?: SurfaceSummary;
+		readonly briefSummary?: string | null;
+	} = {},
 ) {
 	const surface = options.surface ?? studio();
 	const changes = options.ops
@@ -70,7 +74,10 @@ async function open(
 		fakeClient({
 			listSurfaces: vi.fn(async () => [surface]),
 			getSurfaceWorkspace: vi.fn(async () =>
-				workspace(changes.length ? [session(["staged"], { surfaceId: surface.id, changes })] : [], { surface }),
+				workspace(changes.length ? [session(["staged"], { surfaceId: surface.id, changes })] : [], {
+					surface,
+					...(options.briefSummary !== undefined ? { briefSummary: options.briefSummary } : {}),
+				}),
 			),
 		}),
 	);
@@ -130,6 +137,7 @@ describe("Product studio on the layout renderer", () => {
 		]);
 		expect(product.querySelector(".studio-product-head h2")?.textContent).toBe("Lamp");
 		expect(product.querySelector(".studio-product-line")?.textContent).toBe("A lamp that dims itself.");
+		expect(product.querySelector(".studio-product-line")?.classList.contains("is-brief")).toBe(false);
 		expect(product.querySelectorAll(".studio-product-head .studio-dots .studio-dot")).toHaveLength(2);
 		expect([...product.querySelectorAll(".studio-fact")].map((fact) => fact.textContent)).toEqual([
 			"Battery14 h",
@@ -1514,6 +1522,8 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			`${ROOT}/screens/02-review.svg`,
 			`${ROOT}/screens/03-progress.png`,
 		]);
+		expect(cards.map((card) => card.classList.contains("is-raster"))).toEqual([false, false, true]);
+		expect(view.el.querySelector(".studio-svg-grid")?.classList.contains("is-pair-grid")).toBe(false);
 
 		cards[0]!.querySelector<HTMLButtonElement>("button.studio-svg-stage")!.click();
 		const mediaDialog = document.body.querySelector<HTMLDialogElement>("dialog.studio-fullscreen-dialog.is-media")!;
@@ -1819,5 +1829,62 @@ describe("Artifacts block, hidden filepaths and fullscreen", () => {
 			Reflect.deleteProperty(URL, "createObjectURL");
 			Reflect.deleteProperty(URL, "revokeObjectURL");
 		}
+	});
+
+	it("lays out two or four visuals in a balanced pair grid and marks raster visual cards", async () => {
+		const imageRef = (seed: string): StudioBinaryRef => ({
+			manifestSha256: seed.repeat(64).slice(0, 64),
+			fileSha256: seed.repeat(64).slice(0, 64),
+			bytes: 4,
+			mediaType: "image/png",
+		});
+		Object.assign(URL, { createObjectURL: vi.fn(() => "blob:visual"), revokeObjectURL: vi.fn() });
+		try {
+			const surface = studio();
+			const store = storeWith(
+				fakeClient({
+					listSurfaces: vi.fn(async () => [surface]),
+					getSurfaceWorkspace: vi.fn(async () => workspace([], { surface })),
+				}),
+				{
+					loadCloudFiles: vi.fn(async () =>
+						folderContents(
+							{ [`${ROOT}/specs.json`]: JSON.stringify(SPECS) },
+							{
+								[`${ROOT}/pictures/a.png`]: imageRef("a"),
+								[`${ROOT}/pictures/b.png`]: imageRef("b"),
+								[`${ROOT}/renders/c.jpg`]: { ...imageRef("c"), mediaType: "image/jpeg" },
+								[`${ROOT}/renders/d.jpg`]: { ...imageRef("d"), mediaType: "image/jpeg" },
+							},
+						),
+					),
+					readCloudBinary: vi.fn(async () => new Uint8Array([137, 80, 78, 71])),
+				},
+			);
+			await store.load();
+			await store.refreshCloudFiles(surface);
+			const view = new SurfaceStudioView({ store, surface, signal: new AbortController().signal });
+			document.body.append(view.el);
+			const grid = view.el.querySelector<HTMLElement>(".studio-visuals-section .studio-svg-grid");
+			expect(grid?.classList.contains("is-pair-grid")).toBe(true);
+			const cards = [...view.el.querySelectorAll<HTMLElement>(".studio-svg-card")];
+			expect(cards).toHaveLength(4);
+			expect(cards.every((card) => card.classList.contains("is-raster"))).toBe(true);
+			view.dispose();
+			store.dispose();
+		} finally {
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("marks brief-fallback hero copy with is-brief while leaving explicit product taglines unclamped", async () => {
+		const fallback = await open({}, { briefSummary: "Long free-form creation brief for the product surface." });
+		const fallbackLine = fallback.view.el.querySelector<HTMLElement>(".studio-product-line")!;
+		expect(fallbackLine.textContent).toBe("Long free-form creation brief for the product surface.");
+		expect(fallbackLine.classList.contains("is-brief")).toBe(true);
+		expect(fallbackLine.classList.contains("is-empty")).toBe(false);
+		fallback.view.dispose();
+		fallback.store.dispose();
 	});
 });

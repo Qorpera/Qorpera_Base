@@ -116,11 +116,15 @@ export function createCodingBrokerGitRunner(options: CodingGitSandboxOptions = {
 						long ? "--cpu=240" : "--cpu=30",
 						"--fsize=268435456",
 						"--nofile=64",
-						"--nproc=512",
 						"--core=0",
 						"--",
 						sandbox.executable,
 						...sandbox.args,
+						// WHY: RLIMIT_NPROC counts every task of the uid in the user namespace that forks. Set before bwrap, its
+						// own clone counts all the host user's tasks and fails on a busy host; set inside, only the sandbox's.
+						"/usr/bin/prlimit",
+						"--nproc=512",
+						"--",
 						"/usr/bin/git",
 						...args,
 					],

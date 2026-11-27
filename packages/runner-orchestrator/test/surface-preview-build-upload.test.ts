@@ -238,6 +238,66 @@ describe("collectAndUploadPreviewBuildToEdge", () => {
 			expect(secretResult.errorDetail).not.toContain("super-secret-value-12345");
 		}
 	});
+
+	it("handles pipelined batch upload rejection while the next guest stream is pending without unhandledRejection", async () => {
+		const root = await makeTempDir("preview-build-pipeline-reject-");
+		const dist = join(root, "dist");
+		const company = join(root, "company");
+		await mkdir(dist, { recursive: true });
+		await mkdir(dirname(join(company, IDENTITY_TOKENS_JSON_PATH)), { recursive: true });
+		await mkdir(join(company, "products/band"), { recursive: true });
+		await writeFile(join(dist, "index.html"), "<!doctype html><html><body><h1>Pipeline</h1></body></html>");
+		await writeFile(join(company, IDENTITY_TOKENS_JSON_PATH), JSON.stringify({ colors: { primary: "#112233" } }));
+		await writeFile(join(company, "products/band/specs.json"), JSON.stringify({ model: "X1" }));
+
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => {
+			unhandled.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const uid = process.getuid?.() ?? 1000;
+			const gid = process.getgid?.() ?? 1000;
+			let batchRejected!: () => void;
+			const batchRejectedDone = new Promise<void>((resolve) => {
+				batchRejected = resolve;
+			});
+			let execCount = 0;
+			const result = await collectAndUploadPreviewBuildToEdge({
+				execPipe: async (request, signal) => {
+					execCount += 1;
+					if (execCount === 2) {
+						await batchRejectedDone;
+						await new Promise((resolve) => setTimeout(resolve, 25));
+					}
+					return await runLocalExecPipe(request, signal);
+				},
+				uid,
+				gid,
+				outputDir: dist,
+				recipeFolder: "dist",
+				companyMountDir: company,
+				productFolderRoots: ["products/band"],
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "test-token",
+				fetchImpl: async (url, init) => {
+					if (init.method === "POST" && url.endsWith("/_internal/blobs/exists")) {
+						return { status: 200, json: async () => ({ existing: [] }) };
+					}
+					if (init.method === "POST" && url.endsWith("/_internal/blobs/batch")) {
+						batchRejected();
+						return { status: 400 };
+					}
+					return { status: 400 };
+				},
+				signal: new AbortController().signal,
+			});
+			expect(result.outcome).toBe("failed");
+			expect(unhandled).toHaveLength(0);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
 });
 
 describe("SurfaceCodeHostWorker native edge registration", () => {

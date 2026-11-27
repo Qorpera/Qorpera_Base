@@ -10,8 +10,11 @@ export const NATIVE_SITE_MAX_FILE_BYTES = 100 * 1024 * 1024;
 export const NATIVE_SITE_MAX_PATH_BYTES = 1024;
 export const NATIVE_SITE_MAX_SEGMENTS = 24;
 export const NATIVE_SITE_CONTROL_FILE_MAX_BYTES = 256 * 1024;
-export const DEFAULT_BLOB_UPLOAD_CONCURRENCY = 8;
+export const DEFAULT_BLOB_UPLOAD_CONCURRENCY = 16;
 export const BLOB_EXISTS_BATCH_SIZE = 512;
+export const BLOB_BATCH_CONTENT_TYPE = "application/vnd.qorpera.blob-batch+v1";
+export const MAX_BLOB_BATCH_FILES = 1024;
+export const MAX_BLOB_BATCH_BYTES = 32 * 1024 * 1024;
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const EXTENSION_PATTERN = /\.([A-Za-z0-9]{1,12})$/;
@@ -431,10 +434,7 @@ export async function checkMissingBlobsOnEdge(options: {
 	const missing = new Set<string>();
 	let fallbackFromIndex: number | null = null;
 
-	// WHY: Batch existence checks via POST /_internal/blobs/exists to collapse N HEADs into 1 call, falling back to HEAD on 404/405 for rolling deploys.
-	for (let offset = 0; offset < unique.length; offset += BLOB_EXISTS_BATCH_SIZE) {
-		options.signal?.throwIfAborted();
-		const chunk = unique.slice(offset, offset + BLOB_EXISTS_BATCH_SIZE);
+	const queryExistsChunk = async (chunk: readonly string[]): Promise<Set<string> | null> => {
 		const existsRes = await fetchWithRetry(
 			fetchImpl,
 			`${base}/_internal/blobs/exists`,
@@ -447,8 +447,7 @@ export async function checkMissingBlobsOnEdge(options: {
 			options.signal,
 		);
 		if (existsRes.status === 404 || existsRes.status === 405 || !existsRes.json) {
-			fallbackFromIndex = offset;
-			break;
+			return null;
 		}
 		if (existsRes.status !== 200) {
 			throw new Error(`Blob exists batch check failed with HTTP ${existsRes.status}`);
@@ -466,8 +465,35 @@ export async function checkMissingBlobsOnEdge(options: {
 		for (const entry of (parsed as { existing: unknown[] }).existing) {
 			if (typeof entry === "string" && uniqueSet.has(entry)) existingSet.add(entry);
 		}
-		for (const sha of chunk) {
-			if (!existingSet.has(sha)) missing.add(sha);
+		return existingSet;
+	};
+
+	// WHY: Batch existence checks via POST /_internal/blobs/exists to collapse N HEADs into parallel batch calls, falling back to HEAD on 404/405 for rolling deploys.
+	const chunks: string[][] = [];
+	for (let offset = 0; offset < unique.length; offset += BLOB_EXISTS_BATCH_SIZE) {
+		chunks.push(unique.slice(offset, offset + BLOB_EXISTS_BATCH_SIZE));
+	}
+	const firstChunk = chunks[0]!;
+	const firstExisting = await queryExistsChunk(firstChunk);
+	if (firstExisting === null) {
+		fallbackFromIndex = 0;
+	} else {
+		for (const sha of firstChunk) {
+			if (!firstExisting.has(sha)) missing.add(sha);
+		}
+		if (chunks.length > 1) {
+			const restResults = await Promise.all(chunks.slice(1).map((chunk) => queryExistsChunk(chunk)));
+			for (let i = 0; i < restResults.length; i += 1) {
+				const existingSet = restResults[i]!;
+				const chunk = chunks[i + 1]!;
+				if (existingSet === null) {
+					fallbackFromIndex = (i + 1) * BLOB_EXISTS_BATCH_SIZE;
+					break;
+				}
+				for (const sha of chunk) {
+					if (!existingSet.has(sha)) missing.add(sha);
+				}
+			}
 		}
 	}
 
@@ -502,6 +528,75 @@ export async function checkMissingBlobsOnEdge(options: {
 	}
 
 	return missing;
+}
+
+export function encodeBlobBatchFrames(
+	items: readonly { readonly sha256: string; readonly content: Uint8Array }[],
+): Uint8Array {
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (const item of items) {
+		const header = Buffer.from(`${item.sha256} ${item.content.byteLength}\n`, "ascii");
+		chunks.push(header, item.content);
+		total += header.byteLength + item.content.byteLength;
+	}
+	const out = Buffer.allocUnsafe(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
+}
+
+export async function putBlobBatchToEdge(options: {
+	readonly routerInternalUrl: string;
+	readonly controlToken: string;
+	readonly body: Uint8Array;
+	readonly fetchImpl?: BlobUploadFetch;
+	readonly signal?: AbortSignal;
+}): Promise<
+	{ readonly supported: true; readonly stored: number; readonly exists: number } | { readonly supported: false }
+> {
+	const base = options.routerInternalUrl.replace(/\/+$/, "");
+	const fetchImpl = options.fetchImpl ?? defaultFetch;
+	const res = await fetchWithRetry(
+		fetchImpl,
+		`${base}/_internal/blobs/batch`,
+		{
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${options.controlToken}`,
+				"content-type": BLOB_BATCH_CONTENT_TYPE,
+			},
+			body: options.body,
+			signal: options.signal,
+		},
+		options.signal,
+	);
+	if (res.status === 404 || res.status === 405 || res.status === 415) {
+		return { supported: false };
+	}
+	if (res.status !== 200 && res.status !== 201) {
+		throw new Error(`Blob batch POST failed with HTTP ${res.status}`);
+	}
+	if (!res.json) {
+		return { supported: true, stored: 0, exists: 0 };
+	}
+	const parsed = await res.json();
+	if (
+		parsed &&
+		typeof parsed === "object" &&
+		typeof (parsed as { stored?: unknown }).stored === "number" &&
+		typeof (parsed as { exists?: unknown }).exists === "number"
+	) {
+		return {
+			supported: true,
+			stored: (parsed as { stored: number }).stored,
+			exists: (parsed as { exists: number }).exists,
+		};
+	}
+	return { supported: true, stored: 0, exists: 0 };
 }
 
 export async function putBlobToEdge(options: {
@@ -573,6 +668,7 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 	const authHeader = { authorization: `Bearer ${options.controlToken}` };
 	const knownMissing = new Set<string>();
 	let uploadQueue: [string, Uint8Array][] = queue;
+	let usedExistsFallback = false;
 
 	// WHY: Batch existence checks via POST /_internal/blobs/exists to collapse N HEADs into 1 call, falling back to HEAD on 404/405 for rolling deploys.
 	if (queue.length > 1) {
@@ -627,11 +723,53 @@ export async function uploadSiteBlobsToEdge(options: UploadSiteBlobsOptions): Pr
 			}
 		}
 		if (fallbackFromIndex !== null) {
+			usedExistsFallback = true;
 			for (let i = fallbackFromIndex; i < queue.length; i += 1) {
 				nextQueue.push(queue[i]!);
 			}
 		}
 		uploadQueue = nextQueue;
+	}
+
+	if (!usedExistsFallback && uploadQueue.length > 1) {
+		let idx = 0;
+		const remaining: [string, Uint8Array][] = [];
+		while (idx < uploadQueue.length) {
+			options.signal?.throwIfAborted();
+			const batchItems: { sha256: string; content: Uint8Array }[] = [];
+			let batchBytes = 0;
+			const startIdx = idx;
+			while (idx < uploadQueue.length) {
+				const [sha, content] = uploadQueue[idx]!;
+				if (
+					batchItems.length > 0 &&
+					(batchItems.length >= MAX_BLOB_BATCH_FILES || batchBytes + content.byteLength > MAX_BLOB_BATCH_BYTES)
+				) {
+					break;
+				}
+				batchItems.push({ sha256: sha, content });
+				batchBytes += content.byteLength;
+				idx += 1;
+			}
+			if (batchItems.length === 1 && batchItems[0]!.content.byteLength > MAX_BLOB_BATCH_BYTES) {
+				remaining.push(uploadQueue[startIdx]!);
+				continue;
+			}
+			const result = await putBlobBatchToEdge({
+				routerInternalUrl: base,
+				controlToken: options.controlToken,
+				body: encodeBlobBatchFrames(batchItems),
+				fetchImpl,
+				signal: options.signal,
+			});
+			if (!result.supported) {
+				for (let j = startIdx; j < uploadQueue.length; j += 1) remaining.push(uploadQueue[j]!);
+				break;
+			}
+			uploadedBlobs += result.stored;
+			deduplicatedBlobs += result.exists;
+		}
+		uploadQueue = remaining;
 	}
 
 	const worker = async (): Promise<void> => {

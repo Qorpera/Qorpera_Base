@@ -41,7 +41,12 @@ import {
 import { type AddressMark, SurfaceAddress, type SurfaceSiteHosting } from "./surface-address-sheet.ts";
 import type { SurfaceLiveHosts } from "./surface-blocks/live.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
-import { applyIdentityTokensToFrame, SurfaceDoorStage } from "./surface-door.ts";
+import {
+	applyIdentityTokensToFrame,
+	preconnectPreviewOrigin,
+	previewSlotOriginFromSiteUrl,
+	SurfaceDoorStage,
+} from "./surface-door.ts";
 import { firstName, openPublishSheet } from "./surface-publish-sheet.ts";
 import { surfaceTile } from "./surface-rail.ts";
 import { SurfaceReportView } from "./surface-report-view.ts";
@@ -1073,17 +1078,17 @@ export class SurfaceView {
 		this.#syncPhoneViewport();
 	}
 
-	#buildZoomControl(target: "website" | "phone", zoom: number): HTMLElement {
+	#buildZoomControl(target: "website" | "phone", zoom: number, groupLabel?: string): HTMLElement {
 		const pct = Math.round(zoom * 100);
 		const canOut = zoom > MIN_SURFACE_ZOOM + 0.001;
 		const canIn = zoom < MAX_SURFACE_ZOOM - 0.001;
-		const groupLabel = target === "phone" ? t("Phone zoom") : t("Website zoom");
+		const label = groupLabel ?? (target === "phone" ? t("Phone zoom") : t("Preview zoom"));
 		return h(
 			"div",
 			{
 				class: `surface-zoom is-${target}${zoom !== DEFAULT_SURFACE_ZOOM ? " is-zoomed" : ""}`,
 				role: "group",
-				"aria-label": groupLabel,
+				"aria-label": label,
 				"data-zoom-target": target,
 			},
 			h(
@@ -1447,7 +1452,8 @@ export class SurfaceView {
 				);
 			}
 			if (showWebsiteZoom) {
-				groups.push(this.#buildZoomControl("website", websiteZoom));
+				const zoomLabel = look.kind === "website" ? t("Website zoom") : t("Preview zoom");
+				groups.push(this.#buildZoomControl("website", websiteZoom, zoomLabel));
 			}
 
 			const presentHere = store.peopleAtSurface(surface.slug);
@@ -1914,6 +1920,10 @@ export class SurfaceView {
 		const key = JSON.stringify([state.mode, remoteCompare, targetExploration?.id, showPrimary, preview, surface.id]);
 		if (key === this.#framesShown) return;
 		this.#framesShown = key;
+		if (liveBuild && !localLive) {
+			preconnectPreviewOrigin(previewSlotOriginFromSiteUrl(surface.liveUrl, 0));
+			if (remoteCompare) preconnectPreviewOrigin(previewSlotOriginFromSiteUrl(surface.liveUrl, 1));
+		}
 		this.#frames.classList.toggle("is-compare", remoteCompare);
 
 		if (remoteCompare && preview && targetExploration && workspace) {
@@ -2371,9 +2381,11 @@ export class SurfaceView {
 			case "zoom-menu": {
 				const zoomTarget = target.dataset.zoomTarget === "phone" ? "phone" : "website";
 				const current = zoomTarget === "phone" ? store.state.phoneZoom : store.state.websiteZoom;
+				const surface = surfaceBySlug(store.state, this.slug);
+				const isWebsite = surface ? store.lookOf(surface).kind === "website" : false;
 				const box = target.getBoundingClientRect();
 				openContextMenu({
-					label: zoomTarget === "phone" ? t("Phone zoom") : t("Website zoom"),
+					label: zoomTarget === "phone" ? t("Phone zoom") : isWebsite ? t("Website zoom") : t("Preview zoom"),
 					x: box.left,
 					y: box.bottom + 6,
 					opener: target,

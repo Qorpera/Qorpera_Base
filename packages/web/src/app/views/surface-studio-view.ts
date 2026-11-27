@@ -50,7 +50,14 @@ import { collectSpecs, type SpecEntry } from "./surface-blocks/specs.ts";
 import type { LegacyStudioModel } from "./surface-blocks/stage.ts";
 import { SurfaceLayoutView } from "./surface-layout-view.ts";
 import { surfaceTile } from "./surface-rail.ts";
-import { compiledTokensCssFrom, prepareStudioHtmlPreview, studioHtmlDependencyChanged } from "./surface-studio-html.ts";
+import {
+	compiledTokensCssFrom,
+	prepareStudioHtmlPreview,
+	resolveStudioFrameAssetPath,
+	studioAssetMimeType,
+	studioFrameBase,
+	studioHtmlDependencyChanged,
+} from "./surface-studio-html.ts";
 import type { StudioBinaryReader } from "./surface-studio-stage.ts";
 import { StudioTourController } from "./surface-tour.ts";
 
@@ -138,6 +145,9 @@ function parseSingleStudioFile(
 	baseTokensCss: string,
 	compare: boolean,
 	out: ParsedStudioFiles,
+	binaries?: Readonly<Record<string, StudioBinaryRef>>,
+	baseBinaries?: Readonly<Record<string, StudioBinaryRef>>,
+	folderRoot?: string | null,
 ): void {
 	if (OBJECT_JSON_RE.test(path) || REPORT_JSON_RE.test(path)) return;
 	const content = files[path] ?? "";
@@ -165,7 +175,18 @@ function parseSingleStudioFile(
 			html: content,
 			...(baseContent !== undefined ? { baseHtml: baseContent } : {}),
 			changed:
-				changed || studioHtmlDependencyChanged(content, path, files, baseFiles, previewTokensCss, baseTokensCss),
+				changed ||
+				studioHtmlDependencyChanged(
+					content,
+					path,
+					files,
+					baseFiles,
+					previewTokensCss,
+					baseTokensCss,
+					binaries,
+					baseBinaries,
+					folderRoot,
+				),
 		});
 		return;
 	}
@@ -476,14 +497,48 @@ export class SurfaceStudioView {
 		});
 	}
 
+	async #readFrameFile(
+		call: AppCall,
+		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
+		folderRoot: string,
+		signal: AbortSignal,
+	): Promise<AppAnswer> {
+		const rawPath = typeof call.params.path === "string" ? call.params.path : "";
+		const rawBase = typeof call.params.base === "string" ? call.params.base : "";
+		const key = resolveStudioFrameAssetPath(folderRoot, rawBase, rawPath);
+		if (!key) return { ok: false, error: t("This file isn't available.") };
+		if (Object.hasOwn(binaries, key)) {
+			const ref = binaries[key]!;
+			const read =
+				this.#options.readBinary ?? ((file, reqSignal) => this.#options.store.readStudioBinary(file, reqSignal));
+			try {
+				const bytes = await read(ref, signal);
+				if (signal.aborted) return { ok: false, error: t("This file isn't available.") };
+				return { ok: true, value: new Blob([new Uint8Array(bytes)], { type: ref.mediaType }) };
+			} catch {
+				return { ok: false, error: t("This file isn't available.") };
+			}
+		}
+		if (Object.hasOwn(files, key)) {
+			return { ok: true, value: new Blob([files[key]!], { type: studioAssetMimeType(key) }) };
+		}
+		return { ok: false, error: t("This file isn't available.") };
+	}
+
 	async #handleModuleCall(
 		call: AppCall,
 		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
 		folderRoot: string,
 		moduleTitle: string,
 		frameOwner: symbol,
 		resolveTellHost: () => HTMLElement,
+		signal: AbortSignal,
 	): Promise<AppAnswer> {
+		if (call.method === "file") {
+			return this.#readFrameFile(call, files, binaries, folderRoot, signal);
+		}
 		if (call.method === "read") {
 			const rawPath = typeof call.params.path === "string" ? call.params.path.trim() : "";
 			if (!rawPath || rawPath.length > 512) return { ok: false, error: t("This file isn't available.") };
@@ -526,14 +581,24 @@ export class SurfaceStudioView {
 			}
 			const dirPrefix = targetPrefix ? `${targetPrefix}/` : "";
 			const encoder = new TextEncoder();
-			const entries = Object.entries(files)
-				.filter(([path]) => (!dirPrefix ? true : path === targetPrefix || path.startsWith(dirPrefix)))
+			const byPath = new Map<string, number>();
+			for (const [path, content] of Object.entries(files)) {
+				if (!dirPrefix || path === targetPrefix || path.startsWith(dirPrefix)) {
+					byPath.set(path, encoder.encode(content).byteLength);
+				}
+			}
+			for (const [path, ref] of Object.entries(binaries)) {
+				if ((!dirPrefix || path === targetPrefix || path.startsWith(dirPrefix)) && !byPath.has(path)) {
+					byPath.set(path, ref.bytes);
+				}
+			}
+			const entries = [...byPath.entries()]
 				.sort(([a], [b]) => a.localeCompare(b))
-				.map(([path, content]) => ({
+				.map(([path, bytes]) => ({
 					name: path.slice(path.lastIndexOf("/") + 1),
 					path: cleanRoot && path.startsWith(`${cleanRoot}/`) ? path.slice(cleanRoot.length + 1) : path,
 					kind: "file" as const,
-					bytes: encoder.encode(content).byteLength,
+					bytes,
 				}));
 			return { ok: true, value: entries };
 		}
@@ -552,6 +617,7 @@ export class SurfaceStudioView {
 		htmlPath: string,
 		title: string,
 		files: Readonly<Record<string, string>>,
+		binaries: Readonly<Record<string, StudioBinaryRef>>,
 		compiledTokensCss: string,
 		className: string,
 		listen?: (data: unknown) => void,
@@ -559,15 +625,16 @@ export class SurfaceStudioView {
 		allFiles?: Readonly<Record<string, string>>,
 		moduleBridge = false,
 	): HTMLElement {
-		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss);
+		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
+		const live = prepareStudioHtmlPreview(html, htmlPath, files, compiledTokensCss, binaries, folderRoot);
 		if (live === null) {
 			return h("p", { class: "studio-html-fallback" }, t("This page can't be shown live."));
 		}
-		const folderRoot = this.#options.surface.folderRoot?.replace(/^\/+|\/+$/g, "") ?? "";
 		const readable = allFiles ?? files;
 		const frameOwner = Symbol(title);
+		const base = studioFrameBase(htmlPath, folderRoot);
 		const frame: AppFrame = new AppFrame(
-			{ html: live },
+			{ html: live, base },
 			t("Page: {name}", { name: title }),
 			className,
 			moduleBridge
@@ -575,12 +642,17 @@ export class SurfaceStudioView {
 						this.#handleModuleCall(
 							call,
 							readable,
+							binaries,
 							folderRoot,
 							title,
 							frameOwner,
 							() => frame.frame.closest("dialog") ?? this.el,
+							frame.signal,
 						)
-				: async () => ({ ok: false, error: t("This page can't be shown here.") }),
+				: (call) =>
+						call.method === "file"
+							? this.#readFrameFile(call, readable, binaries, folderRoot, frame.signal)
+							: Promise.resolve({ ok: false, error: t("This page can't be shown here.") }),
 			() => undefined,
 			{ again: true },
 		);
@@ -832,7 +904,18 @@ export class SurfaceStudioView {
 		const compare = params.mode === "compare";
 		const parsed = emptyParsedStudioFiles();
 		for (const path of filePaths) {
-			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, compare, parsed);
+			parseSingleStudioFile(
+				path,
+				files,
+				params.baseFiles,
+				previewTokensCss,
+				baseTokensCss,
+				compare,
+				parsed,
+				composition.binaries,
+				params.baseBinaries,
+				params.surface.folderRoot,
+			);
 			if (!(await budget.yieldIfNeeded(signal)) || !this.#isRenderActive(params.seq)) return;
 		}
 		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
@@ -940,7 +1023,18 @@ export class SurfaceStudioView {
 		const compare = params.mode === "compare";
 		const parsed = emptyParsedStudioFiles();
 		for (const path of filePaths) {
-			parseSingleStudioFile(path, files, params.baseFiles, previewTokensCss, baseTokensCss, compare, parsed);
+			parseSingleStudioFile(
+				path,
+				files,
+				params.baseFiles,
+				previewTokensCss,
+				baseTokensCss,
+				compare,
+				parsed,
+				composition.binaries,
+				params.baseBinaries,
+				params.surface.folderRoot,
+			);
 		}
 		parsed.docs.sort((a, b) => docPriority(a.path) - docPriority(b.path) || a.path.localeCompare(b.path));
 		const plan = this.#buildRenderPlan(
@@ -1061,16 +1155,8 @@ export class SurfaceStudioView {
 				const activeRec = this.#options.store.activeReconciliationFor(surface.id, selectedIds);
 				if (activeRec?.status === "queued" || activeRec?.status === "running") {
 					reconcilingPreview = true;
-					this.#pendingRetryTarget = null;
-				} else if (activeRec?.status === "failed") {
-					reconciliationFailed = true;
-					this.#pendingRetryTarget = {
-						changeIds: activeRec.selectedChangeIds,
-						paths: activeRec.conflictPaths ?? [],
-					};
-				} else {
-					this.#pendingRetryTarget = null;
 				}
+				this.#pendingRetryTarget = null;
 			}
 		}
 
@@ -1287,6 +1373,7 @@ export class SurfaceStudioView {
 												page.path,
 												page.title,
 												baseFiles,
+												params.baseBinaries,
 												baseTokensCss,
 												"studio-html-frame is-compare",
 											)
@@ -1300,6 +1387,7 @@ export class SurfaceStudioView {
 										page.path,
 										page.title,
 										files,
+										composition.binaries,
 										previewTokensCss,
 										"studio-html-frame is-compare",
 									),
@@ -1412,6 +1500,7 @@ export class SurfaceStudioView {
 						frame.path,
 						frame.title,
 						frame.files,
+						binaries,
 						page.previewTokensCss,
 						frame.className,
 						frame.listen,
@@ -1427,6 +1516,9 @@ export class SurfaceStudioView {
 						params.baseFiles,
 						page.previewTokensCss,
 						page.baseTokensCss,
+						binaries,
+						params.baseBinaries,
+						params.surface.folderRoot,
 					),
 			},
 		});

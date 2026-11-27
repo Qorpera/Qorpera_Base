@@ -16,7 +16,10 @@ import {
 	checkMissingBlobsOnEdge,
 	computeCanonicalSiteManifest,
 	DEFAULT_BLOB_UPLOAD_CONCURRENCY,
+	encodeBlobBatchFrames,
 	isNativeServableSitePath,
+	MAX_BLOB_BATCH_BYTES,
+	MAX_BLOB_BATCH_FILES,
 	NATIVE_SITE_CONTROL_FILE_MAX_BYTES,
 	NATIVE_SITE_EXTENSIONS,
 	NATIVE_SITE_MAX_BYTES,
@@ -27,6 +30,7 @@ import {
 	nativeSiteTreeProblem,
 	parseHeadersFile,
 	parseRedirectsFile,
+	putBlobBatchToEdge,
 	putBlobToEdge,
 } from "./site-blob-upload.ts";
 import {
@@ -38,8 +42,8 @@ import {
 
 const MAX_SHARED_ASSET_READ_BYTES = 32 * 1024;
 const MAX_SCAN_STDOUT_BYTES = 16 * 1024 * 1024;
-const MAX_STREAM_BATCH_BYTES = 32 * 1024 * 1024;
-const MAX_STREAM_BATCH_FILES = 256;
+const MAX_STREAM_BATCH_BYTES = MAX_BLOB_BATCH_BYTES;
+const MAX_STREAM_BATCH_FILES = MAX_BLOB_BATCH_FILES;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 export interface CollectAndUploadPreviewBuildOptions {
@@ -193,6 +197,10 @@ while todo:
 				if m and m.group(1).lower() in SERVED:
 					paths.append(rel)
 paths.sort()
+if len(paths)>MAX_FILES:
+	print(json.dumps({"problem":{"code":"SITE_TOO_MANY_FILES","path":None}}))
+	sys.exit(0)
+file_digest=getattr(hashlib,"file_digest",None)
 files=[]
 total=0
 has_index=False
@@ -201,52 +209,62 @@ for rel in paths:
 	if not valid_path(rel):
 		print(json.dumps({"problem":{"code":"SITE_FILE_NAME","path":safe_path(rel)}}))
 		sys.exit(0)
-	rel_bytes=rel.encode("utf-8")
-	for s in SECRETS:
-		if s in rel_bytes:
-			print(json.dumps({"problem":{"code":"SITE_HOLDS_SECRET","path":None}}))
-			sys.exit(0)
+	if SECRETS:
+		rel_bytes=rel.encode("utf-8")
+		for s in SECRETS:
+			if s in rel_bytes:
+				print(json.dumps({"problem":{"code":"SITE_HOLDS_SECRET","path":None}}))
+				sys.exit(0)
 	full=os.path.join(top,os.fsencode(rel))
 	fd=os.open(full,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
-	h=hashlib.sha256()
-	size=0
-	tail=b""
 	is_html=rel.lower().endswith((".html",".htm"))
-	html_buf=[]
 	with os.fdopen(fd,"rb") as f:
-		if not stat.S_ISREG(os.fstat(fd).st_mode):
+		st=os.fstat(fd)
+		if not stat.S_ISREG(st.st_mode):
 			sys.exit(4)
-		while True:
-			chunk=f.read(262144)
-			if not chunk:
-				break
-			size+=len(chunk)
+		if not SECRETS and (not is_html or has_cred) and file_digest is not None:
+			if st.st_size>MAX_FILE_BYTES:
+				print(json.dumps({"problem":{"code":"SITE_FILE_TOO_LARGE","path":safe_path(rel)}}))
+				sys.exit(0)
+			digest=file_digest(f,"sha256").hexdigest()
+			size=f.tell()
 			if size>MAX_FILE_BYTES:
 				print(json.dumps({"problem":{"code":"SITE_FILE_TOO_LARGE","path":safe_path(rel)}}))
 				sys.exit(0)
-			h.update(chunk)
-			if SECRETS:
-				window=tail+chunk
-				for s in SECRETS:
-					if s in window:
-						print(json.dumps({"problem":{"code":"SITE_HOLDS_SECRET","path":None}}))
-						sys.exit(0)
-				tail=window[-(MAX_SECRET-1):] if MAX_SECRET>1 else b""
-			if is_html and not has_cred and size<=16*1024*1024:
-				html_buf.append(chunk)
+		else:
+			h=hashlib.sha256()
+			size=0
+			tail=b""
+			html_buf=[]
+			while True:
+				chunk=f.read(262144)
+				if not chunk:
+					break
+				size+=len(chunk)
+				if size>MAX_FILE_BYTES:
+					print(json.dumps({"problem":{"code":"SITE_FILE_TOO_LARGE","path":safe_path(rel)}}))
+					sys.exit(0)
+				h.update(chunk)
+				if SECRETS:
+					window=tail+chunk
+					for s in SECRETS:
+						if s in window:
+							print(json.dumps({"problem":{"code":"SITE_HOLDS_SECRET","path":None}}))
+							sys.exit(0)
+					tail=window[-(MAX_SECRET-1):] if MAX_SECRET>1 else b""
+				if is_html and not has_cred and size<=16*1024*1024:
+					html_buf.append(chunk)
+			digest=h.hexdigest()
+			if is_html and not has_cred and html_buf:
+				if has_creds(b"".join(html_buf).decode("utf-8","replace")):
+					has_cred=True
 	total+=size
-	if len(files)+1>MAX_FILES:
-		print(json.dumps({"problem":{"code":"SITE_TOO_MANY_FILES","path":None}}))
-		sys.exit(0)
 	if total>MAX_TOTAL_BYTES:
 		print(json.dumps({"problem":{"code":"SITE_TOO_LARGE","path":None}}))
 		sys.exit(0)
-	if is_html and not has_cred and html_buf:
-		if has_creds(b"".join(html_buf).decode("utf-8","replace")):
-			has_cred=True
 	if rel=="index.html":
 		has_index=True
-	files.append({"path":rel,"bytes":size,"sha256":h.hexdigest()})
+	files.append({"path":rel,"bytes":size,"sha256":digest})
 if not has_index:
 	print(json.dumps({"problem":{"code":"SITE_NO_INDEX","path":None}}))
 	sys.exit(0)
@@ -267,7 +285,7 @@ if catalog_text:
 	shared["catalog"]=catalog_text
 print(json.dumps({"files":files,"redirects":redirects,"headers":headers,"hasCredentialInputs":has_cred,"shared":shared}))`;
 
-const NATIVE_PREVIEW_STREAM_PY = String.raw`import hashlib,json,os,stat,sys
+const NATIVE_PREVIEW_STREAM_PY = String.raw`import json,os,stat,sys
 cfg=json.loads(sys.stdin.read())
 uid=int(cfg["uid"])
 gid=int(cfg["gid"])
@@ -279,24 +297,28 @@ if os.geteuid()==0:
 	os.setuid(uid)
 top=os.fsencode(cfg["outputDir"])
 out=sys.stdout.buffer
+checked_dirs=set()
 for item in cfg["files"]:
 	rel=item["path"]
 	expected=item["sha256"]
+	expected_bytes=int(item["bytes"])
 	parts=rel.split("/")
 	if not parts or any(p in ("",".","..") or p.startswith(".") for p in parts):
 		sys.exit(4)
 	cur=top
 	for seg in parts[:-1]:
 		cur=os.path.join(cur,os.fsencode(seg))
-		if not stat.S_ISDIR(os.lstat(cur).st_mode):
-			sys.exit(4)
+		if cur not in checked_dirs:
+			if not stat.S_ISDIR(os.lstat(cur).st_mode):
+				sys.exit(4)
+			checked_dirs.add(cur)
 	full=os.path.join(cur,os.fsencode(parts[-1]))
 	fd=os.open(full,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
 	with os.fdopen(fd,"rb") as f:
 		if not stat.S_ISREG(os.fstat(fd).st_mode):
 			sys.exit(4)
-		data=f.read()
-	if hashlib.sha256(data).hexdigest()!=expected:
+		data=f.read(expected_bytes+1)
+	if len(data)!=expected_bytes:
 		sys.exit(4)
 	out.write(f"{expected} {len(data)}\n".encode("ascii"))
 	out.write(data)
@@ -350,6 +372,32 @@ function buildSharedAssetBlobs(
 		out.set(cleanPath, { path: cleanPath, bytes: content.byteLength, sha256, content });
 	}
 	return out;
+}
+
+function validateStreamedBlobFrames(
+	raw: Buffer,
+	expected: readonly { readonly path: string; readonly sha256: string; readonly bytes: number }[],
+): void {
+	let offset = 0;
+	for (const item of expected) {
+		const nl = raw.indexOf(0x0a, offset);
+		if (nl < 0) throw new Error("PREVIEW_BLOB_STREAM_TRUNCATED");
+		const header = raw.toString("ascii", offset, nl);
+		const space = header.indexOf(" ");
+		if (space < 0) throw new Error("PREVIEW_BLOB_STREAM_HEADER_INVALID");
+		const sha256 = header.slice(0, space);
+		const byteLen = Number.parseInt(header.slice(space + 1), 10);
+		if (
+			sha256 !== item.sha256 ||
+			!Number.isSafeInteger(byteLen) ||
+			byteLen !== item.bytes ||
+			nl + 1 + byteLen > raw.byteLength
+		) {
+			throw new Error("PREVIEW_BLOB_STREAM_MISMATCH");
+		}
+		offset = nl + 1 + byteLen;
+	}
+	if (offset !== raw.byteLength) throw new Error("PREVIEW_BLOB_STREAM_TRAILING_BYTES");
 }
 
 function parseStreamedBlobs(
@@ -547,6 +595,7 @@ export async function collectAndUploadPreviewBuildToEdge(
 	}
 
 	const concurrency = Math.max(1, Math.min(16, options.concurrency ?? DEFAULT_BLOB_UPLOAD_CONCURRENCY));
+	let batchEndpointSupported = true;
 	const uploadQueue = async (items: readonly { readonly sha256: string; readonly content: Uint8Array }[]) => {
 		let cursor = 0;
 		let failed = false;
@@ -571,6 +620,29 @@ export async function collectAndUploadPreviewBuildToEdge(
 		};
 		await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
 	};
+	const uploadBatchStreamOrFallback = async (
+		rawFramed: Buffer,
+		batch: readonly { readonly path: string; readonly sha256: string; readonly bytes: number }[],
+	) => {
+		if (
+			batchEndpointSupported &&
+			batch.length > 1 &&
+			batch.length <= MAX_BLOB_BATCH_FILES &&
+			rawFramed.byteLength <= MAX_BLOB_BATCH_BYTES + batch.length * 80
+		) {
+			const res = await putBlobBatchToEdge({
+				routerInternalUrl: options.routerInternalUrl,
+				controlToken: options.controlToken,
+				body: rawFramed,
+				fetchImpl: options.fetchImpl,
+				signal: options.signal,
+			});
+			if (res.supported) return;
+			batchEndpointSupported = false;
+		}
+		const blobs = parseStreamedBlobs(rawFramed, batch);
+		await uploadQueue([...blobs.entries()].map(([sha256, content]) => ({ sha256, content })));
+	};
 
 	const missingShared: { sha256: string; content: Uint8Array }[] = [];
 	const missingBuilt: { path: string; sha256: string; bytes: number }[] = [];
@@ -586,12 +658,41 @@ export async function collectAndUploadPreviewBuildToEdge(
 		}
 	}
 
+	type SettledUpload = Promise<{ readonly ok: true } | { readonly ok: false; readonly error: unknown }>;
+	const settleUpload = (task: Promise<void>): SettledUpload =>
+		task.then(
+			() => ({ ok: true as const }),
+			(error: unknown) => ({ ok: false as const, error }),
+		);
+	let inFlightUpload: SettledUpload | null = null;
+	const awaitInFlightUpload = async () => {
+		if (!inFlightUpload) return;
+		const settled = await inFlightUpload;
+		inFlightUpload = null;
+		if (!settled.ok) throw settled.error;
+	};
 	try {
 		if (missingShared.length > 0) {
-			await uploadQueue(missingShared);
+			const sharedBody = encodeBlobBatchFrames(missingShared);
+			inFlightUpload = settleUpload(
+				(async () => {
+					if (batchEndpointSupported && missingShared.length > 1 && missingShared.length <= MAX_BLOB_BATCH_FILES) {
+						const res = await putBlobBatchToEdge({
+							routerInternalUrl: options.routerInternalUrl,
+							controlToken: options.controlToken,
+							body: sharedBody,
+							fetchImpl: options.fetchImpl,
+							signal: options.signal,
+						});
+						if (res.supported) return;
+						batchEndpointSupported = false;
+					}
+					await uploadQueue(missingShared);
+				})(),
+			);
 		}
 
-		// WHY: Chunk VM->host blob reads to ~32 MiB batches so large initial sites upload in parallel without buffering 512 MiB in host RAM.
+		// WHY: Chunk VM->host blob reads to ~32 MiB batches and pipeline stream N+1 with edge upload N without buffering 512 MiB in host RAM.
 		let batchStart = 0;
 		while (batchStart < missingBuilt.length) {
 			options.signal.throwIfAborted();
@@ -623,7 +724,7 @@ export async function collectAndUploadPreviewBuildToEdge(
 							uid: options.uid,
 							gid: options.gid,
 							outputDir: options.outputDir,
-							files: batch.map(({ path, sha256 }) => ({ path, sha256 })),
+							files: batch.map(({ path, sha256, bytes }) => ({ path, sha256, bytes })),
 						}),
 						"utf8",
 					),
@@ -633,6 +734,10 @@ export async function collectAndUploadPreviewBuildToEdge(
 				options.signal,
 			);
 			if (streamRes.exitCode !== 0) {
+				if (inFlightUpload) {
+					await inFlightUpload;
+					inFlightUpload = null;
+				}
 				return {
 					outcome: "failed",
 					errorDetail: previewBuildDetail(
@@ -641,10 +746,16 @@ export async function collectAndUploadPreviewBuildToEdge(
 					),
 				};
 			}
-			const blobs = parseStreamedBlobs(streamRes.stdout, batch);
-			await uploadQueue([...blobs.entries()].map(([sha256, content]) => ({ sha256, content })));
+			validateStreamedBlobFrames(streamRes.stdout, batch);
+			await awaitInFlightUpload();
+			inFlightUpload = settleUpload(uploadBatchStreamOrFallback(streamRes.stdout, batch));
 		}
+		await awaitInFlightUpload();
 	} catch (error) {
+		if (inFlightUpload) {
+			await inFlightUpload;
+			inFlightUpload = null;
+		}
 		if (options.signal.aborted) throw error;
 		return {
 			outcome: "failed",

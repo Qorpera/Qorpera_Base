@@ -704,5 +704,213 @@ describe("studio surface folder_patch overlay engine", () => {
 			expect(composed.files["identity/tokens.json"]).toBe('{"accent":"#ff5500"}\n');
 			expect(composed.files["identity/promo.md"]).toBe("# Sunset Promo\n");
 		});
+
+		it("applies multiple disjoint ready reconciliations together without dropping smaller subsets", () => {
+			const cTok1 = randomUUID();
+			const cTok2 = randomUUID();
+			const cMark1 = randomUUID();
+			const cMark2 = randomUUID();
+			const cMark3 = randomUUID();
+			const base = {};
+			const ordered = [
+				{
+					changeId: cTok1,
+					ops: [
+						{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#111"}\n' },
+						{ op: "write_text" as const, path: "brief.md", content: "# Nordic Brief\n" },
+					],
+				},
+				{
+					changeId: cMark1,
+					ops: [
+						{ op: "write_text" as const, path: "layout.json", content: '{"v":1}\n' },
+						{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>1</svg>\n" },
+					],
+				},
+				{
+					changeId: cTok2,
+					ops: [{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#222"}\n' }],
+				},
+				{
+					changeId: cMark2,
+					ops: [{ op: "write_text" as const, path: "layout.json", content: '{"v":2}\n' }],
+				},
+				{
+					changeId: cMark3,
+					ops: [{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>3</svg>\n" }],
+				},
+			];
+			const reconciliations = [
+				{
+					id: randomUUID(),
+					status: "ready" as const,
+					selectedChangeIds: [cMark1, cMark2, cMark3],
+					conflictPaths: ["identity/layout.json", "identity/wordmark.svg"],
+					patchManifest: [
+						{ op: "write_text" as const, path: "layout.json", content: '{"v":2,"merged":true}\n' },
+						{ op: "write_text" as const, path: "wordmark.svg", content: "<svg>merged</svg>\n" },
+					],
+					errorDetail: null,
+				},
+				{
+					id: randomUUID(),
+					status: "ready" as const,
+					selectedChangeIds: [cTok1, cTok2],
+					conflictPaths: ["identity/tokens.json"],
+					patchManifest: [
+						{ op: "write_text" as const, path: "tokens.json", content: '{"accent":"#222","merged":true}\n' },
+					],
+					errorDetail: null,
+				},
+			];
+			const composed = composeStudioPreview(base, ordered, "identity", {}, { reconciliations });
+			expect(composed.status).toBe("ready");
+			expect(composed.files["identity/brief.md"]).toBe("# Nordic Brief\n");
+			expect(composed.files["identity/tokens.json"]).toBe('{"accent":"#222","merged":true}\n');
+			expect(composed.files["identity/layout.json"]).toBe('{"v":2,"merged":true}\n');
+			expect(composed.files["identity/wordmark.svg"]).toBe("<svg>merged</svg>\n");
+
+			const cLayoutOnly = randomUUID();
+			const cMulti = randomUUID();
+			const cLayout2 = randomUUID();
+			const cWordmark = randomUUID();
+			const cTokA = randomUUID();
+			const cTokB = randomUUID();
+			const writeOp = (path: string, content: string) => ({ op: "write_text" as const, path, content });
+			const sharedIdDisjointPaths = composeStudioPreview(
+				{},
+				[
+					{ changeId: cLayoutOnly, ops: [writeOp("layout.json", '{"v":1}\n')] },
+					{
+						changeId: cMulti,
+						ops: [
+							writeOp("layout.json", '{"v":2}\n'),
+							writeOp("wordmark.svg", "<svg>a</svg>\n"),
+							writeOp("wordmark-dark.svg", "<svg>a-dark</svg>\n"),
+							writeOp("notes.md", "# Kept\n"),
+						],
+					},
+					{ changeId: cTokA, ops: [writeOp("tokens.json", '{"accent":"#111"}\n')] },
+					{ changeId: cLayout2, ops: [writeOp("layout.json", '{"v":3}\n')] },
+					{ changeId: cTokB, ops: [writeOp("tokens.json", '{"accent":"#222"}\n')] },
+					{
+						changeId: cWordmark,
+						ops: [writeOp("wordmark.svg", "<svg>b</svg>\n"), writeOp("wordmark-dark.svg", "<svg>b-dark</svg>\n")],
+					},
+				],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cLayoutOnly, cMulti, cLayout2, cWordmark],
+							conflictPaths: ["identity/layout.json"],
+							patchManifest: [writeOp("layout.json", '{"v":4,"merged":true}\n')],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cMulti, cLayout2, cWordmark],
+							conflictPaths: ["identity/layout.json", "identity/wordmark.svg", "identity/wordmark-dark.svg"],
+							patchManifest: [
+								writeOp("layout.json", '{"v":999}\n'),
+								writeOp("wordmark.svg", "<svg>stale</svg>\n"),
+								writeOp("wordmark-dark.svg", "<svg>stale-dark</svg>\n"),
+							],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cMulti, cWordmark],
+							conflictPaths: ["identity/wordmark.svg", "identity/wordmark-dark.svg"],
+							patchManifest: [
+								writeOp("wordmark.svg", "<svg>reconciled</svg>\n"),
+								writeOp("wordmark-dark.svg", "<svg>reconciled-dark</svg>\n"),
+							],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cTokA, cTokB],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: [writeOp("tokens.json", '{"accent":"#222","merged":true}\n')],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cTokA, cTokB],
+							conflictPaths: ["identity/unrelated.md"],
+							patchManifest: [writeOp("unrelated.md", "# Stale Empty\n")],
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cMulti, cTokA],
+							conflictPaths: ["identity/unrelated.md"],
+							patchManifest: [writeOp("unrelated.md", "# Stale Untouched\n")],
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(sharedIdDisjointPaths.status).toBe("ready");
+			expect(sharedIdDisjointPaths.files["identity/layout.json"]).toBe('{"v":4,"merged":true}\n');
+			expect(sharedIdDisjointPaths.files["identity/wordmark.svg"]).toBe("<svg>reconciled</svg>\n");
+			expect(sharedIdDisjointPaths.files["identity/wordmark-dark.svg"]).toBe("<svg>reconciled-dark</svg>\n");
+			expect(sharedIdDisjointPaths.files["identity/tokens.json"]).toBe('{"accent":"#222","merged":true}\n');
+			expect(sharedIdDisjointPaths.files["identity/notes.md"]).toBe("# Kept\n");
+			expect(sharedIdDisjointPaths.files["identity/unrelated.md"]).toBeUndefined();
+
+			const cPath1 = randomUUID();
+			const cPath2 = randomUUID();
+			const cPath3 = randomUUID();
+			const cPath4 = randomUUID();
+			const cPath5 = randomUUID();
+			const tokOp = (content: string) => [{ op: "write_text" as const, path: "tokens.json", content }];
+			const disjointIdSharedPath = composeStudioPreview(
+				{ "identity/tokens.json": '{"a":0,"b":0}\n' },
+				[
+					{ changeId: cPath1, ops: tokOp('{"a":1,"b":0}\n') },
+					{ changeId: cPath2, ops: tokOp('{"a":2,"b":0}\n') },
+					{ changeId: cPath3, ops: tokOp('{"a":3,"b":0}\n') },
+					{ changeId: cPath4, ops: tokOp('{"a":4,"b":1}\n') },
+					{ changeId: cPath5, ops: tokOp('{"a":5,"b":2}\n') },
+				],
+				"identity",
+				{},
+				{
+					reconciliations: [
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cPath1, cPath2, cPath3],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: tokOp('{"a":3,"b":0}\n'),
+							errorDetail: null,
+						},
+						{
+							id: randomUUID(),
+							status: "ready" as const,
+							selectedChangeIds: [cPath4, cPath5],
+							conflictPaths: ["identity/tokens.json"],
+							patchManifest: tokOp('{"a":0,"b":2}\n'),
+							errorDetail: null,
+						},
+					],
+				},
+			);
+			expect(disjointIdSharedPath.status).toBe("conflicted");
+			if (disjointIdSharedPath.status === "conflicted") {
+				expect(disjointIdSharedPath.conflictReport.paths).toEqual(["identity/tokens.json"]);
+				expect(disjointIdSharedPath.conflictReport.changeIds).toEqual([cPath1, cPath2, cPath3, cPath4]);
+			}
+		});
 	});
 });

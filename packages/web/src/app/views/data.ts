@@ -1125,19 +1125,6 @@ class DataListView {
 					)
 				: null,
 		);
-		const strip = this.#top.querySelector<HTMLElement>(".data-tabs");
-		if (!strip) return;
-		const cut = () => {
-			strip.classList.toggle("is-cut", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1);
-			strip.classList.toggle("is-cut-start", strip.scrollLeft > 1);
-		};
-		strip.addEventListener("scroll", cut, { passive: true });
-		requestAnimationFrame(() => {
-			strip
-				.querySelector<HTMLElement>(".data-tab[aria-selected='true']")
-				?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-			cut();
-		});
 	}
 
 	#listedTitle(database: string, table: string, key: Readonly<Record<string, unknown>>): unknown {

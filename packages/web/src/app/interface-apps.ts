@@ -53,7 +53,13 @@ import type { WebMemberFolder } from "../cloud/company-folder-writes.ts";
 import type { AppAnswer, AppCall, FramedPage } from "../ui/app-frame.ts";
 import { folderLinkPath } from "../ui/folder-links.ts";
 import { webHref } from "../ui/markdown.ts";
-import { framePage, PAGE_FRAME_URL } from "../ui/page-frame.ts";
+import {
+	framePage,
+	type InertHtmlParse,
+	PAGE_FRAME_URL,
+	parseHtmlInert,
+	serializeHtmlInert,
+} from "../ui/page-frame.ts";
 import { hasBrowserCompositor, yieldToMain } from "../ui/time-slice.ts";
 import {
 	AppActionRefused,
@@ -603,6 +609,7 @@ function tokenOf(path: string, file: CloudMemberFolderFile): string {
 
 interface PageRead {
 	readonly page: Document;
+	readonly inert: Pick<InertHtmlParse, "tagAttr" | "styleAttr" | "endNoframesToken">;
 	readonly files: ReadonlyMap<string, Blob>;
 	readonly missing: readonly string[];
 	readonly said: readonly string[];
@@ -629,13 +636,14 @@ export async function assembleApp(
 	let scheme: AppScheme | undefined;
 	if (look) {
 		scheme = appScheme(page, look.scheme);
-		const base = page.createElement("style");
+		const base = page.createElement("noframes");
+		base.setAttribute(read.inert.tagAttr, "");
 		base.setAttribute("data-qorpera-base", "");
-		base.textContent = appBaseStyle(scheme, look.brand);
+		base.textContent = appBaseStyle(scheme, look.brand).replace(/<\/noframes/gi, read.inert.endNoframesToken);
 		page.head.prepend(base);
 	}
-	const written = `${page.doctype ? new XMLSerializer().serializeToString(page.doctype) : "<!doctype html>"}${page.documentElement.outerHTML}`;
-	const handed = framePage(written);
+	const written = serializeHtmlInert(page, read.inert);
+	const handed = framePage(page.doctype ? written : `<!doctype html>${written}`);
 	if (handed === null) return { ok: false, reason: "not_shown", message: "This app can't be shown live." };
 	return {
 		ok: true,
@@ -654,85 +662,14 @@ export async function assembleApp(
 	};
 }
 
-const RENAMED_STYLE = "data-qorpera-style";
-const LETTER = /[a-z]/i;
-const SPACE = /[\t\n\f\r ]/;
-const RAW_TEXT = new Set(["iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"]);
-
-// WHY: Chrome holds every parsed page to this app's style-src and logs each inline style it refuses; reading ahead keeps
-// no page, so it parses one whose styles cannot count as styles (noframes is raw text like style, in head and body).
-function withStylesRenamed(html: string): string {
-	const parts: string[] = [];
-	let copied = 0;
-	const rename = (from: number, to: string) => {
-		parts.push(html.slice(copied, from), to);
-		copied = from + "style".length;
-	};
-	let at = 0;
-	while (at < html.length) {
-		const open = html.indexOf("<", at);
-		if (open === -1) break;
-		const after = html[open + 1] ?? "";
-		const closing = after === "/" && LETTER.test(html[open + 2] ?? "");
-		if (html.startsWith("<!--", open)) at = past(html, "-->", open + 4);
-		else if (after === "!" || after === "?" || (after === "/" && !closing)) at = past(html, ">", open + 2);
-		else if (!closing && !LETTER.test(after)) at = open + 1;
-		else {
-			const tag = readTag(html, open + (closing ? 2 : 1));
-			if (tag.name === "style") rename(tag.nameAt, "noframes");
-			if (!closing) for (const attribute of tag.styles) rename(attribute, RENAMED_STYLE);
-			at = tag.end;
-			if (!closing && RAW_TEXT.has(tag.name)) {
-				const end = new RegExp(`</${tag.name}(?=[\\t\\n\\f\\r />])`, "gi");
-				end.lastIndex = at;
-				at = tag.name === "plaintext" ? html.length : (end.exec(html)?.index ?? html.length);
-			}
-		}
-	}
-	parts.push(html.slice(copied));
-	return parts.join("");
-}
-
-function past(html: string, end: string, from: number): number {
-	const found = html.indexOf(end, from);
-	return found === -1 ? html.length : found + end.length;
-}
-
-function readTag(
-	html: string,
-	nameAt: number,
-): { readonly name: string; readonly nameAt: number; readonly styles: number[]; readonly end: number } {
-	let at = nameAt;
-	while (at < html.length && !/[\t\n\f\r />]/.test(html[at]!)) at++;
-	const name = html.slice(nameAt, at).toLowerCase();
-	const styles: number[] = [];
-	while (at < html.length && html[at] !== ">") {
-		if (SPACE.test(html[at]!) || html[at] === "/") {
-			at++;
-			continue;
-		}
-		const start = at++;
-		while (at < html.length && !/[\t\n\f\r />=]/.test(html[at]!)) at++;
-		if (html.slice(start, at).toLowerCase() === "style") styles.push(start);
-		let equals = at;
-		while (equals < html.length && SPACE.test(html[equals]!)) equals++;
-		if (html[equals] !== "=") continue;
-		at = equals + 1;
-		while (at < html.length && SPACE.test(html[at]!)) at++;
-		const quote = html[at];
-		if (quote === '"' || quote === "'") at = past(html, quote, at + 1);
-		else while (at < html.length && !/[\t\n\f\r >]/.test(html[at]!)) at++;
-	}
-	return { name, nameAt, styles, end: Math.min(at + 1, html.length) };
-}
-
 async function readPage(files: AppFiles, entry: string): Promise<PageRead | null> {
 	const html = await files.text(entry);
 	if (html === null) return null;
-	// An inert parse: nothing here runs or loads, and it is only ever written out again for the frame.
-	const page = new DOMParser().parseFromString(files.warm ? withStylesRenamed(html) : html, "text/html");
-	const styleTag = files.warm ? "noframes" : "style";
-	const styleAttribute = files.warm ? RENAMED_STYLE : "style";
+	// WHY: Parse with <style>/style= neutralized so Chromium never logs style-src CSP errors on detached DOMParser docs.
+	const parsed = parseHtmlInert(html, files.warm ? { fixedStyleAttr: "data-qorpera-style" } : undefined);
+	const page = parsed.doc;
+	const styleSelector = `noframes[${parsed.tagAttr}]`;
+	const styleAttribute = parsed.styleAttr;
 	const base = dirOf(entry);
 	const handed = new Map<string, Blob>();
 	const missing = new Set<string>();
@@ -780,16 +717,19 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 						miss(path);
 						return () => link.remove();
 					}
-					const inlined = (await css(text, dirOf(path))).replace(/<\/style/gi, "<\\/style");
+					const inlined = (await css(text, dirOf(path)))
+						.replace(/<\/style/gi, "<\\/style")
+						.replace(/<\/noframes/gi, parsed.endNoframesToken);
 					return () => {
-						const style = page.createElement("style");
+						const style = page.createElement("noframes");
+						style.setAttribute(parsed.tagAttr, "");
 						style.textContent = inlined;
 						link.replaceWith(style);
 					};
 				}),
 		);
 	}
-	for (const style of [...page.querySelectorAll(styleTag)])
+	for (const style of [...page.querySelectorAll(styleSelector)])
 		changes.push(
 			css(style.textContent ?? "", base).then((text) => () => {
 				style.textContent = text;
@@ -798,7 +738,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 	for (const element of [...page.querySelectorAll(`[${styleAttribute}]`)]) {
 		const value = element.getAttribute(styleAttribute) ?? "";
 		if (value.includes("url("))
-			changes.push(css(value, base).then((text) => () => element.setAttribute("style", text)));
+			changes.push(css(value, base).then((text) => () => element.setAttribute(styleAttribute, text)));
 	}
 	for (const script of [...page.querySelectorAll<HTMLScriptElement>("script[src]:not([type='module' i])")]) {
 		const path = resolveAppPath(base, script.getAttribute("src") ?? "");
@@ -886,7 +826,7 @@ async function readPage(files: AppFiles, entry: string): Promise<PageRead | null
 				)
 			: null;
 	if (modules && !files.warm) for (const [token, blob] of modules.files) handed.set(token, blob);
-	return { page, files: handed, missing: [...missing], said: [...(modules?.said ?? [])], later };
+	return { page, inert: parsed, files: handed, missing: [...missing], said: [...(modules?.said ?? [])], later };
 }
 
 export class PageFiles {
@@ -1758,6 +1698,7 @@ export class CompanyData implements CompanyLiveSource {
 	#call: AbortController | undefined;
 	#timer: ReturnType<typeof setTimeout> | undefined;
 	#scheduled = false;
+	#paused = false;
 	#failures = 0;
 	#started = Number.NEGATIVE_INFINITY;
 
@@ -1778,10 +1719,22 @@ export class CompanyData implements CompanyLiveSource {
 			"visibilitychange",
 			() => {
 				if (document.visibilityState === "hidden") this.#halt();
-				else this.#again();
+				else if (!this.#paused) this.#again();
 			},
 			{ signal },
 		);
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		this.#halt();
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		if (document.visibilityState !== "hidden") this.#again();
 	}
 
 	/** The questions the held call carries now (each once, however many pages watch it). */
@@ -1927,7 +1880,13 @@ export class CompanyData implements CompanyLiveSource {
 	}
 
 	#run(): void {
-		if (this.#signal.aborted || document.visibilityState === "hidden" || this.#call || this.#timer !== undefined)
+		if (
+			this.#paused ||
+			this.#signal.aborted ||
+			document.visibilityState === "hidden" ||
+			this.#call ||
+			this.#timer !== undefined
+		)
 			return;
 		const held = [...this.#entries.values()].filter((entry) => entry.answer !== undefined);
 		if (held.length === 0) return;
@@ -2034,6 +1993,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 	readonly #entries = new Map<string, NumbersEntry>();
 	readonly #pages = new Map<AbortSignal, Map<number, NumbersWatcher>>();
 	#next = 0;
+	#paused = false;
 
 	constructor(client: CompanyNumbersClient, signal: AbortSignal, current: () => void = () => {}) {
 		this.#client = client;
@@ -2051,10 +2011,26 @@ export class CompanyNumbers implements CompanyLiveSource {
 		document.addEventListener(
 			"visibilitychange",
 			() => {
+				if (this.#paused) return;
 				for (const entry of this.#entries.values()) this.#schedule(entry);
 			},
 			{ signal },
 		);
+	}
+
+	pause(): void {
+		if (this.#paused) return;
+		this.#paused = true;
+		for (const entry of this.#entries.values()) {
+			clearTimeout(entry.timer);
+			entry.timer = undefined;
+		}
+	}
+
+	resume(): void {
+		if (!this.#paused || this.#signal.aborted) return;
+		this.#paused = false;
+		for (const entry of this.#entries.values()) this.#schedule(entry);
 	}
 
 	/** The questions watched now (each once, however many pages watch it). */
@@ -2173,6 +2149,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 		clearTimeout(entry.timer);
 		entry.timer = undefined;
 		if (
+			this.#paused ||
 			this.#signal.aborted ||
 			document.visibilityState === "hidden" ||
 			entry.answer === undefined ||
@@ -2190,7 +2167,7 @@ export class CompanyNumbers implements CompanyLiveSource {
 	}
 
 	async #ask(entry: NumbersEntry): Promise<void> {
-		if (this.#entries.get(entry.key) !== entry || document.visibilityState === "hidden") return;
+		if (this.#paused || this.#entries.get(entry.key) !== entry || document.visibilityState === "hidden") return;
 		entry.asking = true;
 		let fresh: CloudMemberDataAnswer | undefined;
 		try {

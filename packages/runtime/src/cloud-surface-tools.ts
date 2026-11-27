@@ -181,6 +181,13 @@ export interface StartSurfaceSessionToolRequest {
 	readonly variantLabels?: readonly string[] | null;
 }
 
+export interface SteerSurfaceSessionRequest {
+	readonly sessionId: string;
+	readonly message: string;
+	readonly changeId: string | null;
+	readonly originLabel?: string | null;
+}
+
 export interface StageSurfacePatchRequest {
 	readonly title: string;
 	readonly summary: string;
@@ -247,6 +254,10 @@ export interface CloudSurfaceToolsPort {
 		request: StartSurfaceSessionToolRequest,
 		context: CloudToolContext,
 	): Promise<{ readonly sessionId: string; readonly explorationId: string | null }>;
+	steerSurfaceSession?(
+		request: SteerSurfaceSessionRequest,
+		context: CloudToolContext,
+	): Promise<{ readonly sessionId: string; readonly state: string }>;
 	stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
 	stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
 	listSurfaceSenses?(companyId: string, signal?: AbortSignal): Promise<SurfaceCompanySenses>;
@@ -256,6 +267,7 @@ export interface CloudSurfaceToolsPort {
 export type SurfaceControlPlaneRpc =
 	| "qorpera_native_surface_propose"
 	| "qorpera_native_surface_start_session"
+	| "qorpera_native_surface_steer_session"
 	| "qorpera_native_surface_record_change"
 	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_renew_lease"
@@ -730,6 +742,25 @@ export function createControlPlaneSurfaceToolsPort(
 					row.explorationId === null || row.explorationId === undefined
 						? null
 						: parseUuid(row.explorationId, "startSurfaceSession.explorationId"),
+			};
+		},
+
+		async steerSurfaceSession(request, context) {
+			const response = await rpc(
+				"qorpera_native_surface_steer_session",
+				{
+					p_profile_id: context.companyId,
+					p_session_id: request.sessionId,
+					p_message: request.message,
+					p_origin_label: request.originLabel ?? options.defaultOriginLabel ?? "Co-Founder",
+					...(request.changeId ? { p_change_id: request.changeId } : {}),
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "steerSurfaceSession");
+			return {
+				sessionId: parseUuid(row.id ?? row.sessionId ?? request.sessionId, "steerSurfaceSession.sessionId"),
+				state: typeof row.state === "string" ? row.state : "queued",
 			};
 		},
 
@@ -1319,6 +1350,61 @@ export function createStartSurfaceSessionTool(
 	};
 }
 
+export function createSteerSurfaceSessionTool(port: {
+	steerSurfaceSession: NonNullable<CloudSurfaceToolsPort["steerSurfaceSession"]>;
+}): CloudNativeTool {
+	return {
+		name: "steer_surface_session",
+		source: "runtime",
+		description:
+			"Send steering direction or unblock a paused, conflicted, or failed Surface session and re-queue its next turn. Use when answering a Surface escalation directly or relaying the founder's decision.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["sessionId", "message"],
+			properties: {
+				sessionId: { type: "string" },
+				message: { type: "string", minLength: 1, maxLength: SURFACE_MAX_PROMPT_CHARS },
+				changeId: { type: "string" },
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(value, "steer_surface_session", ["sessionId", "message"], ["changeId"]);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			if (!isUuid(raw.sessionId)) throw new CloudToolArgumentRefusal("sessionId must be a valid UUID");
+			let message: string;
+			try {
+				message = parseBoundedText(raw.message, "message", SURFACE_MAX_PROMPT_CHARS).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal(`message must be 1..${SURFACE_MAX_PROMPT_CHARS} characters`);
+			}
+			if (!message) throw new CloudToolArgumentRefusal("message must not be blank");
+			let changeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				changeId = raw.changeId;
+			}
+			return { sessionId: raw.sessionId, message, changeId };
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as SteerSurfaceSessionRequest;
+			const result = await port.steerSurfaceSession(parsed, context);
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-session-steered/v1",
+					sessionId: result.sessionId,
+					state: result.state,
+				}),
+			};
+		},
+	};
+}
+
 export interface SurfaceLayoutStaging {
 	readonly folderRoot: string;
 	readonly waitingOps: readonly StudioPatchOp[] | null;
@@ -1570,11 +1656,18 @@ export async function checkStagedSurfaceLayout(
 	return "checked";
 }
 
+export interface SurfaceChangeMetadata {
+	readonly title: string;
+	readonly summary: string;
+	readonly optionGroupKey: string | null;
+}
+
 export interface SurfacePatchSessionTracker {
 	readonly openChanges: readonly SurfaceSessionOpenChange[];
 	readonly openById: ReadonlyMap<string, SurfaceSessionOpenChange>;
 	readonly currentOpsByChangeId: ReadonlyMap<string, readonly StudioPatchOp[]>;
 	readonly stagedEntries: readonly { readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }[];
+	getChangeMeta(changeId: string): SurfaceChangeMetadata | undefined;
 	resolveTargetChangeId(input: {
 		readonly explicitChangeId: string | null;
 		readonly createNew: boolean;
@@ -1586,6 +1679,8 @@ export interface SurfacePatchSessionTracker {
 		readonly ops: readonly StudioPatchOp[];
 		readonly replaceAll?: boolean;
 		readonly optionGroup?: string | null;
+		readonly title?: string;
+		readonly summary?: string;
 	}): void;
 }
 
@@ -1597,11 +1692,18 @@ export function createSurfacePatchSessionTracker(
 	const replyChangeId = options.replyChangeId?.trim() || null;
 	const isInternalReconciliation = options.isInternalReconciliation === true;
 	const updatedInTurn = new Set<string>();
+	const stagedInTurnIds = new Set<string>();
 	const currentOpsByChangeId = new Map<string, readonly StudioPatchOp[]>();
+	const changeMetaById = new Map<string, SurfaceChangeMetadata>();
 	for (const item of openChanges) {
 		if (item.patchManifest && item.patchManifest.length > 0) {
 			currentOpsByChangeId.set(item.changeId, item.patchManifest);
 		}
+		changeMetaById.set(item.changeId, {
+			title: item.title,
+			summary: item.summary,
+			optionGroupKey: item.optionGroupKey ?? null,
+		});
 	}
 	const stagedEntries: Array<{ readonly changeId: string | null; readonly ops: readonly StudioPatchOp[] }> = [];
 	return {
@@ -1609,7 +1711,24 @@ export function createSurfacePatchSessionTracker(
 		openById,
 		currentOpsByChangeId,
 		stagedEntries,
+		getChangeMeta(changeId) {
+			return changeMetaById.get(changeId);
+		},
 		resolveTargetChangeId(input) {
+			if (input.explicitChangeId && stagedInTurnIds.has(input.explicitChangeId)) {
+				if (input.createNew) {
+					throw new CloudToolArgumentRefusal(
+						"Pass either changeId to update an existing change in place or createNew: true to add a separate new change, not both.",
+					);
+				}
+				const existingMeta = changeMetaById.get(input.explicitChangeId);
+				if (input.optionGroup && existingMeta && existingMeta.optionGroupKey !== input.optionGroup) {
+					throw new CloudToolArgumentRefusal(
+						"Cannot change optionGroup when updating an existing change; omit changeId or pass createNew: true to stage an option in a different group.",
+					);
+				}
+				return input.explicitChangeId;
+			}
 			return resolveFollowUpTargetChangeId({
 				explicitChangeId: input.explicitChangeId,
 				createNew: input.createNew,
@@ -1621,21 +1740,34 @@ export function createSurfacePatchSessionTracker(
 			});
 		},
 		recordStaged(input) {
+			const effectiveId = input.targetChangeId ?? input.resultChangeId;
 			const targetOpen = input.targetChangeId ? openById.get(input.targetChangeId) : undefined;
+			const prevMeta = changeMetaById.get(effectiveId);
+			stagedInTurnIds.add(input.resultChangeId);
 			if (input.targetChangeId) {
 				updatedInTurn.add(input.targetChangeId);
-				const prevOps = input.replaceAll ? [] : (currentOpsByChangeId.get(input.targetChangeId) ?? []);
-				const nextOps = input.replaceAll
-					? input.ops
-					: mergeFolderPatchOps(options.folderRoot, prevOps, input.ops, targetOpen?.baseFiles ?? null);
-				currentOpsByChangeId.set(input.targetChangeId, nextOps);
-				if (input.replaceAll) {
-					for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
-						if (stagedEntries[i]?.changeId === input.targetChangeId) stagedEntries.splice(i, 1);
-					}
+			}
+			const prevOps = input.replaceAll ? [] : (currentOpsByChangeId.get(effectiveId) ?? []);
+			const nextOps = input.replaceAll
+				? input.ops
+				: mergeFolderPatchOps(options.folderRoot, prevOps, input.ops, targetOpen?.baseFiles ?? null);
+			currentOpsByChangeId.set(effectiveId, nextOps);
+			if (input.replaceAll && input.targetChangeId) {
+				for (let i = stagedEntries.length - 1; i >= 0; i -= 1) {
+					if (stagedEntries[i]?.changeId === input.targetChangeId) stagedEntries.splice(i, 1);
 				}
 			}
-			if (!input.optionGroup && !targetOpen?.optionGroupKey) {
+			const resolvedGroup = input.optionGroup ?? prevMeta?.optionGroupKey ?? targetOpen?.optionGroupKey ?? null;
+			const nextTitle = input.title ?? prevMeta?.title ?? targetOpen?.title ?? "";
+			const nextSummary = input.summary ?? prevMeta?.summary ?? targetOpen?.summary ?? "";
+			if (nextTitle || prevMeta) {
+				changeMetaById.set(input.resultChangeId, {
+					title: nextTitle,
+					summary: nextSummary,
+					optionGroupKey: resolvedGroup,
+				});
+			}
+			if (!resolvedGroup) {
 				stagedEntries.push({ changeId: input.resultChangeId, ops: input.ops });
 			}
 		},
@@ -1854,7 +1986,10 @@ export function createStageSurfacePatchTool(
 				} else {
 					waitingOps = null;
 				}
-			} else if (targetId && openById.get(targetId)?.optionGroupKey) {
+			} else if (
+				targetId &&
+				(openById.get(targetId)?.optionGroupKey || tracker.getChangeMeta(targetId)?.optionGroupKey)
+			) {
 				const targetPriorOps = currentOpsByChangeId.get(targetId);
 				if (targetPriorOps === undefined || layout.waitingOps === null) {
 					waitingOps = null;
@@ -1890,6 +2025,8 @@ export function createStageSurfacePatchTool(
 				ops: parsed.ops,
 				replaceAll: parsed.replaceAll === true,
 				optionGroup: parsed.optionGroup ?? null,
+				title: parsed.title,
+				summary: parsed.summary,
 			});
 			return {
 				kind: "text",

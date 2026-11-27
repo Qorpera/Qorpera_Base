@@ -86,7 +86,14 @@ import { type CompanyReleaseReads, companyReleaseReads } from "./release-reads.t
 import { currentRoute, navigate, type Route, routeHash } from "./router.ts";
 import { createConversationStarter } from "./start-conversation.ts";
 import { debounce } from "./state.ts";
-import { attachSurfaces, isLocalSurfaceId, SurfacesStore, surfacesDisabledOf, surfacesOf } from "./surfaces-store.ts";
+import {
+	attachSurfaces,
+	isLocalSurfaceId,
+	SurfacesStore,
+	surfacesDisabledOf,
+	surfacesOf,
+	surfacesStoreOf,
+} from "./surfaces-store.ts";
 import { showWaitingInTitle } from "./tab-title.ts";
 import { noteReceiver, type TellAccounts, tellAgent } from "./tell-agent.ts";
 import { createGroupDeleter, createGroupUpdater } from "./update-group.ts";
@@ -157,10 +164,16 @@ function lazyModule<T>(load: () => Promise<T>): {
 		},
 		load: () => {
 			if (state.value) return Promise.resolve(state.value);
-			state.promise ??= load().then((mod) => {
-				state.value = mod;
-				return mod;
-			});
+			state.promise ??= load().then(
+				(mod) => {
+					state.value = mod;
+					return mod;
+				},
+				(error: unknown) => {
+					state.promise = undefined;
+					throw error;
+				},
+			);
 			return state.promise;
 		},
 	};
@@ -529,9 +542,11 @@ export function mountApplication(
 				companyRemovedHandler(),
 				tab,
 				openFriends,
+				executionNotices,
 			);
 			frame.inert = true;
 			root.append(settings.el);
+			notices?.reveal();
 			settings.focus();
 		};
 		const cached = settingsViewModule.get();
@@ -609,10 +624,12 @@ export function mountApplication(
 			const tab = surfaceTarget.dataset.surfaceTab;
 			if (tab) surfacesOf(company)?.requestStudioTab(slug, tab);
 			if (settings) closeSettings(false);
-			if (surfaceView?.company === company && surfaceView.view.slug === slug) {
+			if (surfaceView?.company === company && surfaceView.view.slug === slug && main.contains(surfaceView.view.el)) {
 				surfaceView.view.update();
 			} else {
+				const before = location.hash;
 				navigate({ name: "company", profileId: company.profile.profileId, section: "surface", id: slug });
+				if (location.hash === before) render();
 			}
 			return;
 		}
@@ -853,6 +870,7 @@ export function mountApplication(
 	let companyActiveAbort: AbortController | undefined;
 	let company: CompanyController | undefined;
 	let notices: ExecutionNotices | undefined;
+	let shownAccountAlerts = 0;
 	/** Which of the open company's two pages are on (Interfaces C6a), read with its folder. */
 	let interfacePages: CompanyInterfacePages | undefined;
 	let companyDatabases: CompanyDatabases | undefined;
@@ -1007,7 +1025,7 @@ export function mountApplication(
 	 * conversation, and that route change would close Settings opened before it. */
 	let settingsAfterHome: SettingsTab | undefined;
 
-	const render = debounce(() => void draw(), 10);
+	const render = debounce(() => void draw().catch((error) => console.error("render failed:", error)), 10);
 
 	function observeAccount(): void {
 		const currentHub = hub;
@@ -1096,6 +1114,7 @@ export function mountApplication(
 			openFriends,
 			invites: api,
 			invitations: hub.store.get().invitations.length,
+			accountAlerts: notices?.count ?? 0,
 			prefetchCompanyWordmarks: (list) => {
 				const userId = auth.userId;
 				if (!userId || disposed) return;
@@ -1160,8 +1179,10 @@ export function mountApplication(
 					view: new mod.FoundingView(founding.controller, founding.view.drafts()),
 				};
 		}
-		notices?.dispose();
+		const oldNotices = notices;
 		notices = undefined;
+		shownAccountAlerts = 0;
+		oldNotices?.dispose();
 		executionNotices.replaceChildren();
 		conversation?.dispose();
 		conversation = undefined;
@@ -1190,8 +1211,10 @@ export function mountApplication(
 
 	function disposeCompanyViews(): void {
 		interfaceViewModule.get()?.disposeInterface(main);
-		notices?.dispose();
+		const oldNotices = notices;
 		notices = undefined;
+		shownAccountAlerts = 0;
+		oldNotices?.dispose();
 		interfacePages?.dispose();
 		interfacePages = undefined;
 		companyDatabases?.dispose();
@@ -1266,8 +1289,10 @@ export function mountApplication(
 			profiles.some((item) => item.profileId === active.profile.profileId);
 		if (cacheable) {
 			active.suspend();
-			surfacesOf(active)?.suspend();
+			surfacesStoreOf(active)?.suspend();
 			appQuestions.get(active)?.pause();
+			appData.get(active)?.pause();
+			appNumbers.get(active)?.pause();
 			warmCompanies.delete(active.profile.profileId);
 			warmCompanies.set(active.profile.profileId, active);
 			while (warmCompanies.size > WARM_COMPANIES_MAX) {
@@ -1373,8 +1398,10 @@ export function mountApplication(
 			computerPanels = createComputerPanels(warm, warm.profile, warm.userId);
 			unsubscribeCompany = warm.store.subscribe(() => render());
 			warm.resume();
-			surfacesOf(warm)?.resume();
+			surfacesStoreOf(warm)?.resume();
 			appQuestions.get(warm)?.resume();
+			appData.get(warm)?.resume();
+			appNumbers.get(warm)?.resume();
 			logos.resumeIdentity(profileId);
 			return warm;
 		}
@@ -1683,6 +1710,7 @@ export function mountApplication(
 					syncLogo();
 					syncCompanyLogo();
 				});
+				controller.signal.addEventListener("abort", syncLogo, { once: true });
 				// On a cloud from before each member's own sidebar (20260930727000), the company's sections are
 				// QorperaOS/agents/sections.md and the rail's moves are the member's edits of it.
 				controller.useSectionsFile((signal) => {
@@ -2585,16 +2613,21 @@ export function mountApplication(
 							canManage: () => controller.store.get().team?.capabilities.authorize === true,
 						}
 					: undefined;
-			notices = new ExecutionNotices(
+			const createdNotices = new ExecutionNotices(
 				client,
 				controller.signal,
-				() => main.focus({ preventScroll: true }),
+				() => (settings ? settings.focus() : main.focus({ preventScroll: true })),
 				plan,
 				(staffAgentId) => controller.store.get().staff.find((agent) => agent.id === staffAgentId)?.displayName,
-				api,
 				(userId) => controller.store.get().team?.members.find((member) => member.userId === userId)?.displayName,
+				(count) => {
+					if (disposed || notices !== createdNotices || count === shownAccountAlerts) return;
+					shownAccountAlerts = count;
+					render();
+				},
 			);
-			executionNotices.append(notices.el);
+			notices = createdNotices;
+			executionNotices.append(createdNotices.el);
 		}
 		// The company's pages are the two the web ships, shown once they are on (Interfaces C6a). What they read comes from
 		// its folder, read with the member's own access as the Company File page reads it, and followed while the
@@ -2730,7 +2763,10 @@ export function mountApplication(
 				},
 			);
 			agentNotes = notes;
-			window.addEventListener("focus", () => notes.changed(), { signal: files.signal });
+			const notesFocusSignal = companyActiveAbort
+				? AbortSignal.any([files.signal, companyActiveAbort.signal])
+				: files.signal;
+			window.addEventListener("focus", () => notes.changed(), { signal: notesFocusSignal });
 			apps.onChange(() => notes.changed());
 			apps.open();
 			notes.open();
@@ -3455,7 +3491,6 @@ export function mountApplication(
 							...agentActions,
 							...workspaceActions,
 							computerPanels,
-							notificationHost: executionNotices,
 						},
 						() => setNavigationOpen(!navigationOpen),
 					);
@@ -3465,6 +3500,7 @@ export function mountApplication(
 					// Not while Settings covers the frame (a redraw behind it after a language change).
 					if (!frame.inert) conversation.focus();
 				} else {
+					if (!main.contains(conversation.el)) replace(main, conversation.el);
 					conversation.update();
 					syncAppCardObserver(conversation.el);
 				}
@@ -3720,6 +3756,9 @@ export function mountApplication(
 				if (!surfaces) {
 					if (surfacesDisabledOf(controller)) {
 						navigate({ name: "company", profileId: controller.profile.profileId, section: "home" }, true);
+					} else if (surfacesStoreOf(controller)?.state.source === "loading") {
+						if (!main.querySelector(":scope > .page > .skeleton-page"))
+							replace(main, h("section", { class: "page" }, pageSkeleton(t("Opening company"))));
 					}
 					return;
 				}

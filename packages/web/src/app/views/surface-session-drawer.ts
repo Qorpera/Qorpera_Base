@@ -299,6 +299,15 @@ function messageRow(
 			{ class: "surface-message is-session", title: fmtTime(message.createdAt) },
 			cachedMarkdown(message.text),
 		);
+	if (message.authorKind === "agent") {
+		const label = message.authorLabel?.trim() || "Co-Founder";
+		return h(
+			"div",
+			{ class: "surface-message-group is-agent" },
+			h("span", { class: "surface-message-author" }, label),
+			h("p", { class: "surface-message is-member is-agent", title: fmtTime(message.createdAt) }, message.text),
+		);
+	}
 	return memberBubble(message.text, "", fmtTime(message.createdAt), author, images, to);
 }
 
@@ -318,7 +327,7 @@ function isActionSession(session: SurfaceSession, surface: SurfaceSummary): bool
 }
 
 function agentStatusLine(session: SurfaceSession): string | null {
-	if (session.state === "needs_input") return t("Needs you");
+	if (session.state === "needs_input") return t("Paused");
 	if (session.state === "failed") return t("Failed");
 	if (isRunningSession(session)) return t("Working");
 	return null;
@@ -1111,15 +1120,12 @@ export class SurfaceSessionDrawer {
 		const picked = variants.find((item) => item.id === pickedId) ?? variants[0];
 		const busy = Boolean(state.busy[`exploration:${exploration.id}`]);
 		const running = variants.some(isRunningSession);
-		const attention = variants.some((v) => v.state === "needs_input");
 		const ownedNotes = reportsOwnedBy(state, surface.id, { kind: "exploration", id: exploration.id });
 		const noteNodes = this.#noteButtons(ownedNotes);
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", "is-exploration", attention && "is-attention"]
-					.filter(Boolean)
-					.join(" "),
+				class: "surface-overview-card is-agent is-exploration",
 				"data-act": "focus-exploration",
 				"data-exploration": exploration.id,
 			},
@@ -1216,7 +1222,6 @@ export class SurfaceSessionDrawer {
 		const openChanges = allOpen.filter((change) => !this.#isApplying(change));
 		const actionSession = isActionSession(session, surface);
 		const failed = session.state === "failed";
-		const attention = session.state === "needs_input" || failed;
 		if (allOpen.length > 0 && openChanges.length === 0 && !running && !failed && !session.question) return null;
 		const deliverablesByChange = new Map<string, readonly SurfaceChangeDeliverable[]>();
 		const claimedPaths = new Set<string>();
@@ -1430,8 +1435,6 @@ export class SurfaceSessionDrawer {
 				const shown = store.isChangeShown(change.id);
 				const armed = this.#armedApprove === `approve:${session.id}:${change.id}`;
 				const deliverables = deliverablesByChange.get(change.id) ?? [];
-				const inlineDeliverable =
-					deliverables.length === 1 ? this.#overviewDeliverablePill(look, change, deliverables[0]!, false) : null;
 				const busyChange = Boolean(state.busy[`change:${change.id}`]);
 				grouped.push(
 					h(
@@ -1450,7 +1453,6 @@ export class SurfaceSessionDrawer {
 								"data-change": change.id,
 							}),
 							h("span", { class: "surface-overview-change-title" }, change.title),
-							inlineDeliverable,
 							canDiscard
 								? overviewDiscardButton(
 										session.id,
@@ -1475,11 +1477,13 @@ export class SurfaceSessionDrawer {
 									)
 								: null,
 						),
-						deliverables.length > 1
+						deliverables.length > 0
 							? h(
 									"div",
 									{ class: "surface-overview-change-deliverables" },
-									...deliverables.map((item) => this.#overviewDeliverablePill(look, change, item, true)),
+									...deliverables.map((item) =>
+										this.#overviewDeliverablePill(look, change, item, deliverables.length > 1),
+									),
 								)
 							: null,
 					),
@@ -1491,9 +1495,7 @@ export class SurfaceSessionDrawer {
 		return h(
 			"section",
 			{
-				class: ["surface-overview-card", "is-agent", attention && "is-attention", failed && "is-failed"]
-					.filter(Boolean)
-					.join(" "),
+				class: ["surface-overview-card", "is-agent", failed && "is-failed"].filter(Boolean).join(" "),
 				"data-act": "focus-session",
 				"data-session": session.id,
 			},
@@ -2246,6 +2248,7 @@ export class SurfaceSessionDrawer {
 				const id = `msg:${session.id}:${message.id}`;
 				const contentKey = JSON.stringify([
 					message.authorKind,
+					message.authorLabel ?? "",
 					message.text,
 					message.createdAt,
 					message.changeId ?? "",

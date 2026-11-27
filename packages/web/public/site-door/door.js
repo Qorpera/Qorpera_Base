@@ -8,6 +8,7 @@
 	const READY = "qorpera-site-door-ready";
 	const PASS = "qorpera-site-door";
 	const SHOWN = "qorpera-site-door-shown";
+	const PREVIEW_READY = "qorpera-preview-ready";
 	const INSPECTOR_MODE = "qorpera-inspector-mode";
 	const INSPECTOR_PICK = "qorpera-inspector-pick";
 	const IDENTITY_TOKENS_CSS = "qorpera:identity-tokens-css";
@@ -39,6 +40,10 @@
 						data.vars && typeof data.vars === "object" && !Array.isArray(data.vars) ? data.vars : {};
 					frame.contentWindow.postMessage({ type: IDENTITY_TOKENS_CSS, css: data.css, vars }, targetOrigin);
 				}
+				return;
+			}
+			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === PREVIEW_READY) {
+				app.postMessage({ type: SHOWN }, location.origin);
 				return;
 			}
 			if (event.source === frame.contentWindow && event.origin === targetOrigin && data.type === INSPECTOR_PICK) {

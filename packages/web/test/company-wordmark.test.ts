@@ -980,7 +980,7 @@ describe("sidepanel company selector wordmark", () => {
 		store.refreshPendingCloudFiles();
 		await settle();
 		expect(loadCloudFiles).toHaveBeenCalledTimes(1);
-		expect(getSurfaceWorkspace).toHaveBeenCalledWith(identitySurface.id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(identitySurface.id, expect.any(AbortSignal));
 		expect(img.hidden).toBe(false);
 		expect(img.getAttribute("src")).toBe(svgUrl(DARK_SVG));
 

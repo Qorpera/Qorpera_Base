@@ -296,4 +296,71 @@ describe("Studio chart block", () => {
 
 		controller.abort();
 	});
+
+	it("shows every heatmap x-axis label and builds DOM tooltips without inline style attributes", async () => {
+		const controller = new AbortController();
+		const surface = strategySurface();
+		const store = storeWith(fakeClient());
+		const view = new SurfaceLayoutView({
+			store,
+			surface,
+			signal: controller.signal,
+			baseFiles: () => ({}),
+			timeSlice: false,
+		});
+		const xCategories = ["N1", "N2", "N3", "N4", "N5", "N6", "N7", "N8", "N9", "N10"];
+		const yCategories = ["CPU", "RAM"];
+		const cells: [number, number, number][] = xCategories.map((_, idx) => [idx, 0, idx * 10]);
+		const files: Record<string, string> = {
+			[`${ROOT}/layout.json`]: JSON.stringify({
+				schema: SURFACE_LAYOUT_SCHEMA,
+				tabs: [
+					{
+						id: "overview",
+						title: "Overview",
+						blocks: [{ type: "chart", id: "resilience", from: "charts/resilience.json" }],
+					},
+				],
+			}),
+			[`${ROOT}/charts/resilience.json`]: JSON.stringify({
+				kind: "heatmap",
+				title: "Resilience",
+				xCategories,
+				yCategories,
+				cells,
+			}),
+		};
+		const plan = view.plan({
+			surface,
+			files,
+			baseFiles: files,
+			binaries: {},
+			baseBinaries: {},
+			company: undefined,
+			briefSummary: "",
+			starter: "strategy",
+			tab: "overview",
+			legacyModel: undefined,
+			htmlPages: HTML_PAGES,
+		});
+		for (const task of plan.tasks) document.body.append(task.build());
+		const host = document.querySelector<HTMLElement>(".studio-chart-host")!;
+		await vi.waitFor(() => expect(Boolean(getInstanceByDom(host)?.getOption())).toBe(true), {
+			timeout: 5_000,
+			interval: 10,
+		});
+		const opt = getInstanceByDom(host)!.getOption() as {
+			xAxis: { axisLabel?: { interval?: number; rotate?: number; hideOverlap?: boolean } }[];
+			tooltip: { formatter?: (params: unknown) => HTMLElement | string }[];
+		};
+		expect(opt.xAxis[0]?.axisLabel?.interval).toBe(0);
+		expect(opt.xAxis[0]?.axisLabel?.rotate).toBeGreaterThan(0);
+		expect(opt.xAxis[0]?.axisLabel?.hideOverlap).toBeUndefined();
+		const tip = opt.tooltip[0]?.formatter?.({ value: [2, 0, 20] });
+		expect(tip).toBeInstanceOf(HTMLElement);
+		expect((tip as HTMLElement).textContent).toContain("CPU × N3");
+		expect((tip as HTMLElement).innerHTML).not.toContain('style="');
+		controller.abort();
+		store.dispose();
+	});
 });

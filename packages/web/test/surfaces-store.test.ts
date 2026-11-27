@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readSurfaceFolderFiles } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesError } from "@qorpera/cloud-client/surfaces";
-import { STUDIO_BINARY_MAX_BYTES, type StudioBinaryRef, type SurfaceWorkspace } from "@qorpera/contracts";
+import {
+	STUDIO_BINARY_MAX_BYTES,
+	type StudioBinaryRef,
+	type SurfaceSummary,
+	type SurfaceWorkspace,
+} from "@qorpera/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseRoute, routeHash, surfaceHash } from "../src/app/router.ts";
 import { Store } from "../src/app/state.ts";
@@ -1120,7 +1125,7 @@ describe("SurfacesStore", () => {
 		});
 
 		await store.load();
-		expect(bootstrapCompanySurfaces).toHaveBeenCalledWith(COMPANY);
+		expect(bootstrapCompanySurfaces).toHaveBeenCalledWith(COMPANY, expect.any(AbortSignal));
 		expect(store.state.source).toBe("cloud");
 		expect(store.lookOf(identity)).toEqual({ kind: "identity", accent: "#d76f45" });
 
@@ -2337,8 +2342,8 @@ describe("SurfacesStore", () => {
 		getSurfaceWorkspace.mockClear();
 		store.onRealtimeHint("surfaces");
 		vi.advanceTimersByTime(200);
-		expect(getSurfaceWorkspace).toHaveBeenCalledWith(SURFACE);
-		expect(getSurfaceWorkspace).not.toHaveBeenCalledWith(secondSurface.id);
+		expect(getSurfaceWorkspace).toHaveBeenCalledWith(SURFACE, expect.any(AbortSignal));
+		expect(getSurfaceWorkspace).not.toHaveBeenCalledWith(secondSurface.id, expect.anything());
 
 		vi.advanceTimersByTime(SURFACE_UNDO_MS);
 		await store.approveAll(SESSION);
@@ -3865,6 +3870,161 @@ describe("SurfacesStore", () => {
 			});
 			expect(store.surfaceUpdatePhase(studioSurface.id)).toBeNull();
 		});
+		store.dispose();
+	});
+
+	it("aborts in-flight surface load and workspace refresh on suspend() without error, then reloads on resume()", async () => {
+		const studioSurface = summary({
+			id: "99999999-9999-4999-8999-999999999993",
+			slug: "brand-studio",
+			title: "Brand Studio",
+			archetype: "studio",
+			folderRoot: "surfaces/brand-studio",
+			activeSessionCount: 1,
+			siteSlug: null,
+			liveUrl: null,
+		});
+		let listCalls = 0;
+		const listSignals: (AbortSignal | undefined)[] = [];
+		const listSurfaces = vi.fn((_companyId: string, signal?: AbortSignal) => {
+			listCalls += 1;
+			listSignals.push(signal);
+			if (listCalls === 1) {
+				return new Promise<SurfaceSummary[]>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				});
+			}
+			return Promise.resolve([studioSurface]);
+		});
+		let wsCalls = 0;
+		const wsSignals: (AbortSignal | undefined)[] = [];
+		const getSurfaceWorkspace = vi.fn((surfaceId: string, signal?: AbortSignal) => {
+			wsCalls += 1;
+			wsSignals.push(signal);
+			if (wsCalls === 1) {
+				return new Promise<SurfaceWorkspace>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				});
+			}
+			return Promise.resolve(workspace([session([], { surfaceId })], { surface: studioSurface }));
+		});
+		const store = storeWith(fakeClient({ listSurfaces, getSurfaceWorkspace }));
+
+		const firstLoad = store.load();
+		await Promise.resolve();
+		expect(listSignals[0]?.aborted).toBe(false);
+		store.suspend();
+		await firstLoad;
+		expect(listSignals[0]?.aborted).toBe(true);
+		expect(store.state.source).toBe("loading");
+		expect(store.state.error).toBeUndefined();
+
+		store.resume();
+		await vi.waitFor(() => {
+			expect(store.state.source).toBe("cloud");
+			expect(store.state.surfaces).toHaveLength(1);
+		});
+
+		const firstWs = store.openSurface("brand-studio");
+		await Promise.resolve();
+		expect(wsSignals[0]?.aborted).toBe(false);
+		store.suspend();
+		await firstWs;
+		expect(wsSignals[0]?.aborted).toBe(true);
+		expect(store.isWorkspaceLoading(studioSurface.id)).toBe(false);
+		expect(store.state.error).toBeUndefined();
+
+		store.resume();
+		const loaded = await store.openSurface("brand-studio");
+		expect(loaded?.surface.id).toBe(studioSurface.id);
+		expect(store.workspace(studioSurface.id)?.activeSessions).toHaveLength(1);
+		store.dispose();
+	});
+
+	it("does not cache a resolved load promise when load() is called while suspended", async () => {
+		const studioSurface = summary({
+			id: "99999999-9999-4999-8999-999999999994",
+			slug: "brand-studio",
+			title: "Brand Studio",
+		});
+		const listSurfaces = vi.fn(async () => [studioSurface]);
+		const store = storeWith(fakeClient({ listSurfaces }));
+
+		store.suspend();
+		await store.load();
+		expect(listSurfaces).not.toHaveBeenCalled();
+		expect(store.state.source).toBe("loading");
+
+		store.resume();
+		await vi.waitFor(() => {
+			expect(listSurfaces).toHaveBeenCalledTimes(1);
+			expect(store.state.source).toBe("cloud");
+			expect(store.state.surfaces).toHaveLength(1);
+		});
+		store.dispose();
+	});
+
+	it("keeps staged changes on failed sessions unselected by default while letting members toggle them on", async () => {
+		const failedSession = session(["staged"], {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+			state: "failed",
+		});
+		const readySession = session(["staged"], {
+			id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+			state: "ready",
+			changes: [
+				{
+					id: CHANGES[1],
+					sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+					surfaceId: SURFACE,
+					seq: 1,
+					kind: "git_range",
+					title: "Healthy change",
+					summary: "",
+					status: "staged",
+					parentSha: null,
+					headSha: null,
+					dependsOnChangeIds: [],
+					diffStats: null,
+					affectedPaths: ["src/ok.ts"],
+					conflictPaths: null,
+					landedChangeNumber: null,
+					canUndo: false,
+					createdAt: "2026-11-26T00:00:00Z",
+					resolvedAt: null,
+				},
+			],
+		});
+		const setPreviewSelection = vi.fn(async () => ({
+			surfaceId: SURFACE,
+			mode: "single" as const,
+			primary: previewFrame(),
+			compareFrames: [],
+		}));
+		const store = storeWith(
+			fakeClient({
+				getSurfaceWorkspace: vi.fn(async () => workspace([failedSession, readySession])),
+				setPreviewSelection,
+			}),
+		);
+		await store.load();
+		await store.openSurface("website");
+
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.isChangeShown(CHANGES[1])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(true);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[0], CHANGES[1]]);
+
+		await store.toggleChange(SURFACE, CHANGES[0]);
+		expect(store.isChangeShown(CHANGES[0])).toBe(false);
+		expect(store.previewSelection(SURFACE).toggledChangeIds).toEqual([CHANGES[1]]);
 		store.dispose();
 	});
 });
