@@ -501,7 +501,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-26",
 		title: "Co-Founder Pulse and real-codebase builds",
-		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
+		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Import existing repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
 	},
 	{
 		id: "fast-edge-surface-previews",
@@ -537,6 +537,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-26",
 		title: "Silent coding, quiet approvals and pull-only Surfaces",
 		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace file edits run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
+	},
+	{
+		id: "company-connections-back-in-settings",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Company connections: Gmail, Google Drive, and GitHub",
+		text: "Owners and admins can now connect company Gmail, Google Drive, and GitHub accounts again under Settings → Company connections (including a GitHub personal access token). Every agent gets those tools on its next run, and a connected GitHub account lets manage_code import existing private repositories while Gmail and Google Drive let agents read and bring in existing emails and documents. Keep new code hosted in Qorpera by default without asking for GitHub; suggest Settings → Company connections only when bringing in existing private code, mail, or files.",
 	},
 	{
 		id: "bare-company-email-handles",

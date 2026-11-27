@@ -1159,7 +1159,8 @@ describe("cloud surface runtime tools", () => {
 		expect(combined).toContain("senses.surfaces");
 		expect(combined).toContain("QorperaOS/surfaces/<slug>/notes/");
 		expect(combined).toContain("static mock");
-		expect(combined).toContain("retired");
+		expect(combined).toContain("Settings → Company connections");
+		expect(combined).not.toContain('Connections (including "connect GitHub") are retired');
 		expect(combined).not.toContain("vision/vision.md");
 		const surfaceEmployee = cloudRuntimeHireBehavior("employee", {
 			has: surfaceHas,
@@ -1167,6 +1168,7 @@ describe("cloud surface runtime tools", () => {
 			surfaceFirst: true,
 		});
 		expect(surfaceEmployee).toContain("real application rather than hand-rolling a standalone static mock");
+		expect(surfaceEmployee).toContain("Settings → Company connections");
 
 		for (const legacyTerm of [
 			"hire_team",

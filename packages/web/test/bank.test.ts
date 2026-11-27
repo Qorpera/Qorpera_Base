@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BANK_SUMMARY_PATH } from "../src/app/bank-page.ts";
 import { BANK_SETUP_PATH, BANK_SETUP_SCHEMA, parseBankSetup } from "../src/app/bank-setup.ts";
@@ -419,13 +422,32 @@ describe("connecting the company's bank (app/views/bank.ts)", () => {
 	it("says the sign-in could not be started and stays in the dialog", async () => {
 		const bank = client();
 		bank.beginSignIn.mockRejectedValueOnce(new Error("broker"));
+		bank.beginSignIn.mockRejectedValueOnce(Object.assign(new Error("inactive"), { reason: "bank_service_inactive" }));
+		bank.beginSignIn.mockRejectedValueOnce(Object.assign(new Error("unavailable"), { reason: "bank_unavailable" }));
+		bank.beginSignIn.mockRejectedValueOnce(Object.assign(new Error("busy"), { reason: "rate_limited" }));
 		const { container, navigate } = await connectable(bank);
 		click(container, "Already have a bank account?");
 		click(dialog() as HTMLElement, "Continue");
 		click(dialog() as HTMLElement, "Go to Danske Bank");
 		await settle();
 		expect(dialog()?.textContent).toContain("The sign-in could not be started. Try again.");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		await settle();
+		expect(dialog()?.textContent).toContain("Not available yet: Qorpera's bank connection is not active yet.");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		await settle();
+		expect(dialog()?.textContent).toContain("This bank is not available for that account type right now.");
+		click(dialog() as HTMLElement, "Go to Danske Bank");
+		await settle();
+		expect(dialog()?.textContent).toContain("The bank is busy right now. Wait a moment and try again.");
 		expect(navigate).not.toHaveBeenCalled();
+	});
+
+	it("centers and sizes both bank modal dialogs in bank.css", () => {
+		const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../src/styles/bank.css"), "utf8");
+		expect(css).toContain(
+			".bank-put-dialog, .bank-connect-dialog { inset: 0; margin: auto; width: min(480px, calc(100vw - 32px)); }",
+		);
 	});
 
 	it("leaves connecting to owners and admins", async () => {

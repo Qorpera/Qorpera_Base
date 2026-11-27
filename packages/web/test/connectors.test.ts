@@ -7,9 +7,6 @@ import type { Cloud } from "../src/cloud/client.ts";
 import { createWebConnectors, HOSTED_CONNECTORS, takeConnectorReturn } from "../src/cloud/connectors.ts";
 import { id, timestamp } from "./fixtures.ts";
 
-/* The company connector client (cloud/connectors.ts). Settings' Company connections page that drew these is gone
- * (Jonas, 10 Nov 2026: fully Qorpera-hosted companies); the Bank page still signs in through this client. */
-
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** A sign-in this tab started (what beginSignIn leaves in session storage). */
@@ -214,6 +211,29 @@ describe("connector client", () => {
 		).rejects.toThrow("cannot be finished here");
 	});
 
+	it("captures a typed GitHub token at the company's broker with the company in the query", async () => {
+		const cloud = cloudWith(() => ticket);
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({}));
+		const connectors = createWebConnectors(cloud, profile, fetch);
+		await connectors.captureToken("github", " github_pat_value ", undefined);
+		expect(cloud.rpc).toHaveBeenCalledWith(
+			"qorpera_begin_cloud_secret_capture",
+			expect.objectContaining({ p_owner_kind: "company", p_owner_user_id: null, p_connector_id: "github" }),
+		);
+		expect(fetch.mock.calls[0]![0]).toBe(`${origin}/v1/captures/${id(20)}?company=${id(10)}`);
+		expect(JSON.parse(String(fetch.mock.calls[0]![1]?.body))).toMatchObject({
+			schema: "qorpera.cloud-secret-capture-request/v1",
+			fields: { access_token: "github_pat_value" },
+		});
+		await expect(connectors.captureToken("github", "bad token", undefined)).rejects.toThrow(
+			"That does not look like a token.",
+		);
+		await expect(connectors.captureToken("gmail", "ya29.token", undefined)).rejects.toThrow(
+			"This service only connects by signing in.",
+		);
+		expect(cloud.rpc).toHaveBeenCalledTimes(1);
+	});
+
 	it("refuses a ticket whose id is not a UUID before any request leaves", async () => {
 		const cloud = cloudWith(() => ({ ...ticket, ticketId: "../../v1/operations" }));
 		const fetch = vi.fn<typeof globalThis.fetch>();
@@ -221,5 +241,27 @@ describe("connector client", () => {
 			"Invalid capture ticket.",
 		);
 		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("carries a structured start failure reason from the broker when present", async () => {
+		const cloud = cloudWith(() => ticket);
+		const bank = { name: "Nordea", country: "DK", psuType: "business" as const };
+		const inactiveFetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json(
+				{ schema: "qorpera.cloud-connector-oauth-failed/v1", reason: "bank_service_inactive" },
+				{ status: 403 },
+			),
+		);
+		await expect(
+			createWebConnectors(cloud, profile, inactiveFetch).beginSignIn("bank", undefined, undefined, bank),
+		).rejects.toMatchObject({ reason: "bank_service_inactive" });
+		const opaqueFetch = vi.fn<typeof globalThis.fetch>(async () =>
+			Response.json({ schema: "qorpera.cloud-secret-error/v1", error: "unavailable" }, { status: 403 }),
+		);
+		const error = await createWebConnectors(cloud, profile, opaqueFetch)
+			.beginSignIn("bank", undefined, undefined, bank)
+			.catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(Error);
+		expect((error as { reason?: unknown }).reason).toBeUndefined();
 	});
 });

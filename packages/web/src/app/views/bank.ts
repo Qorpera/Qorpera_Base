@@ -65,6 +65,19 @@ function returnReason(reason: unknown): string {
 	}
 }
 
+function startReason(reason: unknown): string {
+	switch (reason) {
+		case "bank_service_inactive":
+			return t("Not available yet: Qorpera's bank connection is not active yet.");
+		case "bank_unavailable":
+			return t("This bank is not available for that account type right now.");
+		case "rate_limited":
+			return t("The bank is busy right now. Wait a moment and try again.");
+		default:
+			return t("The sign-in could not be started. Try again.");
+	}
+}
+
 /** The bank's sign-in outcome the app took from the page hash, kept until the Bank page is drawn once. */
 let pendingReturn: HostedConnectorReturn | undefined;
 export function noteBankReturn(outcome: HostedConnectorReturn | undefined): void {
@@ -753,7 +766,7 @@ class BankView {
 		let personal = false;
 		let step = 1;
 		let starting = false;
-		let failed = false;
+		let failedMessage: string | null = null;
 		// The sign-in this dialog starts: closing the dialog (or leaving the page, which closes it) ends it, so a late
 		// answer never sends the member to the bank.
 		const attempt = new AbortController();
@@ -768,7 +781,7 @@ class BankView {
 		this.#dialog = dialog;
 		const start = async () => {
 			starting = true;
-			failed = false;
+			failedMessage = null;
 			draw();
 			const scope = createAbortScope([this.#lifetime.signal, attempt.signal]);
 			const signal = scope.signal;
@@ -780,10 +793,10 @@ class BankView {
 				});
 				if (signal.aborted) return;
 				this.#navigate(url);
-			} catch {
+			} catch (error) {
 				if (signal.aborted) return;
 				starting = false;
-				failed = true;
+				failedMessage = startReason((error as { reason?: unknown } | undefined)?.reason);
 				draw();
 			} finally {
 				scope.dispose();
@@ -842,13 +855,7 @@ class BankView {
 								h("li", null, t("You choose which accounts to share.")),
 								h("li", null, t("Agents can read balances and payments. They can't pay.")),
 							),
-							failed
-								? h(
-										"p",
-										{ class: "bank-put-wrong", role: "alert" },
-										t("The sign-in could not be started. Try again."),
-									)
-								: null,
+							failedMessage ? h("p", { class: "bank-put-wrong", role: "alert" }, failedMessage) : null,
 						);
 			replace(
 				dialog.content,
@@ -866,7 +873,7 @@ class BankView {
 									disabled: starting,
 									onclick: () => {
 										step = 1;
-										failed = false;
+										failedMessage = null;
 										draw();
 									},
 								},

@@ -5,9 +5,19 @@ import {
 	type CloudConnectorOAuthProvider,
 	cloudConnector,
 } from "./cloud-connector-catalog.ts";
-import type { EnableBankingClient, EnableBankingSession } from "./cloud-connector-enable-banking.ts";
+import {
+	EnableBankingApplicationInactive,
+	type EnableBankingClient,
+	type EnableBankingSession,
+} from "./cloud-connector-enable-banking.ts";
 import type { GoogleOAuthClient } from "./cloud-connector-google.ts";
-import { connectorRequest, jsonRecord, jsonString, parseJsonResponse } from "./cloud-connector-http.ts";
+import {
+	ConnectorRequestError,
+	connectorRequest,
+	jsonRecord,
+	jsonString,
+	parseJsonResponse,
+} from "./cloud-connector-http.ts";
 
 /**
  * Runtime Step 7: OAuth authorization inside the cloud secret broker.
@@ -126,6 +136,23 @@ export class CloudConnectorOAuthError extends Error {
 		this.reason = reason;
 		this.returnTo = returnTo;
 		this.connectorId = connectorId;
+	}
+}
+
+export type CloudBankStartFailureReason =
+	| "bank_service_inactive"
+	| "bank_unavailable"
+	| "rate_limited"
+	| "provider_error";
+
+export class CloudBankStartError extends Error {
+	readonly reason: CloudBankStartFailureReason;
+	readonly providerReason: string | undefined;
+	constructor(reason: CloudBankStartFailureReason, message: string, providerReason?: string) {
+		super(message);
+		this.name = "CloudBankStartError";
+		this.reason = reason;
+		this.providerReason = providerReason;
 	}
 }
 
@@ -434,27 +461,48 @@ export class CloudConnectorOAuthFlows {
 			(choice.psuType !== "business" && choice.psuType !== "personal")
 		)
 			throw new Error("Connector OAuth start is invalid");
-		const bankClient = this.#bank;
-		if (!bankClient) throw new Error("Connector OAuth client is unavailable");
 		const companyId = input.companyId.toLowerCase();
 		this.#admit(input, companyId);
-		const bank = (await bankClient.banks(choice.country, choice.psuType, signal)).find(
-			(item) => item.name === choice.name && item.country === choice.country,
-		);
-		if (!bank) throw new Error("The bank is not available");
+		const bankClient = this.#bank;
+		if (!bankClient)
+			throw new CloudBankStartError(
+				"bank_service_inactive",
+				"Connector OAuth client is unavailable",
+				"unconfigured",
+			);
+		const classifyBankCallError = (error: unknown): never => {
+			if (error instanceof EnableBankingApplicationInactive)
+				throw new CloudBankStartError("bank_service_inactive", error.message, "inactive");
+			if (error instanceof ConnectorRequestError)
+				throw new CloudBankStartError(
+					error.reason === "rate_limited" ? "rate_limited" : "provider_error",
+					error.message,
+					error.reason,
+				);
+			throw new CloudBankStartError(
+				"provider_error",
+				"Enable Banking request failed",
+				signal.aborted ? "timeout" : "transport",
+			);
+		};
+		const banks = await bankClient.banks(choice.country, choice.psuType, signal).catch(classifyBankCallError);
+		const bank = banks.find((item) => item.name === choice.name && item.country === choice.country);
+		if (!bank) throw new CloudBankStartError("bank_unavailable", "The bank is not available");
 		const longest = bank.maximumConsentSeconds ? bank.maximumConsentSeconds * 1000 : BANK_CONSENT_MS;
 		const state = `${companyId}.${Buffer.from(this.#random(32)).toString("base64url")}`;
-		const authorization = await bankClient.authorize(
-			{
-				bank: { name: bank.name, country: bank.country },
-				// A minute short of the longest, so a clock a little ahead of the bank's is never refused.
-				validUntil: new Date(this.#now() + Math.min(longest, BANK_CONSENT_MS) - 60_000),
-				state,
-				redirectUrl: this.#callbackUrl,
-				psuType: choice.psuType,
-			},
-			signal,
-		);
+		const authorization = await bankClient
+			.authorize(
+				{
+					bank: { name: bank.name, country: bank.country },
+					// A minute short of the longest, so a clock a little ahead of the bank's is never refused.
+					validUntil: new Date(this.#now() + Math.min(longest, BANK_CONSENT_MS) - 60_000),
+					state,
+					redirectUrl: this.#callbackUrl,
+					psuType: choice.psuType,
+				},
+				signal,
+			)
+			.catch(classifyBankCallError);
 		// The room is counted again: other starts may have come in while Enable Banking answered.
 		const returnTo = this.#admit(input, companyId);
 		const expiresAt = Math.min(this.#now() + BANK_STATE_TTL_MS, ticketExpiresAt);

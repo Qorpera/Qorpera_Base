@@ -804,6 +804,12 @@ export const WORKSPACE: Record<string, string> = {
 	"{name} is on it": "{name} er i gang",
 	"The thread could not be opened.": "Tråden kunne ikke åbnes.",
 	"The bank connection could not be read.": "Bankforbindelsen kunne ikke læses.",
+	"Not available yet: Qorpera's bank connection is not active yet.":
+		"Ikke tilgængelig endnu: Qorperas bankforbindelse er ikke aktiv endnu.",
+	"This bank is not available for that account type right now.":
+		"Denne bank er ikke tilgængelig for den kontotype lige nu.",
+	"The bank is busy right now. Wait a moment and try again.":
+		"Banken har travlt lige nu. Vent et øjeblik og prøv igen.",
 	"Connect again": "Forbind igen",
 	"Connect the company's bank": "Forbind virksomhedens bank",
 	"Which bank does the company use?": "Hvilken bank bruger virksomheden?",
