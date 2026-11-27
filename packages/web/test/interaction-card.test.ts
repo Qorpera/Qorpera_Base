@@ -1000,12 +1000,19 @@ describe("the address card", () => {
 		},
 	};
 	const taken = new Set(["brooks"]);
+	const reserved = new Set(["support"]);
 	function calls(overrides: Partial<MailAddressCalls> = {}) {
 		return {
 			canChoose: true,
 			handles: vi.fn(async () => ({ domain: "inbox.qorpera.com", handles: ["mine"] })),
 			status: vi.fn(async (handle: string) =>
-				handle === "mine" ? ("ours" as const) : taken.has(handle) ? ("taken" as const) : ("free" as const),
+				handle === "mine"
+					? ("ours" as const)
+					: taken.has(handle)
+						? ("taken" as const)
+						: reserved.has(handle)
+							? ("invalid" as const)
+							: ("free" as const),
 			),
 			choose: vi.fn(async (handle: string) => `${handle}@inbox.qorpera.com`),
 			...overrides,
@@ -1054,6 +1061,10 @@ describe("the address card", () => {
 		expect(use(card)?.disabled).toBe(true);
 		type(card, "mine");
 		await vi.waitFor(() => expect(check(card)).toBe("Already yours"));
+		type(card, "support");
+		await vi.waitFor(() => expect(check(card)).toBe("This mailbox name is reserved. Choose another."));
+		expect(card.querySelector(".interaction-address-check")?.classList.contains("is-error")).toBe(true);
+		expect(use(card)?.disabled).toBe(true);
 		type(card, "a");
 		expect(check(card)).toBe("Use a–z, 0–9 and hyphens");
 		expect(use(card)?.disabled).toBe(true);

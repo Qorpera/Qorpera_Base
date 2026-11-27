@@ -400,7 +400,11 @@ function mailAddressParts(
 		else
 			say(
 				handleWords(state),
-				state === "free" || state === "ours" ? "ok" : state === "taken" || state === "invalid" ? "error" : "",
+				state === "free" || state === "ours"
+					? "ok"
+					: state === "taken" || state === "invalid" || state === "reserved"
+						? "error"
+						: "",
 			);
 	};
 	const check = able && calls ? new HandleCheck(calls.status, draw) : undefined;

@@ -22,13 +22,14 @@ export function cleanHandle(text: string): string {
 		.slice(0, HANDLE_MAX_CHARACTERS);
 }
 
-export type HandleState = MailHandleStatus | "checking" | "unknown";
+export type HandleState = MailHandleStatus | "reserved" | "checking" | "unknown";
 
-const HANDLE_WORDS: Record<MailHandleStatus | "checking", string> = {
+const HANDLE_WORDS: Record<MailHandleStatus | "reserved" | "checking", string> = {
 	free: phrase("Free"),
 	ours: phrase("Already yours"),
 	taken: phrase("That one belongs to another company"),
 	invalid: phrase("Use a–z, 0–9 and hyphens"),
+	reserved: phrase("This mailbox name is reserved. Choose another."),
 	checking: phrase("Checking…"),
 };
 
@@ -71,7 +72,7 @@ export class HandleCheck {
 		this.#timer = setTimeout(() => {
 			this.#status(handle, abort.signal).then(
 				(status) => {
-					if (!abort.signal.aborted) this.#show(status);
+					if (!abort.signal.aborted) this.#show(status === "invalid" ? "reserved" : status);
 				},
 				() => {
 					if (!abort.signal.aborted) this.#show("unknown");
