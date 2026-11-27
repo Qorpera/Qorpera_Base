@@ -332,6 +332,7 @@ export class AppWorkbenchView {
 	#lastRenderedMessageCount = 0;
 	#lastSyncedRoute = "/";
 	#lastTrackAutoSyncKey = "";
+	#lastInitialTrackSyncKey = "";
 
 	constructor(host: SurfaceViewHost, signal: AbortSignal, options: AppWorkbenchOptions = {}) {
 		this.#host = host;
@@ -533,6 +534,7 @@ export class AppWorkbenchView {
 			this.#combining = false;
 			this.#explicitCombineActive = false;
 			this.#lastTrackAutoSyncKey = "";
+			this.#lastInitialTrackSyncKey = "";
 			this.#combineSelected.clear();
 			this.#selectedMockupId = null;
 			this.#selectedPlanId = null;
@@ -569,16 +571,20 @@ export class AppWorkbenchView {
 			const preview = workspace.previewState;
 			const expectedIds = expectedTrackPreviewChangeIds(selected);
 			const trackMatches = preview.previewScope === "track" && preview.selectedSessionId === selected.id;
-			const shouldAutoSync =
-				!this.#explicitCombineActive &&
-				((trackMatches && !sameIdSet(expectedIds, preview.primary.toggledChangeIds)) ||
-					(preview.previewScope !== "explicit" && !trackMatches && expectedIds.length > 0));
-			if (trackMatches && sameIdSet(expectedIds, preview.primary.toggledChangeIds)) {
-				this.#lastTrackAutoSyncKey = "";
-			} else if (shouldAutoSync) {
-				const syncKey = `${surface.id}:${selected.id}:${expectedIds.join(",")}`;
-				if (syncKey !== this.#lastTrackAutoSyncKey) {
-					this.#lastTrackAutoSyncKey = syncKey;
+			if (trackMatches) {
+				if (sameIdSet(expectedIds, preview.primary.toggledChangeIds)) {
+					this.#lastTrackAutoSyncKey = "";
+				} else {
+					const syncKey = `${surface.id}:${selected.id}:${expectedIds.join(",")}`;
+					if (syncKey !== this.#lastTrackAutoSyncKey) {
+						this.#lastTrackAutoSyncKey = syncKey;
+						this.#syncPreviewToSelection(surface, selected.id);
+					}
+				}
+			} else if (!this.#explicitCombineActive && preview.previewScope !== "explicit" && expectedIds.length > 0) {
+				const initialKey = `${surface.id}:${selected.id}`;
+				if (initialKey !== this.#lastInitialTrackSyncKey) {
+					this.#lastInitialTrackSyncKey = initialKey;
 					this.#syncPreviewToSelection(surface, selected.id);
 				}
 			}
@@ -704,6 +710,21 @@ export class AppWorkbenchView {
 		return raw > 0 ? raw / uiScale() : 0;
 	}
 
+	#isStackedLayout(): boolean {
+		if (typeof getComputedStyle === "function") {
+			const direction = getComputedStyle(this.#body).flexDirection;
+			if (direction === "column" || direction === "column-reverse") return true;
+			if (direction === "row" || direction === "row-reverse") return false;
+		}
+		return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches;
+	}
+
+	#isTightRowLayout(): boolean {
+		if (this.#isStackedLayout()) return false;
+		const width = this.#bodyWidth();
+		return width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+	}
+
 	#panelCap(): number {
 		const width = this.#bodyWidth();
 		if (width > 0) {
@@ -722,9 +743,13 @@ export class AppWorkbenchView {
 		const width = this.#bodyWidth();
 		const prevTracksOpen = this.#tracksOpen;
 		if (width > 0 && !this.#tracksUserPinned) {
-			const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
-			if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
-			else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
+			if (this.#isStackedLayout()) {
+				this.#tracksOpen = true;
+			} else {
+				const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+				if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
+				else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
+			}
 		}
 		this.#tracksRail.hidden = !this.#tracksOpen;
 		this.#applyPanelWidth();
@@ -2578,13 +2603,7 @@ export class AppWorkbenchView {
 			case "toggle-tracks": {
 				this.#tracksOpen = !this.#tracksOpen;
 				this.#tracksUserPinned = true;
-				const width = this.#bodyWidth();
-				if (
-					this.#tracksOpen &&
-					this.#panelOpen &&
-					width > 0 &&
-					width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH
-				) {
+				if (this.#tracksOpen && this.#panelOpen && this.#isTightRowLayout()) {
 					this.#panelOpen = false;
 				}
 				this.update(surface);
@@ -2592,13 +2611,7 @@ export class AppWorkbenchView {
 			}
 			case "toggle-panel": {
 				this.#panelOpen = !this.#panelOpen;
-				const width = this.#bodyWidth();
-				if (
-					this.#panelOpen &&
-					this.#tracksOpen &&
-					width > 0 &&
-					width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH
-				) {
+				if (this.#panelOpen && this.#tracksOpen && this.#isTightRowLayout()) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2613,8 +2626,7 @@ export class AppWorkbenchView {
 				} else {
 					this.#panelOpen = true;
 					this.#panelTab = tab;
-					const width = this.#bodyWidth();
-					if (this.#tracksOpen && width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH) {
+					if (this.#tracksOpen && this.#isTightRowLayout()) {
 						this.#tracksOpen = false;
 						this.#tracksUserPinned = false;
 					}
@@ -2626,6 +2638,7 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, null);
@@ -2639,6 +2652,7 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
 				store.selectTrack(surface.id, sessionId);
@@ -2668,8 +2682,7 @@ export class AppWorkbenchView {
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
 				this.#explicitCombineActive = true;
-				const width = this.#bodyWidth();
-				if (this.#tracksOpen && width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH) {
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2696,11 +2709,11 @@ export class AppWorkbenchView {
 				this.#combining = false;
 				this.#explicitCombineActive = false;
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
-				const width = this.#bodyWidth();
-				if (this.#tracksOpen && width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH) {
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2721,6 +2734,7 @@ export class AppWorkbenchView {
 			}
 			case "refresh-preview":
 				this.#lastTrackAutoSyncKey = "";
+				this.#lastInitialTrackSyncKey = "";
 				await store.retryPreview(surface.id, { keepExplicitCombine: this.#explicitCombineActive });
 				return;
 			case "stop-turn": {
@@ -2763,6 +2777,7 @@ export class AppWorkbenchView {
 				if (ok) {
 					this.#explicitCombineActive = false;
 					this.#lastTrackAutoSyncKey = "";
+					this.#lastInitialTrackSyncKey = "";
 					const nextActive = store.workspace(surface.id)?.activeSessions[0]?.id ?? null;
 					store.selectTrack(surface.id, nextActive);
 					this.#syncPreviewToSelection(surface, nextActive);
@@ -2789,8 +2804,7 @@ export class AppWorkbenchView {
 					this.#panelTab = "plans";
 					this.#selectedPlanId = artifactId;
 				}
-				const width = this.#bodyWidth();
-				if (this.#tracksOpen && width > 0 && width < TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH) {
+				if (this.#tracksOpen && this.#isTightRowLayout()) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}

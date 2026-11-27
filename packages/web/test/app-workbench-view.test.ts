@@ -822,10 +822,27 @@ describe("AppWorkbenchView", () => {
 
 		expect(view.el.querySelector(".workbench-panel-head")).toBeNull();
 		expect(view.el.querySelectorAll('.workbench-tab-group [data-act="panel-tab"]').length).toBe(4);
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledTimes(1);
 		expect(selectSurfaceTrackPreview).toHaveBeenCalledWith(SURFACE, { sessionId: SESSION, activeRoute: "/" });
 		expect(view.el.querySelector(".workbench-preview-scope")?.textContent).toBe("Isolated track preview");
 		expect(view.el.querySelector(".workbench-bar-left > .surface-pill-address")).not.toBeNull();
 		expect(view.el.querySelector('.workbench-inline-changes [data-act="approve-change"]')).toBeNull();
+
+		currentPreview = {
+			...currentPreview,
+			selectedSessionId: SESSION_2,
+			previewScope: "track",
+			primary: {
+				...currentPreview.primary,
+				previewId: PREVIEW_IDS[1],
+				toggledChangeIds: [CHANGES[1]],
+			},
+		};
+		await store.refreshWorkspace(SURFACE);
+		await flush();
+		view.update();
+		expect(selectSurfaceTrackPreview).toHaveBeenCalledTimes(1);
+		expect(view.el.querySelector('.workbench-preview-empty [data-act="preview-track"]')).not.toBeNull();
 
 		const tracksRail = view.el.querySelector<HTMLElement>(".workbench-tracks")!;
 		expect(tracksRail.hidden).toBe(false);
@@ -842,6 +859,20 @@ describe("AppWorkbenchView", () => {
 		Object.defineProperty(body, "clientWidth", { configurable: true, value: 1000 });
 		view.update();
 		expect(Number.parseInt(panel.style.width, 10)).toBeLessThanOrEqual(1000 - 236 - 380);
+
+		body.style.flexDirection = "column";
+		Object.defineProperty(body, "clientWidth", { configurable: true, value: 420 });
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(true);
+		expect(panel.hidden).toBe(false);
+		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(false);
 
 		view.el.querySelector<HTMLButtonElement>('.workbench-repo-chip[data-act="open-source"]')!.click();
 		await flush();

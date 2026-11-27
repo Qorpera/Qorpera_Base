@@ -766,8 +766,7 @@ export const SURFACES: Record<string, string> = {
 	"Pull request": "Pull request",
 	Ship: "Lever",
 	"Ship & publish": "Lever og udgiv",
-	"Merge this track into Base without publishing live yet":
-		"Flet dette spor ind i Base uden at udgive live endnu",
+	"Merge this track into Base without publishing live yet": "Flet dette spor ind i Base uden at udgive live endnu",
 	"Merge this track into Base and publish live": "Flet dette spor ind i Base og udgiv live",
 	"Discard track": "Kassér spor",
 	"Working on this track…": "Arbejder på dette spor…",
