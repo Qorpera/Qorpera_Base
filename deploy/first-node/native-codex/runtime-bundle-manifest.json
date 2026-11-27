@@ -25,7 +25,7 @@
     "wakeAndSilence": "029656fbde5eff9fd3b4f48c5aa126ca3b64a72d83af19b6cb2fca31020bb767",
     "contextComposer": "ba281c1fdbb2fe2f2425658747743fcba2f2a45a6820e3f863c6483fd9fd8bf8",
     "providerBootstrap": "8ed2acaf0b1d2e9cf0d7774fcce54aba992318c1f0f88fed05758669ab554fdc",
-    "authorization": "6aa43519225932ae6a88f1c0956e1a48e672772b3b9d39bc191b4fd5653e13cc",
+    "authorization": "800345ec1b4eec944e7c2def6c2bb909eb9d368ad935d426a5c3f5ea11e53465",
     "inboundSafety": "174716df3a4c3d83a93bcc19d2ac326422e4d7d477b55a890aa10c93523acf2c",
     "outboundSafety": "37ad93709a7dbf71ce083e332f9a968a2de1f623a366dc021f06e784cad8b9e9",
     "interactionSurfaces": "cb948341e7eb96df1f8487d1b56c2a87111bd9fe52b2b5d449ca0b5ea35f1fc1",
@@ -258,7 +258,7 @@
     "packages/runtime/kits/stack/engine.js": "f5f1bfbec1993a9c5946b5d265d2b43836ec722f6db892b63e1f906bab222060",
     "packages/runtime/kits/stack/KIT.md": "2e6dfd21cd345d901b647b2b1411dc4275eea6fcb2541d828165a5c8d91910d4",
     "packages/runtime/package.json": "d3494035d7e5c5a846526449e43d62c62eae98afef8191d7c5700769897f06c0",
-    "packages/runtime/skills/analytics-studio/SKILL.md": "b05c5bc271a64069d42a4046c37476d7d754464c44ee0a4222ff041902e1c5d0",
+    "packages/runtime/skills/analytics-studio/SKILL.md": "b0b991e2fff110eec3279903be72c3307b3b48aa1a732c43db2677032f987349",
     "packages/runtime/skills/custom-surface/SKILL.md": "3228a72417fdb3cdd40bc3c6b003b9e596f5f1199329b8a7a315bccc1ad333c4",
     "packages/runtime/skills/identity-studio/SKILL.md": "5f8f0759b3e8e5a3c68ed21c06471dc44e32bfc2cb75cccf4347d602c44a8992",
     "packages/runtime/skills/product-studio/SKILL.md": "d6dfeaad9b36843d175377151cdbfc3afc2820cd2677f1bc27a8a2aa4a3a1fdd",
@@ -427,7 +427,7 @@
     "packages/runtime/src/cloud-native-tools-on-demand.ts": "9a2d4a3cef714a6faa7363d8b8811e83052049457dae4f151a92b822d6f2eccd",
     "packages/runtime/src/cloud-picture-channel.ts": "28f987a9da75c799bb1fa09d8cfa826ac4ad782bbe2dea82c2178a76ce3704b5",
     "packages/runtime/src/cloud-platform-skills.ts": "5fc6a14722e4bb4c0453ad10f2bb44320a890c5e44616f1cea5b8acdb10f121e",
-    "packages/runtime/src/cloud-platform-updates.ts": "15c94322180fb350ad7c6fc4a17cc2f88a21838975058cd7b5e03e0c64cd7120",
+    "packages/runtime/src/cloud-platform-updates.ts": "57916758d1e303562af9f5a5ce3acd23c2015304aa600cd8fb6c108a4ba5fea2",
     "packages/runtime/src/cloud-review-rule-tools.ts": "fac9ce624cfa50a809d7d2129f894597606bb85c2465f360ae1bf83f0320f7dd",
     "packages/runtime/src/cloud-routine-pace.ts": "63b34a20c4506c603db58739737a1e2a0983c5987f00862e0ec8d0add772c7dd",
     "packages/runtime/src/cloud-routine-tools.ts": "6067c2a305131a8033ab025548e93269e981c5d1d447cefd2b193e7cd06d1d21",
@@ -501,7 +501,7 @@
     "packages/runtime/src/native-provider-account.ts": "1bab05c1f06759927ed4696d4310eb17319570d567446043582cd150e94f60d2",
     "packages/runtime/src/native-provider-usage.ts": "25a89a2499aa9a0886534f22c1c4316ac47070e1088e51c2ccdcf57eecc8ceec",
     "packages/runtime/src/systemd-credential.ts": "1d3eb8038a369c58418cbd8248aecf457662cbb3430cc84847235c2222a82478",
-    "scripts/generate-cloud-runtime-bundle.mjs": "1ecd5b80b674ddb51ae35b07a365a185075cf9b2a364f9dd9672b84377525ca4",
+    "scripts/generate-cloud-runtime-bundle.mjs": "bbc61b0d5f1191f0b95779ef90b72242a51e228938509e11f8ae79dc498ec3cf",
     "scripts/native-company-artifact.mjs": "e394bc799104f188769de07cd3be14e6c732a1a672113ea45d349a29d8e0ca63",
     "scripts/package-coding-executor.mjs": "30e89beb2952a28f975c395e34f6306163145dffaceca88161599867d4ed4765",
     "scripts/package-coding-guest-agent.mjs": "246b70a83818d90818e4b8be7410453da67c66093196d455393ed06a8536a19f",
@@ -512,6 +512,6 @@
     "scripts/package-lxd-runner-guest.mjs": "1f8d6b729000a3f41b36702d8997c9a05d6b0a15df68d1ed1c25018389eb45d3",
     "scripts/package-service.mjs": "19841bce1e996d1a2c63ef4966c83cd831a15cff1f617b91e124759ce75b756e",
     "scripts/runtime-assets-plugin.mjs": "169ce941c1066b62159aa58df486e2893d7bb39897967dc0f9dadc34a5e21466",
-    "supabase/migrations": "6aa43519225932ae6a88f1c0956e1a48e672772b3b9d39bc191b4fd5653e13cc"
+    "supabase/migrations": "800345ec1b4eec944e7c2def6c2bb909eb9d368ad935d426a5c3f5ea11e53465"
   }
 }
