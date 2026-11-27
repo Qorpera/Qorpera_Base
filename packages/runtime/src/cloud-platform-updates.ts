@@ -599,7 +599,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "capability",
 		date: "2026-11-27",
 		title: "Real server and hybrid hosting for app interfaces",
-		text: "Code-backed app and website interfaces can now run live backend servers and hybrid frontend-plus-backend containers directly through Qorpera's app host instead of static files alone. Declare site.kind as server or hybrid (with port, healthPath, and optional Dockerfile or preview build recipe) in .qorpera/checks.json: every preview runs in an isolated preview container without disturbing the live app, iframe framing headers are adjusted on authenticated preview slots, live publishes start and health-check the new container before promoting traffic, and expired preview containers are cleaned up automatically.",
+		text: "Code-backed app and website interfaces can now run live backend servers and hybrid frontend-plus-backend containers directly through Qorpera's app host instead of static files alone. Declare the site kind as server or hybrid (with port, health path, and optional Dockerfile or preview build recipe) in the repository checks configuration: every preview runs in an isolated preview container without disturbing the live app, iframe framing headers are adjusted on authenticated preview slots, live publishes start and health-check the new container before promoting traffic, and expired preview containers are cleaned up automatically.",
 	},
 ]);
 
