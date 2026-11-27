@@ -82,6 +82,7 @@ const RUN_EFFECTS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_code_history",
 	"qorpera_folder_code_query",
 	"qorpera_folder_code_lifecycle",
+	"qorpera_folder_code_github_sync",
 	"qorpera_folder_describe_code_change",
 	"qorpera_folder_request_code_import",
 	"qorpera_folder_code_import",
@@ -115,8 +116,17 @@ const CODE_LIFECYCLE_REASONS = [
 	"sessions_active",
 	"surface_backed",
 ] as const;
+const CODE_GITHUB_SYNC_REASONS = [
+	"archived",
+	"no_session",
+	"no_github_connection",
+	"no_github_write_grant",
+	"repo_not_authorized",
+	"busy",
+	"no_executor",
+] as const;
 const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
-const CODE_REQUEST_KINDS_V2 = ["undo", "download", "restore", "query", "lifecycle"] as const;
+const CODE_REQUEST_KINDS_V2 = ["undo", "download", "restore", "query", "lifecycle", "github_sync"] as const;
 const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;
 /** Why no import was asked for (20260930736000): a repository kept at the place, the same code kept elsewhere, an import
  * open in the company, GitHub sessions still on that code, no code service, no file at the path, a company going. */
@@ -587,6 +597,13 @@ export type CloudCompanyCodeLifecycleAnswer =
 	  }
 	| { readonly state: "already"; readonly owner: string; readonly name: string; readonly archivedAt?: string | null }
 	| { readonly state: "refused"; readonly reason: (typeof CODE_LIFECYCLE_REASONS)[number] | CloudCompanyCodeRefusal };
+
+export type CloudCompanyCodeGitHubSyncAsked =
+	| { readonly state: "queued"; readonly requestId: string }
+	| {
+			readonly state: "refused";
+			readonly reason: (typeof CODE_GITHUB_SYNC_REASONS)[number] | CloudCompanyCodeRefusal;
+	  };
 
 /** Where an import takes the code from: a GitHub project as `Owner/Name`, or a git bundle in the company folder
  * (code/_incoming/<folder>/<name>.bundle) with, when its main branch is not clear, the branch to take. */
@@ -1986,6 +2003,7 @@ export class CloudCompanyFolderClient {
 			| "qorpera_folder_request_code_undo"
 			| "qorpera_folder_request_code_undo_v2"
 			| "qorpera_folder_code_lifecycle"
+			| "qorpera_folder_code_github_sync"
 			| "qorpera_folder_describe_code_change"
 			| "qorpera_folder_request_code_import",
 		request: { readonly operationKey: string } & Readonly<Record<string, unknown>>,
@@ -2355,6 +2373,29 @@ export class CloudCompanyFolderClient {
 							: { archivedAt: input.archivedAt as string | null }),
 					};
 				const reason = CODE_LIFECYCLE_REASONS.find((known) => known === input.reason);
+				if (state !== "refused" || reason === undefined) invalid();
+				return { state: "refused", reason };
+			},
+		);
+	}
+
+	async codeGitHubSync(
+		request: Record<string, unknown> & { readonly operationKey: string },
+		signal: AbortSignal,
+	): Promise<CloudCompanyCodeGitHubSyncAsked> {
+		return this.#codeEffect(
+			"qorpera_folder_code_github_sync",
+			request,
+			signal,
+			(answer): CloudCompanyCodeGitHubSyncAsked => {
+				const state = (answer as { state?: unknown } | null)?.state;
+				const input = folderRecord(
+					answer,
+					state === "queued" ? ["schema", "state", "requestId"] : ["schema", "state", "reason"],
+				);
+				if (input.schema !== "qorpera.code-github-sync/v1") invalid();
+				if (state === "queued") return { state, requestId: folderUuid(input.requestId) };
+				const reason = CODE_GITHUB_SYNC_REASONS.find((known) => known === input.reason);
 				if (state !== "refused" || reason === undefined) invalid();
 				return { state: "refused", reason };
 			},

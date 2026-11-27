@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- Added `CloudSurfacesClient.linkSurfaceTrackPr` (`surfaces.ts`, migration `20260930938000_github_track_pr_sync_and_webhooks.sql`) calling `qorpera_link_surface_track_pr` and re-exported `SurfaceSessionExternalPr`.
 - Added app workbench track isolation client methods (`surfaces.ts`, migration `20260930937000_app_workbench_tracks_backend.sql`): `selectSurfaceTrackPreview`, `shipSurfaceTrack`, `combineSurfaceTracks`, `cancelSurfaceSessionTurn`, and `getSurfaceSessionArtifact`.
 - Added surface app runtime environment and secret grant client methods (`surfaces.ts`, migration `20260930936000_surface_app_secrets_and_auth_unblock.sql`): `getSurfaceAppRuntimeConfig`, `setSurfaceAppRuntimeConfig`, `grantAppSecret`, and `revokeAppSecretGrant`.
 - Added surface code-source repository binding client methods (`surfaces.ts`, migration `20260930934000_surface_repo_subpath_and_branch.sql`): optional `repositoryKey`, `repositorySubpath`, and `defaultBranch` on `createSurface`, plus `listCompanyCodeRepositories` (`qorpera_list_company_code_repositories`) and `bindSurfaceRepository` (`qorpera_bind_surface_repository`).

@@ -267,6 +267,173 @@ const GITHUB: CloudConnectorDefinition = {
 			},
 			recipe: "GET /user (when owner is given); POST /user/repos or POST /orgs/{owner}/repos",
 		},
+		{
+			id: "list_pull_requests",
+			version: 1,
+			toolName: "github_list_pull_requests",
+			effect: "read",
+			description:
+				"List pull requests in a repository, optionally filtered by state (open, closed, all), head branch, or base branch.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					state: {
+						type: "string",
+						description: "Filter by pull request state (default open).",
+						enum: ["open", "closed", "all"],
+					},
+					head: {
+						type: "string",
+						description: "Optional head branch filter in 'owner:branch' or branch form.",
+						minLength: 1,
+						maxLength: 256,
+					},
+					base: {
+						type: "string",
+						description: "Optional base branch name filter.",
+						minLength: 1,
+						maxLength: 200,
+					},
+					limit: {
+						type: "integer",
+						description: "Maximum pull requests to return (default 20).",
+						minimum: 1,
+						maximum: 50,
+					},
+				},
+				required: ["owner", "repository"],
+				additionalProperties: false,
+			},
+			recipe: "GET /repos/{owner}/{repo}/pulls?state=<state>&head=<head>&base=<base>&per_page=<limit>",
+		},
+		{
+			id: "create_pull_request",
+			version: 1,
+			toolName: "github_create_pull_request",
+			effect: "write",
+			description:
+				"Open a new pull request in a repository from head branch into base branch. Visible to everyone with access to the repository.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					title: { type: "string", description: "Pull request title.", minLength: 1, maxLength: 256 },
+					head: { type: "string", description: "Branch containing the changes.", minLength: 1, maxLength: 256 },
+					base: { type: "string", description: "Target branch to merge into.", minLength: 1, maxLength: 200 },
+					body: { type: "string", description: "Pull request description in Markdown.", maxLength: 20_000 },
+					draft: { type: "boolean", description: "Open as a draft pull request when true." },
+				},
+				required: ["owner", "repository", "title", "head", "base"],
+				additionalProperties: false,
+			},
+			recipe: "POST /repos/{owner}/{repo}/pulls",
+		},
+		{
+			id: "update_pull_request",
+			version: 1,
+			toolName: "github_update_pull_request",
+			effect: "write",
+			description:
+				"Update an existing pull request's title, body, base branch, or state (open or closed). Does not merge pull requests.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					number: issueNumber,
+					title: { type: "string", description: "Updated pull request title.", minLength: 1, maxLength: 256 },
+					body: {
+						type: "string",
+						description: "Updated pull request description in Markdown.",
+						maxLength: 20_000,
+					},
+					state: {
+						type: "string",
+						description: "Set pull request state to open or closed.",
+						enum: ["open", "closed"],
+					},
+					base: { type: "string", description: "Updated target base branch.", minLength: 1, maxLength: 200 },
+				},
+				required: ["owner", "repository", "number"],
+				additionalProperties: false,
+			},
+			recipe: "PATCH /repos/{owner}/{repo}/pulls/{number}",
+		},
+		{
+			id: "list_pull_request_reviews",
+			version: 1,
+			toolName: "github_list_pull_request_reviews",
+			effect: "read",
+			description: "List reviews submitted on a pull request: reviewer, state, commit SHA, timestamp, and summary.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					number: issueNumber,
+					limit: {
+						type: "integer",
+						description: "Maximum reviews to return (default 20).",
+						minimum: 1,
+						maximum: 50,
+					},
+				},
+				required: ["owner", "repository", "number"],
+				additionalProperties: false,
+			},
+			recipe: "GET /repos/{owner}/{repo}/pulls/{number}/reviews?per_page=<limit>",
+		},
+		{
+			id: "list_check_runs",
+			version: 1,
+			toolName: "github_list_check_runs",
+			effect: "read",
+			description:
+				"List CI check runs for a branch, tag, or commit SHA in a repository: name, status, conclusion, and details link.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					ref: { type: "string", description: "Commit SHA, branch name, or tag.", minLength: 1, maxLength: 256 },
+					limit: {
+						type: "integer",
+						description: "Maximum check runs to return (default 30).",
+						minimum: 1,
+						maximum: 100,
+					},
+				},
+				required: ["owner", "repository", "ref"],
+				additionalProperties: false,
+			},
+			recipe: "GET /repos/{owner}/{repo}/commits/{ref}/check-runs?per_page=<limit>",
+		},
+		{
+			id: "list_branches",
+			version: 1,
+			toolName: "github_list_branches",
+			effect: "read",
+			description: "List branches in a repository with each branch's head commit SHA and protection status.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					owner,
+					repository,
+					limit: {
+						type: "integer",
+						description: "Maximum branches to return (default 30).",
+						minimum: 1,
+						maximum: 100,
+					},
+				},
+				required: ["owner", "repository"],
+				additionalProperties: false,
+			},
+			recipe: "GET /repos/{owner}/{repo}/branches?per_page=<limit>",
+		},
 	],
 };
 

@@ -41,6 +41,7 @@ const PULL_FILES_BYTES = 12 * 1024;
 const MAX_FILE_BYTES = 96 * 1024;
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}$/;
+const BRANCH_REF = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,255}$/;
 
 function headers(context: ConnectorOperationContext, extra: Record<string, string> = {}): Record<string, string> {
 	return {
@@ -52,12 +53,44 @@ function headers(context: ConnectorOperationContext, extra: Record<string, strin
 	};
 }
 
+function gitRefValue(value: unknown, label: string): string {
+	const text = typeof value === "string" ? value.trim() : "";
+	if (
+		!text ||
+		!BRANCH_REF.test(text) ||
+		text.includes("..") ||
+		text.includes("//") ||
+		text.startsWith("/") ||
+		text.endsWith("/") ||
+		text.endsWith(".") ||
+		text.endsWith(".lock")
+	) {
+		throw new ConnectorRequestError("invalid_request", `The ${label} is not valid.`);
+	}
+	return text;
+}
+
+function unprocessableRefusal(response: ConnectorResponse): ConnectorRequestError {
+	const refusal = providerRefusal(response, "GitHub");
+	if (response.status !== 422) return refusal;
+	let first: string | null = null;
+	try {
+		first =
+			jsonArray(jsonRecord(parseJsonResponse(response)).errors)
+				.map((item) => jsonString(jsonRecord(item).message, 200))
+				.find((message): message is string => Boolean(message)) ?? null;
+	} catch {
+		first = null;
+	}
+	return first ? new ConnectorRequestError("invalid_request", `GitHub: ${first}`) : refusal;
+}
+
 async function github(
 	context: ConnectorOperationContext,
 	path: string,
 	options: {
 		query?: Record<string, string | undefined>;
-		method?: "GET" | "POST";
+		method?: "GET" | "POST" | "PATCH";
 		body?: JsonValue;
 	} = {},
 ): Promise<unknown> {
@@ -72,7 +105,7 @@ async function github(
 		signal: context.signal,
 		keepHeaders: ["x-ratelimit-remaining"],
 	});
-	if (response.status < 200 || response.status >= 300) throw providerRefusal(response, "GitHub");
+	if (response.status < 200 || response.status >= 300) throw unprocessableRefusal(response);
 	return parseJsonResponse(response);
 }
 
@@ -406,6 +439,182 @@ export function createGitHubConnectorAdapters(
 					url: jsonString(pull.html_url, 512),
 					files: changedFiles.items,
 					...(changedFiles.omitted > 0 ? { files_omitted: changedFiles.omitted } : {}),
+				};
+			},
+			async list_pull_requests(args, context) {
+				const state = jsonString(args.state, 16) ?? "open";
+				const head = args.head === undefined ? undefined : gitRefValue(args.head, "head branch");
+				const base = args.base === undefined ? undefined : gitRefValue(args.base, "base branch");
+				const items = jsonArray(
+					await github(context, `${repositoryPath(args)}/pulls`, {
+						query: {
+							state,
+							...(head ? { head } : {}),
+							...(base ? { base } : {}),
+							per_page: limit(args.limit, 20),
+						},
+					}),
+				);
+				const pulls = items.map((item) => {
+					const pull = jsonRecord(item);
+					const headObj = jsonRecord(pull.head);
+					const baseObj = jsonRecord(pull.base);
+					return {
+						number: jsonInteger(pull.number),
+						title: jsonString(pull.title, 256),
+						state: jsonString(pull.state, 16),
+						draft: jsonBoolean(pull.draft),
+						author: user(pull.user),
+						head: jsonString(headObj.ref, 256),
+						head_sha: jsonString(headObj.sha, 64),
+						base: jsonString(baseObj.ref, 256),
+						labels: labels(pull.labels),
+						created_at: jsonString(pull.created_at, 40),
+						updated_at: jsonString(pull.updated_at, 40),
+						url: jsonString(pull.html_url, 512),
+					};
+				});
+				const fitted = fitItems(pulls, LIST_BYTES);
+				return {
+					pull_requests: fitted.items,
+					...(fitted.omitted > 0 ? { pull_requests_omitted: fitted.omitted } : {}),
+				};
+			},
+			async create_pull_request(args, context) {
+				const head = gitRefValue(args.head, "head branch");
+				const base = gitRefValue(args.base, "base branch");
+				const created = jsonRecord(
+					await github(context, `${repositoryPath(args)}/pulls`, {
+						method: "POST",
+						body: {
+							title: String(args.title),
+							head,
+							base,
+							...(typeof args.body === "string" ? { body: args.body } : {}),
+							...(typeof args.draft === "boolean" ? { draft: args.draft } : {}),
+						},
+					}),
+				);
+				const headObj = jsonRecord(created.head);
+				const baseObj = jsonRecord(created.base);
+				return {
+					number: jsonInteger(created.number),
+					title: jsonString(created.title, 256),
+					state: jsonString(created.state, 16),
+					draft: jsonBoolean(created.draft),
+					head: jsonString(headObj.ref, 256),
+					head_sha: jsonString(headObj.sha, 64),
+					base: jsonString(baseObj.ref, 256),
+					url: jsonString(created.html_url, 512),
+					created_at: jsonString(created.created_at, 40),
+					updated_at: jsonString(created.updated_at, 40),
+				};
+			},
+			async update_pull_request(args, context) {
+				const patch: Record<string, JsonValue> = {};
+				if (typeof args.title === "string") patch.title = args.title;
+				if (typeof args.body === "string") patch.body = args.body;
+				if (typeof args.state === "string") patch.state = args.state;
+				if (args.base !== undefined) patch.base = gitRefValue(args.base, "base branch");
+				if (Object.keys(patch).length === 0) {
+					throw new ConnectorRequestError(
+						"invalid_request",
+						"Provide at least one of title, body, state, or base to update.",
+					);
+				}
+				const updated = jsonRecord(
+					await github(context, `${repositoryPath(args)}/pulls/${jsonInteger(args.number)}`, {
+						method: "PATCH",
+						body: patch,
+					}),
+				);
+				return {
+					number: jsonInteger(updated.number),
+					title: jsonString(updated.title, 256),
+					state: jsonString(updated.state, 16),
+					draft: jsonBoolean(updated.draft),
+					base: jsonString(jsonRecord(updated.base).ref, 256),
+					url: jsonString(updated.html_url, 512),
+					updated_at: jsonString(updated.updated_at, 40),
+				};
+			},
+			async list_pull_request_reviews(args, context) {
+				const items = jsonArray(
+					await github(context, `${repositoryPath(args)}/pulls/${jsonInteger(args.number)}/reviews`, {
+						query: { per_page: limit(args.limit, 20) },
+					}),
+				);
+				const reviews = items.map((item) => {
+					const review = jsonRecord(item);
+					const clipped = clipText(
+						typeof review.body === "string" ? review.body : "",
+						COMMENT_CHARS,
+						COMMENT_BYTES,
+					);
+					return {
+						id: jsonInteger(review.id),
+						author: user(review.user),
+						state: jsonString(review.state, 32),
+						commit_id: jsonString(review.commit_id, 64),
+						submitted_at: jsonString(review.submitted_at, 40),
+						body: clipped.text,
+						body_truncated: clipped.truncated,
+						url: jsonString(review.html_url, 512),
+					};
+				});
+				const fitted = fitItems(reviews, LIST_BYTES);
+				return {
+					reviews: fitted.items,
+					...(fitted.omitted > 0 ? { reviews_omitted: fitted.omitted } : {}),
+				};
+			},
+			async list_check_runs(args, context) {
+				const ref = gitRefValue(args.ref, "git ref");
+				const payload = jsonRecord(
+					await github(context, `${repositoryPath(args)}/commits/${encodeURIComponent(ref)}/check-runs`, {
+						query: { per_page: limit(args.limit, 30) },
+					}),
+				);
+				const runs = jsonArray(payload.check_runs).map((item) => {
+					const run = jsonRecord(item);
+					const output = jsonRecord(run.output);
+					return {
+						id: jsonInteger(run.id),
+						name: jsonString(run.name, 200),
+						status: jsonString(run.status, 32),
+						conclusion: jsonString(run.conclusion, 32),
+						head_sha: jsonString(run.head_sha, 64),
+						started_at: jsonString(run.started_at, 40),
+						completed_at: jsonString(run.completed_at, 40),
+						summary_title: jsonString(output.title, 200),
+						url: jsonString(run.html_url, 512),
+					};
+				});
+				const fitted = fitItems(runs, LIST_BYTES);
+				return {
+					total_count: jsonInteger(payload.total_count),
+					check_runs: fitted.items,
+					...(fitted.omitted > 0 ? { check_runs_omitted: fitted.omitted } : {}),
+				};
+			},
+			async list_branches(args, context) {
+				const items = jsonArray(
+					await github(context, `${repositoryPath(args)}/branches`, {
+						query: { per_page: limit(args.limit, 30) },
+					}),
+				);
+				const branches = items.map((item) => {
+					const entry = jsonRecord(item);
+					return {
+						name: jsonString(entry.name, 256),
+						sha: jsonString(jsonRecord(entry.commit).sha, 64),
+						protected: jsonBoolean(entry.protected),
+					};
+				});
+				const fitted = fitItems(branches, LIST_BYTES);
+				return {
+					branches: fitted.items,
+					...(fitted.omitted > 0 ? { branches_omitted: fitted.omitted } : {}),
 				};
 			},
 		},
