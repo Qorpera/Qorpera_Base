@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -1851,5 +1851,941 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 			p_published_head_sha: staticMainSha,
 			p_lease_token: publishLease,
 		});
+	});
+
+	it("deploys server and hybrid surface previews and publishes via qorpera-app-host with zero-downtime ordering and stale preview cleanup", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: {
+					kind: "server",
+					folder: ".",
+					port: 4000,
+					healthPath: "/healthz",
+					idleTimeoutSec: 300,
+					memoryMb: 512,
+					vcpuLimit: 1,
+				},
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('v1');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const previewId = randomUUID();
+		const publishJobId = randomUUID();
+		const previewLease = randomUUID();
+		const publishLease = randomUUID();
+		const previewDepId = randomUUID();
+		const previewVerId = randomUUID();
+		const liveDepId = randomUUID();
+		const liveVerId = randomUUID();
+		const staleDepId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/thetaband-website@sha256:${"a".repeat(64)}`;
+
+		const rpcCalls: { method: string; args: Record<string, unknown> }[] = [];
+		const appHostCalls: { url: string; method: string; body?: Record<string, unknown> }[] = [];
+		let claimPass = 0;
+
+		const worker = new SurfaceCodeHostWorker({
+			staleSweepIntervalMs: 60_000,
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-token",
+				appHostInternalUrl: "http://127.0.0.1:8096",
+				appHostControlToken: "app-token",
+				buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 15 }),
+				appHostFetchImpl: async (url, init) => {
+					const parsedBody = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+					appHostCalls.push({ url, method: init.method, ...(parsedBody ? { body: parsedBody } : {}) });
+					if (url.endsWith("/_internal/apps/deploy")) {
+						const depId = String(parsedBody?.deployment_id ?? "");
+						return {
+							status: 200,
+							body: JSON.stringify({
+								upstream_addr: depId === previewDepId ? "127.0.0.1:42001" : "127.0.0.1:42002",
+							}),
+						};
+					}
+					if (url.endsWith("/stop")) {
+						return { status: 200, body: JSON.stringify({ stopped: true }) };
+					}
+					return { status: 404, body: "{}" };
+				},
+			},
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						claimPass += 1;
+						if (claimPass === 1) {
+							return {
+								sessions: [],
+								previews: [
+									{
+										previewId,
+										surfaceId,
+										profileId,
+										environmentId,
+										sourceKind: "code_repo",
+										shortHostId: "ab12cd34",
+										repositoryKey: "thetaband/website",
+										baseSha: serverMainSha,
+										selectedChangeIds: [],
+										changes: [],
+										leaseToken: previewLease,
+									},
+								],
+								merges: [],
+								publishes: [],
+								cleanups: [],
+								automations: [],
+							};
+						}
+						if (claimPass === 2) {
+							return {
+								sessions: [],
+								previews: [],
+								merges: [],
+								publishes: [
+									{
+										jobId: publishJobId,
+										surfaceId,
+										profileId,
+										environmentId,
+										sourceKind: "code_repo",
+										liveHeadSha: serverMainSha,
+										leaseToken: publishLease,
+										repositoryKey: "thetaband/website",
+										siteId,
+										payload: { liveHeadSha: serverMainSha, repositoryKey: "thetaband/website" },
+									},
+								],
+								cleanups: [],
+								automations: [],
+							};
+						}
+						return { sessions: [], previews: [], merges: [], publishes: [], cleanups: [], automations: [] };
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						const isPreview = typeof args.p_title === "string" && args.p_title.startsWith("Preview ");
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: isPreview ? previewVerId : liveVerId,
+							deploymentId: isPreview ? previewDepId : liveDepId,
+							versionNumber: isPreview ? 1 : 2,
+							kind: args.p_kind ?? "static",
+							state: args.p_promote_live === true ? "live" : "ready",
+						};
+					}
+					if (method === "qorpera_surface_stale_app_deployments_due") {
+						return [{ deploymentId: staleDepId, siteId, profileId, upstreamAddr: "127.0.0.1:41999" }];
+					}
+					if (method === "qorpera_surface_app_deployment_mark_stopped" && args.p_claim_only === true) {
+						return { claimed: true, stopped: false, deploymentId: args.p_deployment_id };
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const pass1 = await worker.pass(new AbortController().signal);
+		expect(pass1).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+
+		const previewDeployCall = appHostCalls.find(
+			(c) => c.url.endsWith("/_internal/apps/deploy") && c.body?.deployment_id === previewDepId,
+		);
+		expect(previewDeployCall?.body).toMatchObject({
+			deployment_id: previewDepId,
+			site_id: siteId,
+			oci_image_ref: imageRef,
+			health_path: "/healthz",
+			is_preview: true,
+		});
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_site_deployment_set_upstream")?.args).toEqual({
+			p_deployment_id: previewDepId,
+			p_upstream_addr: "127.0.0.1:42001",
+		});
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_preview")?.args).toMatchObject({
+			p_preview_id: previewId,
+			p_status: "ready",
+			p_site_version_id: previewVerId,
+		});
+
+		const staleStopCall = appHostCalls.find((c) => c.url.endsWith(`/_internal/apps/${staleDepId}/stop`));
+		expect(staleStopCall?.body).toEqual({ expected_upstream_addr: "127.0.0.1:41999" });
+		const markStoppedCalls = rpcCalls.filter((c) => c.method === "qorpera_surface_app_deployment_mark_stopped");
+		expect(markStoppedCalls.map((c) => c.args)).toEqual([
+			{
+				p_deployment_id: staleDepId,
+				p_expected_upstream_addr: "127.0.0.1:41999",
+				p_claim_only: true,
+			},
+			{
+				p_deployment_id: staleDepId,
+				p_expected_upstream_addr: "127.0.0.1:41999",
+			},
+		]);
+
+		const pass2 = await worker.pass(new AbortController().signal);
+		expect(pass2).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+
+		const liveRegisters = rpcCalls.filter(
+			(c) => c.method === "qorpera_surface_site_deployment_register" && c.args.p_title === null,
+		);
+		expect(liveRegisters).toHaveLength(2);
+		expect(liveRegisters[0]?.args).toMatchObject({
+			p_promote_live: false,
+			p_upstream_addr: null,
+			p_kind: "server",
+			p_oci_image_ref: imageRef,
+			p_app_port: 4000,
+		});
+		expect(liveRegisters[1]?.args).toMatchObject({
+			p_promote_live: true,
+			p_upstream_addr: "127.0.0.1:42002",
+			p_kind: "server",
+			p_oci_image_ref: imageRef,
+		});
+		const liveDeployCall = appHostCalls.find(
+			(c) => c.url.endsWith("/_internal/apps/deploy") && c.body?.deployment_id === liveDepId,
+		);
+		expect(liveDeployCall?.body?.is_preview).toBeUndefined();
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish")?.args).toMatchObject({
+			p_job_id: publishJobId,
+			p_status: "published",
+			p_published_head_sha: serverMainSha,
+		});
+		expect(rpcCalls.filter((c) => c.method === "qorpera_surface_stale_app_deployments_due")).toHaveLength(1);
+	});
+
+	it("defers static settle on hybrid preview Pass 1 and deploys built assets plus OCI container on Pass 2", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(join(src, "package.json"), JSON.stringify({ name: "hybrid-app" }));
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				preview: { run: "npm run build", cwd: ".", folder: "dist", timeoutSeconds: 120 },
+				site: {
+					kind: "hybrid",
+					folder: "dist",
+					port: 3000,
+					healthPath: "/api/health",
+					spaFallback: "index.html",
+				},
+			}),
+		);
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "hybrid app");
+		const hybridMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", hybridMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const previewId = randomUUID();
+		const buildId = randomUUID();
+		const previewDepId = randomUUID();
+		const previewVerId = randomUUID();
+		const lease1 = randomUUID();
+		const lease2 = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/thetaband-website@sha256:${"b".repeat(64)}`;
+		const manifestSha = "c".repeat(64);
+		const fileSha = "d".repeat(64);
+
+		const rpcCalls: { method: string; args: Record<string, unknown> }[] = [];
+		let passCount = 0;
+
+		const worker = new SurfaceCodeHostWorker({
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-token",
+				appHostInternalUrl: "http://127.0.0.1:8096",
+				appHostControlToken: "app-token",
+				buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 10 }),
+				fetchImpl: async (url) => {
+					if (url.endsWith("/_internal/blobs/exists")) {
+						return { status: 200, body: JSON.stringify({ missing: [] }) };
+					}
+					return { status: 200, body: "{}" };
+				},
+				appHostFetchImpl: async () => ({
+					status: 200,
+					body: JSON.stringify({ upstream_addr: "127.0.0.1:43001" }),
+				}),
+			},
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						passCount += 1;
+						return {
+							sessions: [],
+							previews: [
+								{
+									previewId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									shortHostId: "hy123456",
+									repositoryKey: "thetaband/website",
+									baseSha: hybridMainSha,
+									selectedChangeIds: [],
+									changes: [],
+									leaseToken: passCount === 1 ? lease1 : lease2,
+								},
+							],
+							merges: [],
+							publishes: [],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_request_build") {
+						if (passCount === 1) {
+							return { state: "waiting", buildId };
+						}
+						return {
+							state: "built",
+							buildId,
+							builtTreeSha: null,
+							manifestSha256: manifestSha,
+							manifestJson: {
+								files: {
+									"index.html": {
+										sha256: fileSha,
+										bytes: 32,
+										content_type: "text/html; charset=utf-8",
+										immutable: false,
+									},
+								},
+								redirects: [],
+								headers: [],
+								spa_fallback: "index.html",
+								not_found_page: null,
+							},
+							fileCount: 1,
+							totalBytes: 32,
+							hasCredentialInputs: false,
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: previewVerId,
+							deploymentId: previewDepId,
+							versionNumber: 1,
+							kind: "hybrid",
+							state: "ready",
+						};
+					}
+					if (method === "qorpera_surface_stale_app_deployments_due") return [];
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const p1 = await worker.pass(new AbortController().signal);
+		expect(p1).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_request_build")?.args).toMatchObject({
+			p_kind: "preview",
+			p_id: previewId,
+			p_defer_settle: true,
+		});
+		expect(rpcCalls.some((c) => c.method === "qorpera_surface_complete_preview")).toBe(false);
+
+		const p2 = await worker.pass(new AbortController().signal);
+		expect(p2).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_site_deployment_register")?.args).toMatchObject({
+			p_kind: "hybrid",
+			p_oci_image_ref: imageRef,
+			p_file_count: 4,
+			p_promote_live: false,
+		});
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_site_deployment_set_upstream")?.args).toEqual({
+			p_deployment_id: previewDepId,
+			p_upstream_addr: "127.0.0.1:43001",
+		});
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_preview")?.args).toMatchObject({
+			p_preview_id: previewId,
+			p_status: "ready",
+			p_site_version_id: previewVerId,
+		});
+	});
+
+	it("pre-checks public promote refusals before touching app-host, rolls back containers on promote failure, and backs off failing stops", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 3000, healthPath: "/health" },
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('app');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const staleDepId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/demo@sha256:${"9".repeat(64)}`;
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const appHostCalls: Array<{ url: string; body?: string }> = [];
+		let registerCount = 0;
+
+		const worker = new SurfaceCodeHostWorker({
+			exportSource: async (_job, input) => ({ sourceDir: input.tree }),
+			staleSweepIntervalMs: 0,
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8088",
+				controlToken: "router-secret",
+				appHostInternalUrl: "http://127.0.0.1:8089",
+				appHostControlToken: "apphost-secret",
+				buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 10 }),
+				appHostFetchImpl: async (url, init) => {
+					appHostCalls.push({ url, ...(init.body !== undefined ? { body: init.body } : {}) });
+					if (url.endsWith("/_internal/apps/deploy")) {
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:44001" }) };
+					}
+					if (url.includes(`/${staleDepId}/stop`)) {
+						return { status: 500, body: "boom" };
+					}
+					return { status: 200, body: JSON.stringify({ stopped: true }) };
+				},
+			},
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: serverMainSha,
+									repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									siteId,
+									siteSlug: "thetaband",
+									leaseToken,
+									payload: {
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									},
+								},
+							],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						registerCount += 1;
+						if (registerCount === 2) {
+							throw new Error("DB_PROMOTE_TIMEOUT");
+						}
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: verId,
+							deploymentId: depId,
+							versionNumber: 1,
+							kind: "server",
+							state: "ready",
+						};
+					}
+					if (method === "qorpera_surface_stale_app_deployments_due") {
+						return [{ deploymentId: staleDepId, siteId, profileId, upstreamAddr: "127.0.0.1:44002" }];
+					}
+					if (method === "qorpera_surface_app_deployment_mark_stopped" && args.p_claim_only === true) {
+						return { claimed: true, stopped: false, isLive: false, deploymentId: args.p_deployment_id };
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish")?.args).toMatchObject({
+			p_job_id: jobId,
+			p_status: "failed",
+		});
+		const firstRegister = rpcCalls.find((c) => c.method === "qorpera_surface_site_deployment_register");
+		expect(firstRegister?.args).toMatchObject({ p_promote_live: false, p_check_public_promote: true });
+		const rollbackStopCall = appHostCalls.find((c) => c.url.endsWith(`/_internal/apps/${depId}/stop`));
+		expect(rollbackStopCall?.body).toBe(JSON.stringify({ expected_upstream_addr: "127.0.0.1:44001" }));
+		expect(
+			rpcCalls.some(
+				(c) =>
+					c.method === "qorpera_surface_app_deployment_mark_stopped" &&
+					c.args.p_deployment_id === depId &&
+					c.args.p_force === true &&
+					c.args.p_claim_only === true,
+			),
+		).toBe(true);
+		expect(
+			rpcCalls.some(
+				(c) =>
+					c.method === "qorpera_surface_app_deployment_mark_stopped" &&
+					c.args.p_deployment_id === depId &&
+					c.args.p_force === true &&
+					c.args.p_claim_only === undefined,
+			),
+		).toBe(true);
+		expect(
+			rpcCalls.some(
+				(c) =>
+					c.method === "qorpera_surface_app_deployment_mark_stopped" &&
+					c.args.p_deployment_id === staleDepId &&
+					c.args.p_expected_upstream_addr === "127.0.0.1:44002" &&
+					c.args.p_stop_failed === true,
+			),
+		).toBe(true);
+	});
+
+	it("skips app-host stop when rollback finds deployment is already live or sweep sees claim refusal or 409 mismatch", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 3000, healthPath: "/health" },
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('app');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const unclaimedDepId = randomUUID();
+		const conflictDepId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/demo@sha256:${"8".repeat(64)}`;
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const appHostCalls: Array<{ url: string; body?: string }> = [];
+		let registerCount = 0;
+		let rollbackClaimAttempts = 0;
+
+		const worker = new SurfaceCodeHostWorker({
+			exportSource: async (_job, input) => ({ sourceDir: input.tree }),
+			staleSweepIntervalMs: 0,
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8088",
+				controlToken: "router-secret",
+				appHostInternalUrl: "http://127.0.0.1:8089",
+				appHostControlToken: "apphost-secret",
+				buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 10 }),
+				appHostFetchImpl: async (url, init) => {
+					appHostCalls.push({ url, ...(init.body !== undefined ? { body: init.body } : {}) });
+					if (url.endsWith("/_internal/apps/deploy")) {
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:45001" }) };
+					}
+					if (url.includes(`/${conflictDepId}/stop`)) {
+						return { status: 409, body: JSON.stringify({ stopped: false, error: "upstream_mismatch" }) };
+					}
+					return { status: 200, body: JSON.stringify({ stopped: true }) };
+				},
+			},
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: serverMainSha,
+									repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									siteId,
+									siteSlug: "thetaband",
+									leaseToken,
+									payload: {
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									},
+								},
+							],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						registerCount += 1;
+						if (registerCount === 2) {
+							throw new Error("LOST_HTTP_RESPONSE");
+						}
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: verId,
+							deploymentId: depId,
+							versionNumber: 1,
+							kind: "server",
+							state: "ready",
+							deploymentState: "ready",
+						};
+					}
+					if (method === "qorpera_surface_stale_app_deployments_due") {
+						return [
+							{ deploymentId: unclaimedDepId, siteId, profileId, upstreamAddr: "127.0.0.1:45002" },
+							{ deploymentId: conflictDepId, siteId, profileId, upstreamAddr: "127.0.0.1:45003" },
+						];
+					}
+					if (method === "qorpera_surface_app_deployment_mark_stopped" && args.p_claim_only === true) {
+						if (args.p_deployment_id === depId) {
+							rollbackClaimAttempts += 1;
+							if (rollbackClaimAttempts === 1) {
+								throw new Error("LOCK_TIMEOUT");
+							}
+							return { claimed: false, stopped: false, isLive: true, deploymentId: depId };
+						}
+						if (args.p_deployment_id === unclaimedDepId) {
+							return { claimed: false, stopped: false, deploymentId: unclaimedDepId };
+						}
+						return { claimed: true, stopped: false, deploymentId: args.p_deployment_id };
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(rpcCalls.find((c) => c.method === "qorpera_surface_complete_publish")?.args).toMatchObject({
+			p_job_id: jobId,
+			p_status: "published",
+		});
+		expect(appHostCalls.some((c) => c.url.endsWith(`/_internal/apps/${depId}/stop`))).toBe(false);
+		expect(appHostCalls.some((c) => c.url.endsWith(`/_internal/apps/${unclaimedDepId}/stop`))).toBe(false);
+		expect(appHostCalls.some((c) => c.url.endsWith(`/_internal/apps/${conflictDepId}/stop`))).toBe(true);
+		expect(
+			rpcCalls.some(
+				(c) =>
+					c.method === "qorpera_surface_app_deployment_mark_stopped" &&
+					c.args.p_deployment_id === conflictDepId &&
+					c.args.p_claim_only === undefined,
+			),
+		).toBe(false);
+	});
+
+	it("yields publish instead of reporting failure when rollback live-check remains locked out", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, ".qorpera"), { recursive: true });
+		await writeFile(
+			join(src, ".qorpera", "checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 3000, healthPath: "/health" },
+			}),
+		);
+		await writeFile(join(src, "server.js"), "console.log('app');\n");
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/demo@sha256:${"7".repeat(64)}`;
+		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const appHostCalls: Array<{ url: string; body?: string }> = [];
+		const reportedEvents: Array<Record<string, unknown>> = [];
+		let registerCount = 0;
+
+		const worker = new SurfaceCodeHostWorker({
+			exportSource: async (_job, input) => ({ sourceDir: input.tree }),
+			staleSweepIntervalMs: 60_000,
+			report: (ev) => reportedEvents.push(ev),
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8088",
+				controlToken: "router-secret",
+				appHostInternalUrl: "http://127.0.0.1:8089",
+				appHostControlToken: "apphost-secret",
+				buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 10 }),
+				appHostFetchImpl: async (url, init) => {
+					appHostCalls.push({ url, ...(init.body !== undefined ? { body: init.body } : {}) });
+					if (url.endsWith("/_internal/apps/deploy")) {
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:46001" }) };
+					}
+					return { status: 200, body: JSON.stringify({ stopped: true }) };
+				},
+			},
+			control: {
+				async call(method, args) {
+					rpcCalls.push({ method, args });
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: serverMainSha,
+									repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									siteId,
+									siteSlug: "thetaband",
+									leaseToken,
+									payload: {
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									},
+								},
+							],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						registerCount += 1;
+						if (registerCount === 2) {
+							throw new Error("LOST_HTTP_RESPONSE");
+						}
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: verId,
+							deploymentId: depId,
+							versionNumber: 1,
+							kind: "server",
+							state: "ready",
+							deploymentState: "ready",
+						};
+					}
+					if (method === "qorpera_surface_app_deployment_mark_stopped" && args.p_claim_only === true) {
+						throw new Error("LOCK_TIMEOUT");
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+		expect(rpcCalls.some((c) => c.method === "qorpera_surface_complete_publish")).toBe(false);
+		expect(appHostCalls.some((c) => c.url.endsWith(`/_internal/apps/${depId}/stop`))).toBe(false);
+		expect(
+			rpcCalls.filter(
+				(c) =>
+					c.method === "qorpera_surface_app_deployment_mark_stopped" &&
+					c.args.p_deployment_id === depId &&
+					c.args.p_claim_only === true,
+			),
+		).toHaveLength(3);
+		expect(reportedEvents).toContainEqual({
+			event: "surface-code-host-rollback-uncertain",
+			kind: "publish",
+			jobId,
+			surfaceId,
+			deploymentId: depId,
+			upstreamAddr: "127.0.0.1:46001",
+		});
+	});
+
+	it("exports only the monorepo subpath as the build context for subpath-configured server apps", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, "apps/api/.qorpera"), { recursive: true });
+		await writeFile(join(src, "Dockerfile"), "FROM scratch\n# root decoy\n");
+		await writeFile(join(src, "root-only.txt"), "decoy\n");
+		await writeFile(join(src, "apps/api/Dockerfile"), "FROM node:22-alpine\nCOPY server.js .\n");
+		await writeFile(join(src, "apps/api/server.js"), "console.log('subpath-api');\n");
+		await writeFile(
+			join(src, "apps/api/.qorpera/checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 4100, dockerfile: "Dockerfile", healthPath: "/health" },
+			}),
+		);
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "monorepo subpath server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/subpath-api@sha256:${"6".repeat(64)}`;
+		let seenDockerfile: string | null = null;
+		let seenEntries: string[] = [];
+		let seenServerContent = "";
+
+		const worker = new SurfaceCodeHostWorker({
+			staleSweepIntervalMs: 60_000,
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8088",
+				controlToken: "router-secret",
+				appHostInternalUrl: "http://127.0.0.1:8089",
+				appHostControlToken: "apphost-secret",
+				buildAppImage: async (buildInput) => {
+					seenDockerfile = buildInput.dockerfile;
+					seenEntries = (await readdir(buildInput.sourceDir)).sort();
+					seenServerContent = await readFile(join(buildInput.sourceDir, "server.js"), "utf8");
+					return { ociImageRef: imageRef, builtMs: 12 };
+				},
+				appHostFetchImpl: async () => ({
+					status: 200,
+					body: JSON.stringify({ upstream_addr: "127.0.0.1:47001" }),
+				}),
+			},
+			control: {
+				async call(method, args) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: serverMainSha,
+									repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									repositorySubpath: "apps/api",
+									siteId,
+									siteSlug: "thetaband",
+									leaseToken,
+									payload: {
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									},
+								},
+							],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: verId,
+							deploymentId: depId,
+							versionNumber: 1,
+							kind: "server",
+							state: args.p_promote_live === true ? "live" : "ready",
+						};
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(seenDockerfile).toBe("Dockerfile");
+		expect(seenEntries).toEqual([".qorpera", "Dockerfile", "server.js"]);
+		expect(seenServerContent).toContain("subpath-api");
 	});
 });

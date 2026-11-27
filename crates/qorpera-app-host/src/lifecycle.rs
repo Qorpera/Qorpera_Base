@@ -40,6 +40,8 @@ pub struct DeployRequest {
     pub pids_limit: u32,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub is_preview: bool,
 }
 
 fn default_health_path() -> String {
@@ -270,8 +272,15 @@ impl AppLifecycleManager {
     }
 
     pub async fn deploy_blue_green(&self, req: DeployRequest) -> Result<DeploymentStatus, String> {
-        let site_lock = self.site_deploy_lock(&req.site_id)?;
-        let _site_guard = site_lock.lock().await;
+        let site_lock = if req.is_preview {
+            None
+        } else {
+            Some(self.site_deploy_lock(&req.site_id)?)
+        };
+        let _site_guard = match &site_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
 
         let dep_lock = self.deployment_lock(&req.deployment_id)?;
         let (status, previous_live) = {
@@ -336,7 +345,9 @@ impl AppLifecycleManager {
             }
 
             let now_ms = unix_ms();
-            let previous_live = {
+            let previous_live = if req.is_preview {
+                None
+            } else {
                 let mut live_map = self.live_by_site.lock().map_err(|_| "lock_poisoned".to_string())?;
                 let prev = live_map.insert(req.site_id.clone(), req.deployment_id.clone());
                 if prev.as_deref() == Some(req.deployment_id.as_str()) {
@@ -713,11 +724,33 @@ impl AppLifecycleManager {
     }
 
     pub async fn stop_deployment(&self, deployment_id: &str) -> Result<(), String> {
+        let _ = self.stop_deployment_if_upstream(deployment_id, None).await?;
+        Ok(())
+    }
+
+    pub async fn stop_deployment_if_upstream(
+        &self,
+        deployment_id: &str,
+        expected_upstream_addr: Option<&str>,
+    ) -> Result<bool, String> {
         let dep_lock = self.deployment_lock(deployment_id)?;
         let res = {
             let _dep_guard = dep_lock.lock().await;
+            if let Some(expected) = expected_upstream_addr {
+                let actual = {
+                    let map = self.deployments.lock().map_err(|_| "lock_poisoned".to_string())?;
+                    map.get(deployment_id)
+                        .and_then(|entry| entry.handle.as_ref().map(|h| h.upstream_addr.clone()))
+                };
+                if let Some(actual_addr) = actual {
+                    if actual_addr != expected {
+                        return Ok(false);
+                    }
+                }
+            }
             self.stop_deployment_unlocked(deployment_id, InstanceState::Stopped, true)
-                .await
+                .await?;
+            Ok(true)
         };
         drop(dep_lock);
         self.prune_stopped_history();

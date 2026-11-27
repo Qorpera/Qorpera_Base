@@ -1750,11 +1750,16 @@ async fn handle_public(
         None => match wake_and_record(&state, wake_deployment()).await {
             Ok(addr) => (addr, false),
             Err(_) => {
-                return html_response(
+                let mut res = html_response(
                     StatusCode::SERVICE_UNAVAILABLE,
                     render_app_unavailable_page(),
                     true,
                 );
+                if let Some(csp) = frame_ancestors {
+                    res.headers_mut()
+                        .insert(HeaderName::from_static("content-security-policy"), csp.clone());
+                }
+                return res;
             }
         },
     };
@@ -1784,6 +1789,7 @@ async fn handle_public(
         &host_s,
         &ip_s,
         !is_public,
+        frame_ancestors,
         &state.ws_limiter,
         &state.activity,
         &deployment.id,
@@ -1822,6 +1828,7 @@ async fn handle_public(
                         &host_s,
                         &ip_s,
                         !is_public,
+                        frame_ancestors,
                     )
                     .await
                     {
@@ -1829,17 +1836,29 @@ async fn handle_public(
                     }
                 }
             }
-            html_response(
+            let mut res = html_response(
                 StatusCode::BAD_GATEWAY,
                 render_app_unavailable_page(),
                 true,
-            )
+            );
+            if let Some(csp) = frame_ancestors {
+                res.headers_mut()
+                    .insert(HeaderName::from_static("content-security-policy"), csp.clone());
+            }
+            res
         }
-        Err(ProxyError::UpstreamFailed(_)) => html_response(
-            StatusCode::BAD_GATEWAY,
-            render_app_unavailable_page(),
-            true,
-        ),
+        Err(ProxyError::UpstreamFailed(_)) => {
+            let mut res = html_response(
+                StatusCode::BAD_GATEWAY,
+                render_app_unavailable_page(),
+                true,
+            );
+            if let Some(csp) = frame_ancestors {
+                res.headers_mut()
+                    .insert(HeaderName::from_static("content-security-policy"), csp.clone());
+            }
+            res
+        }
     }
 }
 

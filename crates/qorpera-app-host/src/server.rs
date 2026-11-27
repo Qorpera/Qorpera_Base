@@ -5,7 +5,7 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -173,6 +173,12 @@ async fn read_body(body: Incoming, timeout: Duration) -> Result<Bytes, BodyErr> 
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct StopRequest {
+    #[serde(default)]
+    expected_upstream_addr: Option<String>,
+}
+
 async fn handle_request(
     manager: Arc<AppLifecycleManager>,
     expected_token: &str,
@@ -269,8 +275,47 @@ async fn handle_request(
         }
         if let Some(dep_id) = rest.strip_suffix("/stop") {
             if method == Method::POST {
-                return match manager.stop_deployment(dep_id).await {
-                    Ok(()) => json_res(StatusCode::OK, serde_json::json!({ "stopped": true })),
+                let stop_req = match read_body(req.into_body(), body_read_timeout).await {
+                    Ok(bytes) if !bytes.is_empty() => match serde_json::from_slice::<StopRequest>(&bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return json_res(
+                                StatusCode::BAD_REQUEST,
+                                serde_json::json!({ "error": format!("invalid_json: {e}") }),
+                            );
+                        }
+                    },
+                    Ok(_) => StopRequest::default(),
+                    Err(BodyErr::TooLarge) => {
+                        return json_res(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            serde_json::json!({ "error": "body_too_large" }),
+                        );
+                    }
+                    Err(BodyErr::Timeout) => {
+                        return json_res(
+                            StatusCode::REQUEST_TIMEOUT,
+                            serde_json::json!({ "error": "body_timeout" }),
+                        );
+                    }
+                    Err(BodyErr::Bad) => {
+                        return json_res(
+                            StatusCode::BAD_REQUEST,
+                            serde_json::json!({ "error": "bad_body" }),
+                        );
+                    }
+                };
+                let expected = stop_req
+                    .expected_upstream_addr
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                return match manager.stop_deployment_if_upstream(dep_id, expected).await {
+                    Ok(true) => json_res(StatusCode::OK, serde_json::json!({ "stopped": true })),
+                    Ok(false) => json_res(
+                        StatusCode::CONFLICT,
+                        serde_json::json!({ "stopped": false, "error": "upstream_mismatch" }),
+                    ),
                     Err(err) => json_res(StatusCode::INTERNAL_SERVER_ERROR, serde_json::json!({ "error": err })),
                 };
             }

@@ -66,9 +66,9 @@ declare
 	v_err text;
 begin
 	perform pg_temp.snep_assert(
-		has_function_privilege('service_role', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text)', 'EXECUTE')
-		and not has_function_privilege('authenticated', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text)', 'EXECUTE')
-		and not has_function_privilege('anon', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text)', 'EXECUTE')
+		has_function_privilege('service_role', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)', 'EXECUTE')
+		and not has_function_privilege('authenticated', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)', 'EXECUTE')
+		and not has_function_privilege('anon', 'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)', 'EXECUTE')
 		and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_redeem_member_pass(text,text)', 'EXECUTE')
 		and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_tls_allow(text)', 'EXECUTE')
 		and has_function_privilege('qorpera_web_router', 'public.qorpera_web_edge_snapshot()', 'EXECUTE'),

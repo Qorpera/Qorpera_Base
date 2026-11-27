@@ -140,6 +140,7 @@ async fn blue_green_deploy_rollback_on_unhealthy_two_tier_freeze_wake_and_logs()
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: env1,
+        is_preview: false,
     };
 
     let (st, body) = http_call(
@@ -182,6 +183,7 @@ async fn blue_green_deploy_rollback_on_unhealthy_two_tier_freeze_wake_and_logs()
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: env2,
+        is_preview: false,
     };
 
     let (st, body) = http_call(
@@ -240,6 +242,7 @@ async fn blue_green_deploy_rollback_on_unhealthy_two_tier_freeze_wake_and_logs()
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: HashMap::new(),
+        is_preview: false,
     };
     let (st, _) = http_call(
         addr,
@@ -266,6 +269,7 @@ async fn blue_green_deploy_rollback_on_unhealthy_two_tier_freeze_wake_and_logs()
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: HashMap::new(),
+        is_preview: false,
     };
     let (st, _) = http_call(
         addr,
@@ -477,6 +481,7 @@ async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
         vcpu_limit: 1.0,
         pids_limit: 128,
         env,
+        is_preview: false,
     };
 
     let (st, body) = http_call(
@@ -531,6 +536,7 @@ async fn cold_start_wake_from_payload_and_router_idle_reaper_loop() {
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: HashMap::new(),
+        is_preview: false,
     };
     let w2 = DeployRequest {
         deployment_id: "dep-shut-2".to_string(),
@@ -913,6 +919,7 @@ async fn lxd_unix_socket_atomic_create_freeze_unfreeze_port_reuse_and_fallback()
         vcpu_limit: 1.5,
         pids_limit: 256,
         env: HashMap::from([("NODE_ENV".to_string(), "production".to_string())]),
+        is_preview: false,
     };
 
     let deployed = manager.deploy_blue_green(deploy).await.unwrap();
@@ -1032,6 +1039,7 @@ async fn reaper_fails_closed_on_activity_error_and_already_running_wake_blocks_s
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: HashMap::new(),
+        is_preview: false,
     };
     let status = manager.deploy_blue_green(deploy).await.unwrap();
     let upstream_addr = status.upstream_addr.clone().unwrap();
@@ -1305,6 +1313,7 @@ fn mock_deploy_request(deployment_id: &str, site_id: &str) -> DeployRequest {
         vcpu_limit: 1.0,
         pids_limit: 128,
         env: HashMap::new(),
+        is_preview: false,
     }
 }
 
@@ -1488,4 +1497,150 @@ async fn server_returns_408_on_stalled_deploy_and_wake_bodies_and_exits_on_shutd
         .await
         .expect("accept loop must exit promptly on shutdown signal")
         .unwrap();
+}
+
+#[tokio::test]
+async fn preview_deploy_does_not_replace_or_stop_live_deployment_for_same_site() {
+    let driver = Arc::new(ControlledDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(64, 16 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+        logs,
+        Duration::from_secs(2),
+        Duration::ZERO,
+    ));
+
+    let live = manager
+        .deploy_blue_green(mock_deploy_request("dep-live-1", "site-shared"))
+        .await
+        .unwrap();
+    assert_eq!(live.state, InstanceState::Running);
+    assert_eq!(
+        manager.active_deployment_for_site("site-shared").as_deref(),
+        Some("dep-live-1")
+    );
+
+    let mut preview_req = mock_deploy_request("dep-preview-1", "site-shared");
+    preview_req.is_preview = true;
+    let preview = manager.deploy_blue_green(preview_req).await.unwrap();
+    assert_eq!(preview.state, InstanceState::Running);
+    assert_ne!(preview.upstream_addr, live.upstream_addr);
+
+    assert_eq!(
+        manager.active_deployment_for_site("site-shared").as_deref(),
+        Some("dep-live-1")
+    );
+    assert_eq!(
+        manager.status("dep-live-1").unwrap().state,
+        InstanceState::Running
+    );
+    assert!(driver.is_running("dep-live-1").await);
+    assert!(driver.is_running("dep-preview-1").await);
+    assert_eq!(driver.delete_calls.load(Ordering::SeqCst), 0);
+
+    let live_v2 = manager
+        .deploy_blue_green(mock_deploy_request("dep-live-2", "site-shared"))
+        .await
+        .unwrap();
+    assert_eq!(live_v2.state, InstanceState::Running);
+    assert_eq!(
+        manager.active_deployment_for_site("site-shared").as_deref(),
+        Some("dep-live-2")
+    );
+    assert_eq!(
+        manager.status("dep-live-1").unwrap().state,
+        InstanceState::Stopped
+    );
+    assert_eq!(
+        manager.status("dep-preview-1").unwrap().state,
+        InstanceState::Running
+    );
+    assert!(driver.is_running("dep-preview-1").await);
+
+    manager.stop_deployment("dep-preview-1").await.unwrap();
+    assert_eq!(
+        manager.status("dep-preview-1").unwrap().state,
+        InstanceState::Stopped
+    );
+    assert!(driver.is_running("dep-live-2").await);
+
+    manager.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn stop_with_mismatched_expected_upstream_leaves_replacement_running() {
+    let driver = Arc::new(ControlledDriver::new());
+    let logs = Arc::new(LogRingBuffer::new(64, 16 * 1024));
+    let manager = Arc::new(AppLifecycleManager::new(
+        Arc::clone(&driver) as Arc<dyn AppRuntimeDriver>,
+        logs,
+        Duration::from_secs(2),
+        Duration::ZERO,
+    ));
+    let server = AppHostServer::bind(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        Arc::clone(&manager),
+        "stop-guard-secret".to_string(),
+    )
+    .await
+    .unwrap();
+    let addr = server.addr;
+    let _handle = server.spawn();
+
+    let mut req1 = mock_deploy_request("dep-reused", "site-stop-guard");
+    req1.is_preview = true;
+    let first = manager.deploy_blue_green(req1).await.unwrap();
+    let first_upstream = first.upstream_addr.clone().unwrap();
+
+    let mut req2 = mock_deploy_request("dep-reused", "site-stop-guard");
+    req2.is_preview = true;
+    let second = manager.deploy_blue_green(req2).await.unwrap();
+    let second_upstream = second.upstream_addr.clone().unwrap();
+    assert_ne!(first_upstream, second_upstream);
+
+    let (st, body) = http_call(
+        addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-reused/stop")
+            .header("authorization", "Bearer stop-guard-secret")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::json!({ "expected_upstream_addr": first_upstream }).to_string(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["stopped"], false);
+    assert_eq!(parsed["error"], "upstream_mismatch");
+    assert_eq!(
+        manager.status("dep-reused").unwrap().state,
+        InstanceState::Running
+    );
+    assert!(driver.is_running("dep-reused").await);
+
+    let (st2, body2) = http_call(
+        addr,
+        Request::builder()
+            .method("POST")
+            .uri("/_internal/apps/dep-reused/stop")
+            .header("authorization", "Bearer stop-guard-secret")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(
+                serde_json::json!({ "expected_upstream_addr": second_upstream }).to_string(),
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st2, StatusCode::OK);
+    let parsed2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(parsed2["stopped"], true);
+    assert_eq!(
+        manager.status("dep-reused").unwrap().state,
+        InstanceState::Stopped
+    );
+
+    manager.shutdown_all().await;
 }
