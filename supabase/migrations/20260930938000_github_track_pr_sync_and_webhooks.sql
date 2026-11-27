@@ -583,6 +583,16 @@ begin
 				else v_session.branch_head_sha
 			end;
 			if v_head_sha is not null and v_current_sha is not null and v_head_sha <> v_current_sha then
+				v_note := format(
+					'GitHub check %s %s (%s @ %s).',
+					v_check_name,
+					coalesce(nullif(v_conclusion, ''), v_check_status),
+					v_repo,
+					left(v_head_sha, 7)
+				);
+				insert into public.qorpera_surface_session_messages (profile_id, session_id, author_kind, body)
+				values (v_session.profile_id, v_session.id, 'system', v_note);
+				v_matched := v_matched + 1;
 				continue;
 			end if;
 			v_effective_sha := coalesce(v_head_sha, v_current_sha);

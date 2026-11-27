@@ -362,8 +362,12 @@ begin
 		(select checks_summary #>> '{github,sha}' = v_sha_1
 			and checks_summary #>> '{github,runs,ci / lint}' = 'failed'
 			and checks_summary ->> 'status' = 'failed'
-		 from public.qorpera_surface_sessions where id = v_session_a),
-		'Stale-SHA check_run matched by PR number must not overwrite current headSha check state'
+		 from public.qorpera_surface_sessions where id = v_session_a)
+		and exists (
+			select 1 from public.qorpera_surface_session_messages
+			where session_id = v_session_a and body = 'GitHub check ci / stale cancelled (acme/shop @ 4444444).'
+		),
+		'Stale-SHA check_run matched by PR number must log message without overwriting current headSha check state'
 	);
 
 	v_delivery_id := extensions.gen_random_uuid();
@@ -486,6 +490,82 @@ begin
 	perform pg_temp.base_assert(
 		(select checks_summary ->> 'status' = 'passed' from public.qorpera_surface_sessions where id = v_session_b),
 		'Passing check_run after no-PR session moves branch_head_sha must reset stale failure and show passed'
+	);
+
+	update public.qorpera_surface_sessions
+	set checks_summary = jsonb_build_object(
+		'status', 'passed',
+		'github', jsonb_build_object(
+			'sha', v_sha_4,
+			'runs', (select jsonb_object_agg('ci / p-' || g::text, 'passed') from generate_series(1, 40) as g)
+		)
+	)
+	where id = v_session_b;
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object('name', 'ci / fail-41', 'conclusion', 'failure', 'head_sha', v_sha_4)
+		)::text, 'utf8'),
+		100, repeat('a', 63) || '1'
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-evict-passed'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'failed'
+			and checks_summary #>> '{github,runs,ci / fail-41}' = 'failed'
+			and (select count(*) from jsonb_object_keys(checks_summary -> 'github' -> 'runs')) = 40
+			and coalesce((checks_summary #>> '{github,overflowFailed}')::boolean, false) = false
+		 from public.qorpera_surface_sessions where id = v_session_b),
+		'41st failing check when 40 passed checks exist must evict one passed entry and mark failed'
+	);
+
+	update public.qorpera_surface_sessions
+	set checks_summary = jsonb_build_object(
+		'status', 'failed',
+		'github', jsonb_build_object(
+			'sha', v_sha_4,
+			'runs', (select jsonb_object_agg('ci / f-' || g::text, 'failed') from generate_series(1, 40) as g)
+		)
+	)
+	where id = v_session_b;
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object('name', 'ci / overflow-41', 'conclusion', 'failure', 'head_sha', v_sha_4)
+		)::text, 'utf8'),
+		100, repeat('a', 63) || '2'
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-overflow-fail'
+	where id = v_delivery_id;
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object('name', 'ci / f-1', 'conclusion', 'success', 'head_sha', v_sha_4)
+		)::text, 'utf8'),
+		100, repeat('a', 63) || '3'
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-overflow-later-pass'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'failed'
+			and (checks_summary #>> '{github,overflowFailed}')::boolean = true
+		 from public.qorpera_surface_sessions where id = v_session_b),
+		'41st failing check when all 40 entries are failed must set sticky overflowFailed and keep status failed'
 	);
 
 	v_delivery_id := extensions.gen_random_uuid();
