@@ -11,8 +11,11 @@ import type {
 	SurfaceSummary,
 	SurfaceWorkspace,
 } from "@qorpera/contracts";
+import { AppFrame } from "../../ui/app-frame.ts";
+import { SurfaceDialog } from "../../ui/dialog.ts";
 import { confirmDialog, fmtTime, growToText, h, icon, personAvatar, replace } from "../../ui/dom.ts";
 import { markdown } from "../../ui/markdown.ts";
+import { framePage } from "../../ui/page-frame.ts";
 import { t } from "../../ui/preferences.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
@@ -35,28 +38,16 @@ export type WorkbenchPanelTab = "preview" | "mockups" | "plans" | "changes";
 
 const PANEL_WIDTH_KEY = "qorpera.web.workbench-panel-width.v1";
 const TRACKS_WIDTH = 236;
-const THREAD_MIN_WIDTH = 380;
+const THREAD_MIN_WIDTH = 340;
 const PANEL_DEFAULT_WIDTH = 440;
 const PANEL_MIN_WIDTH = 320;
 const PANEL_MAX_WIDTH = 920;
 const PANEL_MAX_SHARE = 0.62;
 const MARKDOWN_CACHE_MAX = 96;
-const MOCKUP_CSP_POLICY = [
-	"default-src 'none'",
-	"img-src data: blob:",
-	"style-src 'unsafe-inline'",
-	"font-src data:",
-].join("; ");
-const MOCKUP_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${MOCKUP_CSP_POLICY}">`;
 const parsedMarkdownCache = new Map<string, HTMLElement>();
 
-function sandboxedMockupSrcdoc(html: string): string {
-	const doctype = /^\uFEFF?\s*<!doctype\b[^>]*>/i.exec(html);
-	if (doctype) {
-		const end = doctype[0].length;
-		return `${html.slice(0, end)}${MOCKUP_CSP_META}${html.slice(end)}`;
-	}
-	return `${MOCKUP_CSP_META}${html}`;
+function refuseMockupCall(): Promise<{ ok: false; error: string }> {
+	return Promise.resolve({ ok: false, error: "Not available in mockup preview" });
 }
 
 function expectedTrackPreviewChangeIds(session: SurfaceSession): string[] {
@@ -254,7 +245,7 @@ export class AppWorkbenchView {
 	readonly #messagesSlot = h("div", { class: "workbench-messages" });
 	readonly #composerInput = h("textarea", {
 		class: "workbench-composer-input",
-		rows: 2,
+		rows: 1,
 		placeholder: t("Describe what you want to plan, design, or change…"),
 		"aria-label": t("Message"),
 	}) as HTMLTextAreaElement;
@@ -300,6 +291,9 @@ export class AppWorkbenchView {
 	#liveMount: SurfaceMount | undefined;
 	#liveMountedFor = "";
 	#liveMountParked = false;
+	#mockupFrame: AppFrame | undefined;
+	#artifactDialog: SurfaceDialog | undefined;
+	#dialogMockupFrame: AppFrame | undefined;
 	#tracksOpen = true;
 	#tracksUserPinned = false;
 	#bodyResizeObserver: ResizeObserver | undefined;
@@ -427,6 +421,24 @@ export class AppWorkbenchView {
 		this.#syncLayoutToWidth();
 	}
 
+	#disposeMockupFrame(): void {
+		if (!this.#mockupFrame) return;
+		this.#mockupFrame.dispose();
+		this.#mockupFrame = undefined;
+	}
+
+	#closeArtifactDialog(): void {
+		if (this.#dialogMockupFrame) {
+			this.#dialogMockupFrame.dispose();
+			this.#dialogMockupFrame = undefined;
+		}
+		if (this.#artifactDialog) {
+			const dialog = this.#artifactDialog;
+			this.#artifactDialog = undefined;
+			dialog.close(false);
+		}
+	}
+
 	#disposeLiveMount(): void {
 		if (!this.#liveMount) return;
 		this.#liveMount.dispose();
@@ -483,9 +495,12 @@ export class AppWorkbenchView {
 		this.#parked = true;
 		this.#disarm();
 		this.#address.close();
+		this.#closeArtifactDialog();
+		this.#disposeMockupFrame();
 		this.#door.clear();
 		this.#parkLiveMount();
 		this.#previewKey = "";
+		this.#mockupPaneKey = "";
 	}
 
 	activate(): void {
@@ -493,6 +508,7 @@ export class AppWorkbenchView {
 		this.#parked = false;
 		this.#door.resetRetryState();
 		this.#previewKey = "";
+		this.#mockupPaneKey = "";
 		this.#syncLayoutToWidth();
 		if (this.#surface) this.update(this.#surface);
 	}
@@ -503,9 +519,12 @@ export class AppWorkbenchView {
 		this.#parked = false;
 		this.#disarm();
 		this.#address.close();
+		this.#closeArtifactDialog();
+		this.#disposeMockupFrame();
 		this.#door.clear();
 		this.#liveMount?.deactivate?.();
 		this.#liveMountParked = false;
+		this.#mockupPaneKey = "";
 	}
 
 	dispose(): void {
@@ -516,6 +535,8 @@ export class AppWorkbenchView {
 		this.#bodyResizeObserver = undefined;
 		this.#door.dispose();
 		this.#disposeLiveMount();
+		this.#disposeMockupFrame();
+		this.#closeArtifactDialog();
 		for (const view of this.#sentImages.values()) view.dispose();
 		this.#sentImages.clear();
 		for (const url of this.#localImageUrls.values()) URL.revokeObjectURL(url);
@@ -549,6 +570,8 @@ export class AppWorkbenchView {
 			this.#mockupPaneKey = "";
 			this.#planPaneKey = "";
 			this.#changesPaneKey = "";
+			this.#closeArtifactDialog();
+			this.#disposeMockupFrame();
 			this.#disposeLiveMount();
 			this.#previewDevicePinned = false;
 			this.#previewDevice = look.kind === "mobile_app" ? "mobile" : "desktop";
@@ -661,16 +684,21 @@ export class AppWorkbenchView {
 				if (event.button !== 0) return;
 				event.preventDefault();
 				const startX = event.clientX;
-				const startWidth = this.#panelWidth;
+				const startWidth = Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), this.#panelWidth));
 				const scale = uiScale();
+				this.#panelResizer.setPointerCapture?.(event.pointerId);
+				this.#body.classList.add("is-resizing");
 				const move = (moveEvent: PointerEvent) => {
 					const delta = (startX - moveEvent.clientX) / scale;
 					this.#panelWidth = Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), Math.round(startWidth + delta)));
 					this.#applyPanelWidth();
 				};
-				const up = () => {
+				const finish = () => {
+					this.#body.classList.remove("is-resizing");
 					window.removeEventListener("pointermove", move);
-					window.removeEventListener("pointerup", up);
+					window.removeEventListener("pointerup", finish);
+					window.removeEventListener("pointercancel", finish);
+					this.#panelResizer.removeEventListener("lostpointercapture", finish);
 					try {
 						localStorage.setItem(PANEL_WIDTH_KEY, String(this.#panelWidth));
 					} catch {
@@ -678,7 +706,9 @@ export class AppWorkbenchView {
 					}
 				};
 				window.addEventListener("pointermove", move, { signal });
-				window.addEventListener("pointerup", up, { once: true, signal });
+				window.addEventListener("pointerup", finish, { once: true, signal });
+				window.addEventListener("pointercancel", finish, { once: true, signal });
+				this.#panelResizer.addEventListener("lostpointercapture", finish, { once: true, signal });
 			},
 			{ signal },
 		);
@@ -694,6 +724,8 @@ export class AppWorkbenchView {
 			},
 			{ signal },
 		);
+
+		window.addEventListener("resize", () => this.#syncLayoutToWidth(), { signal });
 
 		this.el.addEventListener(
 			"click",
@@ -742,13 +774,18 @@ export class AppWorkbenchView {
 	#syncLayoutToWidth(redrawBar = true): void {
 		const width = this.#bodyWidth();
 		const prevTracksOpen = this.#tracksOpen;
-		if (width > 0 && !this.#tracksUserPinned) {
-			if (this.#isStackedLayout()) {
-				this.#tracksOpen = true;
-			} else {
-				const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
-				if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
-				else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
+		if (width > 0) {
+			if (this.#isTightRowLayout() && this.#tracksOpen && this.#panelOpen) {
+				this.#tracksOpen = false;
+				this.#tracksUserPinned = false;
+			} else if (!this.#tracksUserPinned) {
+				if (this.#isStackedLayout()) {
+					this.#tracksOpen = true;
+				} else {
+					const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+					if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
+					else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
+				}
 			}
 		}
 		this.#tracksRail.hidden = !this.#tracksOpen;
@@ -763,7 +800,11 @@ export class AppWorkbenchView {
 	}
 
 	#applyPanelWidth(): void {
-		this.#panel.style.width = `${Math.max(PANEL_MIN_WIDTH, Math.min(this.#panelCap(), this.#panelWidth))}px`;
+		const max = this.#panelCap();
+		const width = Math.max(PANEL_MIN_WIDTH, Math.min(max, this.#panelWidth));
+		this.#panel.style.width = `${Math.round(width * uiScale())}px`;
+		this.#panelResizer.setAttribute("aria-valuemax", String(max));
+		this.#panelResizer.setAttribute("aria-valuenow", String(width));
 	}
 
 	#arm(key: string): boolean {
@@ -1236,7 +1277,6 @@ export class AppWorkbenchView {
 		this.#trackHead.hidden = false;
 		const running = isRunningSession(selected);
 		const shippable = canShipSession(selected);
-		const stopBusy = Boolean(store.state.busy[`stop-turn:${selected.id}`]);
 		const shipBusy = Boolean(store.state.busy[`ship-track:${selected.id}`]);
 		const discardBusy = Boolean(store.state.busy[`discard-session:${selected.id}`]);
 		const previewBusy = Boolean(store.state.busy[`track-preview:${surface.id}`]);
@@ -1260,7 +1300,6 @@ export class AppWorkbenchView {
 			running,
 			shippable,
 			showingThisTrackPreview,
-			stopBusy,
 			shipBusy,
 			discardBusy,
 			previewBusy,
@@ -1276,52 +1315,42 @@ export class AppWorkbenchView {
 				h(
 					"div",
 					{ class: "workbench-track-head-info" },
-					h("h2", { class: "workbench-track-head-title" }, selected.title),
-					h("span", { class: `workbench-pill is-${meta.tone}` }, meta.label),
-					selected.checksSummary
-						? h(
-								"span",
-								{ class: `workbench-pill is-${checksMeta(selected.checksSummary).tone}` },
-								checksMeta(selected.checksSummary).label,
-							)
-						: null,
-					prUrl
-						? h(
-								"a",
-								{
-									class: "workbench-pr-link",
-									href: prUrl,
-									target: "_blank",
-									rel: "noopener noreferrer",
-								},
-								icon("external"),
-								h(
+					h("h2", { class: "workbench-track-head-title", title: selected.title }, selected.title),
+					h(
+						"div",
+						{ class: "workbench-track-head-badges" },
+						h("span", { class: `workbench-pill is-${meta.tone}` }, meta.label),
+						selected.checksSummary
+							? h(
 									"span",
-									null,
-									selected.externalPr?.number
-										? t("PR #{number}", { number: selected.externalPr.number })
-										: t("Pull request"),
-								),
-							)
-						: null,
+									{ class: `workbench-pill is-${checksMeta(selected.checksSummary).tone}` },
+									checksMeta(selected.checksSummary).label,
+								)
+							: null,
+						prUrl
+							? h(
+									"a",
+									{
+										class: "workbench-pr-link",
+										href: prUrl,
+										target: "_blank",
+										rel: "noopener noreferrer",
+									},
+									icon("external"),
+									h(
+										"span",
+										null,
+										selected.externalPr?.number
+											? t("PR #{number}", { number: selected.externalPr.number })
+											: t("Pull request"),
+									),
+								)
+							: null,
+					),
 				),
 				h(
 					"div",
 					{ class: "workbench-track-head-actions" },
-					running
-						? h(
-								"button",
-								{
-									type: "button",
-									class: "btn btn-small btn-danger workbench-stop-btn",
-									disabled: stopBusy,
-									"data-act": "stop-turn",
-									"data-session": selected.id,
-								},
-								icon("stop"),
-								h("span", null, stopBusy ? t("Stopping…") : t("Stop")),
-							)
-						: null,
 					selected.state === "failed"
 						? h(
 								"button",
@@ -1845,7 +1874,9 @@ export class AppWorkbenchView {
 		if (!this.#panelOpen) {
 			this.#door.clear();
 			this.#parkLiveMount();
+			this.#disposeMockupFrame();
 			this.#previewKey = "";
+			this.#mockupPaneKey = "";
 			return;
 		}
 		this.#applyPanelWidth();
@@ -1877,6 +1908,10 @@ export class AppWorkbenchView {
 		}
 		if (this.#panelTab === "mockups") {
 			this.#drawArtifactPane(this.#mockupsPane, mockups, this.#selectedMockupId, "mockup");
+		} else if (this.#mockupFrame) {
+			this.#disposeMockupFrame();
+			this.#mockupsPane.replaceChildren();
+			this.#mockupPaneKey = "";
 		}
 		if (this.#panelTab === "plans") {
 			this.#drawArtifactPane(this.#plansPane, plans, this.#selectedPlanId, "plan");
@@ -2118,8 +2153,12 @@ export class AppWorkbenchView {
 		if (items.length === 0) {
 			const emptyKey = `empty:${group}`;
 			if ((group === "mockup" ? this.#mockupPaneKey : this.#planPaneKey) === emptyKey) return;
-			if (group === "mockup") this.#mockupPaneKey = emptyKey;
-			else this.#planPaneKey = emptyKey;
+			if (group === "mockup") {
+				this.#disposeMockupFrame();
+				this.#mockupPaneKey = emptyKey;
+			} else {
+				this.#planPaneKey = emptyKey;
+			}
 			replace(
 				container,
 				h(
@@ -2165,44 +2204,63 @@ export class AppWorkbenchView {
 			items.map((item) => [item.id, item.title, item.revision]),
 		]);
 		if ((group === "mockup" ? this.#mockupPaneKey : this.#planPaneKey) === paneKey) return;
-		if (group === "mockup") this.#mockupPaneKey = paneKey;
-		else this.#planPaneKey = paneKey;
+		if (group === "mockup") {
+			this.#disposeMockupFrame();
+			this.#mockupPaneKey = paneKey;
+		} else {
+			this.#planPaneKey = paneKey;
+		}
 
-		const viewer = loading
-			? h("div", { class: "workbench-pane-empty" }, h("p", null, t("Loading…")))
-			: resolved.contentFormat === "html" && resolved.contentText !== null
-				? (() => {
-						const iframe = h("iframe", {
-							class: "workbench-artifact-iframe",
-							sandbox: "",
-							referrerpolicy: "no-referrer",
-							title: resolved.title,
-						}) as HTMLIFrameElement;
-						iframe.srcdoc = sandboxedMockupSrcdoc(resolved.contentText);
-						return iframe;
-					})()
-				: resolved.contentFormat === "markdown" && resolved.contentText !== null
-					? h("div", { class: "workbench-artifact-markdown" }, cachedMarkdown(resolved.contentText))
-					: resolved.contentFormat === "json" && resolved.contentText !== null
-						? h("pre", { class: "workbench-artifact-pre" }, resolved.contentText)
-						: resolved.contentFormat === "image_ref"
-							? h("div", { class: "workbench-pane-empty" }, h("p", null, resolved.summary || resolved.title))
-							: h(
-									"div",
-									{ class: "workbench-pane-empty" },
-									h("p", null, t("Artifact content is unavailable.")),
-									h(
-										"button",
-										{
-											type: "button",
-											class: "btn btn-small",
-											"data-act": "retry-artifact",
-											"data-artifact": current.id,
-											"data-revision": String(current.revision),
-										},
-										t("Retry"),
-									),
-								);
+		let canExpand = false;
+		let viewer: HTMLElement;
+		if (loading) {
+			viewer = h("div", { class: "workbench-pane-empty" }, h("p", null, t("Loading…")));
+		} else if (resolved.contentFormat === "html" && resolved.contentText !== null) {
+			const framed = framePage(resolved.contentText);
+			if (framed !== null) {
+				canExpand = true;
+				this.#mockupFrame = new AppFrame(
+					{ html: framed },
+					resolved.title,
+					"workbench-artifact-iframe",
+					refuseMockupCall,
+					() => {},
+				);
+				viewer = this.#mockupFrame.frame;
+			} else {
+				viewer = h(
+					"div",
+					{ class: "workbench-artifact-unframed" },
+					h("p", { class: "workbench-artifact-unframed-note" }, t("This page can't be shown live, so its source is shown.")),
+					h("pre", { class: "workbench-artifact-pre" }, resolved.contentText),
+				);
+			}
+		} else if (resolved.contentFormat === "markdown" && resolved.contentText !== null) {
+			canExpand = true;
+			viewer = h("div", { class: "workbench-artifact-markdown" }, cachedMarkdown(resolved.contentText));
+		} else if (resolved.contentFormat === "json" && resolved.contentText !== null) {
+			canExpand = true;
+			viewer = h("pre", { class: "workbench-artifact-pre" }, resolved.contentText);
+		} else if (resolved.contentFormat === "image_ref") {
+			viewer = h("div", { class: "workbench-pane-empty" }, h("p", null, resolved.summary || resolved.title));
+		} else {
+			viewer = h(
+				"div",
+				{ class: "workbench-pane-empty" },
+				h("p", null, t("Artifact content is unavailable.")),
+				h(
+					"button",
+					{
+						type: "button",
+						class: "btn btn-small",
+						"data-act": "retry-artifact",
+						"data-artifact": current.id,
+						"data-revision": String(current.revision),
+					},
+					t("Retry"),
+				),
+			);
+		}
 
 		replace(
 			container,
@@ -2227,15 +2285,76 @@ export class AppWorkbenchView {
 				: null,
 			h(
 				"div",
+				{ class: "workbench-artifact-head" },
+				h("strong", { class: "workbench-artifact-heading", title: resolved.title }, resolved.title),
+				canExpand
+					? h(
+							"button",
+							{
+								type: "button",
+								class: "workbench-icon-btn",
+								title: t("Show {name} large", { name: resolved.title }),
+								"aria-label": t("Show {name} large", { name: resolved.title }),
+								"data-act": "expand-artifact",
+								"data-artifact": current.id,
+							},
+							icon("expand"),
+						)
+					: null,
+			),
+			h(
+				"div",
 				{ class: "workbench-artifact-meta" },
-				h("strong", { class: "workbench-artifact-heading" }, resolved.title),
 				h("span", { class: "workbench-pill is-idle" }, artifactKindLabel(resolved.kind)),
 				h("span", { class: "workbench-artifact-rev" }, t("v{revision}", { revision: resolved.revision })),
 				h("time", { class: "workbench-msg-time", datetime: resolved.updatedAt }, fmtTime(resolved.updatedAt)),
 			),
-			resolved.summary ? h("p", { class: "workbench-artifact-lead" }, resolved.summary) : null,
+			resolved.summary ? h("p", { class: "workbench-artifact-lead", title: resolved.summary }, resolved.summary) : null,
 			h("div", { class: "workbench-artifact-stage" }, viewer),
 		);
+	}
+
+	#expandArtifact(artifactId: string): void {
+		const surface = this.#surface;
+		if (!surface) return;
+		const store = this.#host.store;
+		const selectedId = store.selectedTrackOf(surface.id);
+		const session = selectedId ? this.#findSession(store.workspace(surface.id), selectedId) : undefined;
+		const summary = session?.artifacts?.find((item) => item.id === artifactId);
+		const cached = store.state.sessionArtifacts[artifactId];
+		const artifact =
+			cached && (!summary || cached.revision >= summary.revision) && cached.contentText !== null ? cached : summary;
+		if (!artifact || artifact.contentText === null) return;
+		this.#closeArtifactDialog();
+		let body: HTMLElement;
+		if (artifact.contentFormat === "html") {
+			const framed = framePage(artifact.contentText);
+			if (framed === null) return;
+			this.#dialogMockupFrame = new AppFrame(
+				{ html: framed },
+				artifact.title,
+				"page-preview-frame",
+				refuseMockupCall,
+				() => {},
+			);
+			body = this.#dialogMockupFrame.frame;
+		} else if (artifact.contentFormat === "markdown") {
+			body = h("div", { class: "workbench-artifact-dialog-body workbench-artifact-markdown" }, cachedMarkdown(artifact.contentText));
+		} else if (artifact.contentFormat === "json") {
+			body = h("pre", { class: "workbench-artifact-dialog-body workbench-artifact-pre" }, artifact.contentText);
+		} else {
+			return;
+		}
+		const dialog = new SurfaceDialog(artifact.title, "file-preview-dialog page-preview-dialog", () => {
+			if (this.#dialogMockupFrame) {
+				this.#dialogMockupFrame.dispose();
+				this.#dialogMockupFrame = undefined;
+			}
+			if (this.#artifactDialog === dialog) this.#artifactDialog = undefined;
+		});
+		this.#artifactDialog = dialog;
+		dialog.content.append(h("h2", null, artifact.title), body);
+		dialog.open();
 	}
 
 	#drawChangesPane(selected: SurfaceSession | undefined): void {
@@ -2477,7 +2596,7 @@ export class AppWorkbenchView {
 		this.#composerInput.placeholder = !resolved
 			? t("Describe what you want to plan, design, or change…")
 			: running
-				? t("Assistant is working — press Stop to pause and reply…")
+				? t("Working… press Stop to pause")
 				: discarded
 					? t("This track was discarded. Start a new track to continue.")
 					: t("Continue discussing or refine this track…");
@@ -2495,7 +2614,7 @@ export class AppWorkbenchView {
 						"data-session": resolved.id,
 					},
 					icon("stop"),
-					h("span", null, t("Stop")),
+					h("span", null, stopBusy ? t("Stopping…") : t("Stop")),
 				),
 			);
 		} else {
@@ -2833,6 +2952,12 @@ export class AppWorkbenchView {
 				const expectedRevision = Number.isFinite(parsedRev) && parsedRev >= 1 ? parsedRev : undefined;
 				void store.loadSessionArtifact(artifactId, expectedRevision, { force: true });
 				this.update(surface);
+				return;
+			}
+			case "expand-artifact": {
+				const artifactId = target.dataset.artifact;
+				if (!artifactId) return;
+				this.#expandArtifact(artifactId);
 				return;
 			}
 			case "choose-option": {

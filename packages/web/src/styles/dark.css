@@ -284,3 +284,16 @@
 	box-shadow: 0 0 0 2px var(--studio-accent, var(--tour-accent)),
 		0 16px 44px color-mix(in srgb, var(--studio-accent, var(--tour-accent)) 24%, transparent);
 }
+:root[data-theme="dark"] .workbench-tab-btn.is-active { background: rgba(255, 255, 255, 0.12); box-shadow: none; }
+:root[data-theme="dark"] .workbench-track-item.is-selected { background: rgba(255, 255, 255, 0.08); box-shadow: none; }
+:root[data-theme="dark"] :is(
+	.workbench-track-state.is-ready,
+	.workbench-track-state.is-done,
+	.workbench-track-meta-chip.is-ok,
+	.workbench-pill.is-ready,
+	.workbench-pill.is-done,
+	.workbench-pill.is-ok,
+	.workbench-cmd-chip.is-passed,
+	.workbench-checks-item.is-passed
+) { color: #5ed6a9; }
+:root[data-theme="dark"] :is(.workbench-track-state.is-attention, .workbench-pill.is-attention, .workbench-question-label) { color: #f2c35d; }
