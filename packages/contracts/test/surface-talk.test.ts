@@ -164,6 +164,15 @@ describe("a talk file", () => {
 			"listen: 2 of 17 lines were marked, more than one in ten: fix what was marked and listen again with a fresh listener",
 		]);
 
+		const grown = exampleTalk();
+		(grown.listen as Json).lines = 15;
+		expect(problemsOf(grown)).toEqual([
+			"listen: the cold listen heard 15 lines and the talk now speaks 17; a line added since was never heard, so listen again with a fresh listener",
+		]);
+		const cut = exampleTalk();
+		Object.assign(cut.listen as Json, { lines: 20, marked: 2 });
+		expect(problemsOf(cut)).toEqual([]);
+
 		const early = exampleTalk();
 		(early.listen as Json).day = "2026-11-19";
 		expect(problemsOf(early)).toEqual(["listen: the cold listen is dated before the founder's yes to the points"]);
@@ -227,6 +236,52 @@ describe("the talk checker", () => {
 		}
 	});
 
+	it("holds chapter titles, the question and what the founder is asked to the same words", () => {
+		const titled = exampleTalk();
+		((titled.chapters as Json[])[1] as Json).title = "Bet 3 holds";
+		expect(problemsOf(titled)).toEqual([
+			'chapter 2: a code number is shown or spoken ("Bet 3"); say the thing itself',
+		]);
+
+		const bordered = whyItExists();
+		((bordered.chapters as Json[])[0] as Json).title = "Cheaper than Velo Fix";
+		expect(problemsOf(bordered, ["Velo Fix"])).toEqual([
+			'chapter 1: outside this talk\'s borders: prices or money ("Cheaper") never belongs in "Why it exists"',
+			'chapter 1: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
+		]);
+
+		const asked = {
+			starter: "exists",
+			title: "Why Tinwhistle exists",
+			question: "Why does Tinwhistle exist?",
+			asks: ["What did you see on the Market tab that made you start?"],
+			found: ["B3 says riders wait."],
+			missing: "What a visit should cost in kroner.",
+		};
+		expect(problemsOf(asked)).toEqual([
+			'talk: a page or tab name is shown or spoken ("tab"); say the thing itself',
+			'talk: a code number is shown or spoken ("B3"); say the thing itself',
+		]);
+		expect(problemsOf({ ...asked, asks: ["Why did you start?"], found: [] })).toEqual([]);
+	});
+
+	it("lets a quarter or a half-year through, which is not a code", () => {
+		const dated = exampleTalk();
+		pictureOf(dated, 1, 1).items = [
+			{ when: "Q3 2027", label: "Bike handed in" },
+			{ when: "H1 2028", label: "Parts arrive" },
+			{ when: "Q4", label: "Bike collected" },
+		];
+		expect(problemsOf(dated)).toEqual([]);
+		pictureOf(dated, 1, 1).items = [
+			{ when: "H1", label: "Bike handed in" },
+			{ when: "Later", label: "Bike collected" },
+		];
+		expect(problemsOf(dated)).toEqual([
+			'chapter 2 picture 2: a code number is shown or spoken ("H1"); say the thing itself',
+		]);
+	});
+
 	it("refuses more than one statement picture in five", () => {
 		const talk = exampleTalk();
 		for (const at of [1, 2, 3]) {
@@ -287,8 +342,22 @@ describe("the talk checker", () => {
 		};
 		expect(problemsOf(whyItExists([rival]))).toEqual([]);
 		expect(problemsOf(whyItExists([rival]), ["Velo Fix", "Spokesmen"])).toEqual([
-			'chapter 1 picture 3: outside this talk\'s borders: a rival ("Velo Fix") never belongs in "Why it exists"',
+			'chapter 1 picture 3: outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
 		]);
+
+		const calm = {
+			...base,
+			kind: "quote",
+			text: "Calm on the ride to work.",
+			by: "A founder",
+			say: "What it is for in the end is more calm on the ride to work, every single day.",
+		};
+		expect(problemsOf(whyItExists([{ ...calm, text: "More calm on the ride to work." }]), ["Calm"])).toEqual([]);
+		expect(problemsOf(whyItExists([calm]), ["Calm"])[0]).toContain('a rival the page names ("Calm")');
+		expect(problemsOf({ ...whyItExists([calm]), ownWords: ["Calm"] }, ["Calm", "Velo Fix"])).toEqual([]);
+		expect(problemsOf({ ...whyItExists([rival]), ownWords: ["Calm"] }, ["Calm", "Velo Fix"])[0]).toContain(
+			'("Velo Fix")',
+		);
 
 		const step = {
 			...base,

@@ -145,7 +145,7 @@ describe("staging a talk", () => {
 				write("talks/why-it-exists/talk.json", madeTalk()),
 				write("research/a.report.json", post),
 			]),
-		).toThrow("in its own stage_surface_patch call");
+		).toThrow("Stage each talk alone in its own stage_surface_patch call");
 		expect(() =>
 			checkStagedSurfaceDeliverables([
 				write("talks/why-it-exists/talk.json", madeTalk()),
@@ -167,13 +167,12 @@ describe("staging a talk against its page", () => {
 		readLayout: vi.fn(async () => layout),
 		readText: vi.fn(async (path: string) => files[path] ?? null),
 	});
-	const landscape = JSON.stringify({
-		players: [
-			{ id: "us", name: "Tinwhistle", isUs: true },
-			{ id: "velo", name: "Velo Fix" },
-			{ id: "spokes", name: "Spokesmen" },
-		],
-	});
+	const players = [
+		{ id: "us", name: "Tinwhistle", isUs: true },
+		{ id: "velo", name: "Velo Fix" },
+		{ id: "spokes", name: "Spokesmen" },
+	];
+	const landscape = JSON.stringify({ players });
 	const named = madeTalk((_talk, pictures) => {
 		(pictures[1] as Json).say =
 			"Today a fault means a trip to a workshop such as Velo Fix and a week without the bike. So people ride on.";
@@ -183,7 +182,9 @@ describe("staging a talk against its page", () => {
 		const page = staging({ "landscape.json": landscape });
 		await expect(
 			checkStagedSurfaceTalks([write("talks/why-it-exists/talk.json", named)], page, signal),
-		).rejects.toThrow('outside this talk\'s borders: a rival ("Velo Fix") never belongs in "Why it exists"');
+		).rejects.toThrow(
+			'outside this talk\'s borders: a rival the page names ("Velo Fix") never belongs in "Why it exists"; a word that is the founders\' own and not the rival goes in "ownWords"',
+		);
 		expect(page.readText).toHaveBeenCalledWith("landscape.json", signal);
 
 		await expect(
@@ -199,11 +200,17 @@ describe("staging a talk against its page", () => {
 			schema: SURFACE_LAYOUT_SCHEMA,
 			tabs: [{ id: "market", title: "Market", blocks: [{ type: "landscape", from: "market/rivals.json#/map" }] }],
 		});
-		const page = staging({ "market/rivals.json": landscape }, layout);
+		const page = staging({ "market/rivals.json": JSON.stringify({ map: { players } }) }, layout);
 		await expect(
 			checkStagedSurfaceTalks([write("talks/why-it-exists/talk.json", named)], page, signal),
-		).rejects.toThrow('a rival ("Velo Fix")');
+		).rejects.toThrow('a rival the page names ("Velo Fix")');
 		expect(page.readText).not.toHaveBeenCalledWith("landscape.json", signal);
+		expect(page.readText).toHaveBeenCalledTimes(1);
+
+		const elsewhere = staging({ "market/rivals.json": landscape }, layout);
+		await expect(
+			checkStagedSurfaceTalks([write("talks/why-it-exists/talk.json", named)], elsewhere, signal),
+		).resolves.toBeUndefined();
 	});
 
 	it("refuses a picture that rests on a post that is not there", async () => {
@@ -290,6 +297,31 @@ describe("a talk's voice", () => {
 			`talks/why-it-exists/voice/${captionHash(TODAY)}.wav`,
 			"talks/why-it-exists/voice/clips.json",
 		]);
+	});
+
+	it("takes a talk as long as the checker allows, more lines than a breakdown may have", async () => {
+		const line = (n: number) => `This is line number ${n} of the talk and nothing else here`;
+		const sizes = [...Array.from({ length: 14 }, () => 8), 7, 2];
+		let n = 0;
+		const long = madeTalk((talk) => {
+			talk.starter = "found";
+			(talk.listen as Json).lines = 121;
+			talk.chapters = sizes.map((size, chapter) => ({
+				title: "A part",
+				points: [chapter % 3],
+				pictures: Array.from({ length: size }, (_, at) => {
+					n += 1;
+					return at === 0
+						? { kind: "title", kicker: "A part", title: "What we counted", say: line(n), from: ["plan"] }
+						: { kind: "number", value: String(n), label: "riders we asked", say: line(n), from: ["plan"] };
+				}),
+			}));
+		});
+		expect(n).toBe(121);
+		const { tool, spoken } = narrator({ "talks/what-we-found/talk.json": long });
+		const result = await tool.execute({ scenesPath: "talks/what-we-found/talk.json" }, fakeContext());
+		expect(JSON.parse(String(result.value))).toMatchObject({ ok: true, total: 121, spokenNow: 48, left: 73 });
+		expect(spoken).toHaveLength(48);
 	});
 
 	it("records nothing for a talk without pictures or one that does not pass the check", async () => {
@@ -389,6 +421,9 @@ describe("the talk skills and the Co-Founder's side", () => {
 			expect(SURFACE_ESCALATION_WAKE_PROTOCOL, start).toContain(start);
 		}
 		expect(SURFACE_ESCALATION_WAKE_PROTOCOL).toContain("the talk-listen skill (read_skill)");
+		expect(SURFACE_ESCALATION_WAKE_PROTOCOL).toContain(
+			"copy its title, its question and its spoken lines into the worker's brief",
+		);
 		expect(SURFACE_ESCALATION_WAKE_PROTOCOL).toContain("never yours to supply or approve");
 		expect(PLATFORM_UPDATES.find((update) => update.id === "talks")?.text).toContain(
 			"A talk gets a voice only when a founder asks.",
