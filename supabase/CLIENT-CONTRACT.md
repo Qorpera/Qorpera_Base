@@ -1032,7 +1032,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   message's text on one line (at most 200 characters; never for account mail; absent once the text is no longer kept),
   and each send of `qorpera_member_mail_waiting` may carry `snippet`, the start of the text the agent wants to send,
   and `cc`, its cc recipients as the agent gave them.
-  Both are outside words to show as text only; a client must also work without them.
+  Since 20260930930000 a received message of `qorpera_member_mail_thread` may also carry `html` (at most 262,144
+  characters while its stored message is kept; never for account mail) and `htmlTruncated`, and
+  `qorpera_mail_thread_snippet` falls back to stripped text from `html` when `text` is absent or blank.
+  Both are outside words to show safely; a client must also work without them.
 - Members send mail (20260930716000_member_mail_send, step M2e; founder decision, 10 November 2026): a member who
   may write in the company (owner, admin or contributor) calls
   `qorpera_send_member_mail(p_environment_id, p_request)` with `{sendId, from, to, cc?, subject, text}` →
