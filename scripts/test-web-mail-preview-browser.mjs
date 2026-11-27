@@ -62,17 +62,14 @@ window.addEventListener("message", (event) => {
 	if (event.data === "XSS_RAN") window.__xss = true;
 });
 const raw = ${JSON.stringify(RAW_MAIL_HTML)};
-const first = sanitizeMailHtml(raw, { allowRemoteImages: false });
-window.__remoteCount = first.remoteImageCount;
-const mailFrame = new MailFrame(first, "From outside the company", {
+const shown = sanitizeMailHtml(raw, { allowRemoteImages: true });
+window.__remoteCount = shown.remoteImageCount;
+const mailFrame = new MailFrame(shown, "From outside the company", {
 	onOpen: (href) => window.__opened.push(href),
 });
 mailFrame.frame.style.width = "640px";
 mailFrame.frame.style.border = "0";
 document.body.append(mailFrame.frame);
-window.__showImages = () => {
-	mailFrame.update(sanitizeMailHtml(raw, { allowRemoteImages: true }));
-};
 window.__injectRawXss = () => {
 	mailFrame.update({
 		styles: [],
@@ -145,26 +142,11 @@ try {
 	assert.equal(await frame.locator("h1").textContent(), "Generic High Entropy Secret exposed");
 	assert.equal(await page.evaluate(() => window.__remoteCount), 3);
 
+	await frame.locator('#hero[src="https://127.0.0.1.invalid/hero.png"]').waitFor({ state: "visible" });
 	await page.waitForFunction(() => {
 		const el = document.querySelector("iframe.mailbox-html-frame");
-		return el && el.getBoundingClientRect().height > 140;
+		return el && el.getBoundingClientRect().height > 180;
 	});
-	assert.deepEqual(remoteRequests, [], `remote images must not load before Show images: ${JSON.stringify(remoteRequests)}`);
-	assert.deepEqual(await page.evaluate(() => window.__csp), []);
-	assert.deepEqual(consoleErrors, []);
-
-	await frame.locator("a.cta").click();
-	await page.waitForFunction(() => window.__opened.length === 1);
-	assert.deepEqual(await page.evaluate(() => window.__opened), ["https://dashboard.gitguardian.example/incidents/42"]);
-
-	await page.evaluate(() => window.__showImages());
-	await frame.locator('#hero[src="https://127.0.0.1.invalid/hero.png"]').waitFor({ state: "visible" });
-	await page.waitForFunction(
-		() => {
-			const el = document.querySelector("iframe.mailbox-html-frame");
-			return el && el.getBoundingClientRect().height > 180;
-		},
-	);
 	await frame.locator("#hero").evaluate(
 		(img) =>
 			img.complete && img.naturalWidth > 0
@@ -176,12 +158,18 @@ try {
 	);
 	assert.ok(
 		remoteRequests.includes("https://127.0.0.1.invalid/hero.png"),
-		`expected hero.png request after Show images, got ${JSON.stringify(remoteRequests)}`,
+		`expected hero.png request on the first render, got ${JSON.stringify(remoteRequests)}`,
 	);
 	assert.ok(
 		!remoteRequests.some((url) => url.includes("tracker.gif")),
-		`tracking pixel must stay blocked even after Show images: ${JSON.stringify(remoteRequests)}`,
+		`tracking pixel must stay blocked: ${JSON.stringify(remoteRequests)}`,
 	);
+	assert.deepEqual(await page.evaluate(() => window.__csp), []);
+	assert.deepEqual(consoleErrors, []);
+
+	await frame.locator("a.cta").click();
+	await page.waitForFunction(() => window.__opened.length === 1);
+	assert.deepEqual(await page.evaluate(() => window.__opened), ["https://dashboard.gitguardian.example/incidents/42"]);
 
 	await page.evaluate(() => window.__injectRawXss());
 	await frame.locator("#after").waitFor({ state: "visible" });

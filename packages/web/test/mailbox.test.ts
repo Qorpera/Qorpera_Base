@@ -15,7 +15,7 @@ import {
 import type { HostedProfileRole } from "../src/cloud/types.ts";
 import { openMenu } from "../src/ui/context-menu.ts";
 import { formatPresentationDate, h } from "../src/ui/dom.ts";
-import { MAIL_INIT, MAIL_OPEN, MAIL_READY, MAIL_RENDER } from "../src/ui/mail-frame.ts";
+import { MAIL_INIT, MAIL_OPEN, MAIL_READY } from "../src/ui/mail-frame.ts";
 import { setLanguagePreference, setTimeZonePreference } from "../src/ui/preferences.ts";
 import { fixture, id, profileA, scrolledTo, session, stubFigureMotion, team, timestamp, userA } from "./fixtures.ts";
 import { type FolderFake, folderFake } from "./folder-fake.ts";
@@ -3612,7 +3612,7 @@ describe("HTML email", () => {
 		expect(openedFirst.querySelector(".mailbox-text-body")?.textContent).toBe("Plain fallback body.");
 	});
 
-	it("hides remote images until Show images is clicked in place without reloading the iframe", async () => {
+	it("shows remote images at once, with no bar to press first", async () => {
 		const { main } = await mailbox((mail) => {
 			mail.threads = [summary(1)];
 			mail.reads[thread(1)] = {
@@ -3621,7 +3621,7 @@ describe("HTML email", () => {
 				messages: [
 					received(1, {
 						text: undefined,
-						html: '<div><p>Newsletter</p><img src="https://cdn.example/banner.png" alt="Banner"></div>',
+						html: '<div><p>Newsletter</p><img src="https://cdn.example/banner.png" alt="Banner"><img src="https://track.example/open.gif" width="1" height="1" alt=""></div>',
 						htmlTruncated: true,
 					}),
 				],
@@ -3631,17 +3631,11 @@ describe("HTML email", () => {
 		});
 		await openFirst(main);
 		expect(main.querySelector(".mailbox-note")?.textContent).toBe("This email is longer; only its start is shown.");
-		expect(main.querySelector(".mailbox-html-bar")?.textContent).toContain("Images from outside are hidden.");
-		const frameBefore = main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!;
-		const { init, messages } = handshakeMailFrame(frameBefore);
-		expect(String(init.bodyHtml)).not.toContain("https://cdn.example/banner.png");
-
-		button(main, "Show images")!.click();
 		expect(main.querySelector(".mailbox-html-bar")).toBeNull();
-		expect(main.querySelector("iframe.mailbox-html-frame")).toBe(frameBefore);
-		await vi.waitFor(() => expect(messages).toHaveLength(1));
-		expect(messages[0]).toMatchObject({ type: MAIL_RENDER });
-		expect(String((messages[0] as Record<string, unknown>).bodyHtml)).toContain("https://cdn.example/banner.png");
+		expect(button(main, "Show images")).toBeUndefined();
+		const { init } = handshakeMailFrame(main.querySelector<HTMLIFrameElement>("iframe.mailbox-html-frame")!);
+		expect(String(init.bodyHtml)).toContain("https://cdn.example/banner.png");
+		expect(String(init.bodyHtml)).not.toContain("https://track.example/open.gif");
 	});
 
 	it("opens clicked links in a new tab, shows Open link when popup is blocked, and prefills Write for mailto", async () => {

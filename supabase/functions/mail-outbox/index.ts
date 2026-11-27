@@ -31,8 +31,8 @@ function serviceClient(fallbackKey: string): PostgrestClient {
 
 const objectGatewayUrl = Deno.env.get("QORPERA_OBJECT_GATEWAY_URL")?.trim() || undefined;
 const objectGatewayInternalToken = Deno.env.get("QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN")?.trim() || undefined;
-if (Boolean(objectGatewayUrl) !== Boolean(objectGatewayInternalToken)) {
-	throw new Error("QORPERA_OBJECT_GATEWAY_URL and QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN must be set together");
+if (objectGatewayInternalToken && !objectGatewayUrl) {
+	throw new Error("QORPERA_OBJECT_GATEWAY_URL is required when QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN is set");
 }
 const gatewayObjects =
 	objectGatewayUrl && objectGatewayInternalToken
