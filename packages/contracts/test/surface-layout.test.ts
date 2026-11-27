@@ -862,12 +862,12 @@ describe("named cards and artifacts skip", () => {
 });
 
 describe("the block registry", () => {
-	it("holds one entry per type: fifteen families and the row", () => {
+	it("holds one entry per type: sixteen families and the row", () => {
 		const types = SURFACE_BLOCKS.map((block) => block.type);
 		expect(types).toEqual([...SURFACE_BLOCK_TYPES, "row"]);
-		expect(new Set(types).size).toBe(21);
+		expect(new Set(types).size).toBe(22);
 		const families = new Set(SURFACE_BLOCKS.filter((block) => block.type !== "row").map((block) => block.family));
-		expect(families.size).toBe(15);
+		expect(families.size).toBe(16);
 	});
 
 	it("is what the parser accepts, field by field", () => {

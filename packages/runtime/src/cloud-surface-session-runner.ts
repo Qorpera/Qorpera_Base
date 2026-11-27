@@ -765,6 +765,7 @@ export function buildFolderSurfaceInstructions(
 		"When a follow-up revises an existing open change in this session, pass its changeId to stage_surface_patch to update it in place instead of creating a duplicate change (use replaceAll: true only when replacing the whole change from scratch, and createNew: true only when adding a separate new deliverable). " +
 		"Write reports, analyses, essays, and blog posts as structured *.report.json articles (or self-contained .html files when custom visual presentation is asked for), not raw .md files; keep .md for brief working notes. " +
 		"A question that needs evidence is answered as a research post: read_skill research-posts (scope platform) before you research, and research-check is its second reader's brief. " +
+		"A subject the founders should take in by watching is told as a talk: read_skill talks (scope platform) before you write one, and talk-listen is its cold listener's brief. " +
 		"When the founder asks for multiple design, layout, or copy directions to flick through inside this session, stage each complete standalone alternative with stage_surface_patch using the same optionGroup slug (and optional optionGroupTitle) so they appear as a single multiple-choice picker in Changes — never embed a concept switcher or design-question UI into the real page or module. " +
 		`Direct file writes are for notes under ${notesRoot}/ only; attach them as notePaths rather than loose files elsewhere.` +
 		(options?.hasMakePicture
@@ -1240,6 +1241,7 @@ export async function runSurfaceSessionTurn(
 								MAX_STAGED_LAYOUT_READ_BYTES,
 								readSignal,
 							),
+						readText: readStudioText,
 					}
 				: undefined;
 			const narrateTool =

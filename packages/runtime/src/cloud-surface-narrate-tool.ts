@@ -1,8 +1,11 @@
 import {
 	parseStudioTourDocument,
+	readSurfaceTalk,
 	type StudioBinaryRef,
 	type StudioPatchOp,
+	SURFACE_TALK_FILE,
 	studioTourCaptionTexts,
+	surfaceTalkSpokenLines,
 } from "@qorpera/contracts";
 import { captionHash, explainerSaid } from "./cloud-app-kit-explainer.ts";
 import { GeminiCapReachedError, GeminiKeyRevokedError } from "./cloud-gemini-tool-session.ts";
@@ -81,14 +84,50 @@ function normalizeRelativeScenesPath(raw: unknown, folderRoot: string): string {
 	if (parts.some((part) => !part || part === "." || part === "..")) {
 		throw new CloudToolArgumentRefusal("scenesPath must be a clean relative path inside the interface folder");
 	}
-	const lower = trimmed.toLowerCase();
-	const isTour = lower === "tour.json" || lower.endsWith("/tour.json");
-	if (!lower.endsWith(".js") && !isTour) {
+	const kind = narratedKind(trimmed);
+	if (kind === undefined) {
 		throw new CloudToolArgumentRefusal(
-			"scenesPath must point to a .js scenes file or tour.json (for example breakdowns/ux/scenes.js or tour.json)",
+			`scenesPath must point to a .js scenes file, tour.json or a talk's ${SURFACE_TALK_FILE} (for example breakdowns/ux/scenes.js, tour.json or talks/what-we-found/${SURFACE_TALK_FILE})`,
 		);
 	}
 	return trimmed;
+}
+
+type NarratedKind = "scenes" | "tour" | "talk";
+
+function narratedKind(relativePath: string): NarratedKind | undefined {
+	const name = relativePath.toLowerCase().split("/").at(-1) ?? "";
+	if (name === "tour.json") return "tour";
+	if (name === SURFACE_TALK_FILE) return "talk";
+	return name.endsWith(".js") ? "scenes" : undefined;
+}
+
+function talkCaptionEntries(path: string, text: string): readonly { readonly hash: string; readonly text: string }[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new CloudToolRefusal(`INVALID_TALK: ${path} is not valid JSON`);
+	}
+	const read = readSurfaceTalk(parsed);
+	if (!read.talk) {
+		const problems = read.problems.join("; ").replace(/[^\u0020-\u007e]/g, "?");
+		throw new CloudToolRefusal(
+			`INVALID_TALK: ${path} does not pass the talk check, so it gets no voice: ${problems.length > 700 ? `${problems.slice(0, 697)}...` : problems}`,
+		);
+	}
+	if (read.talk.state !== "made") {
+		throw new CloudToolRefusal(
+			`TALK_NOT_MADE: ${path} has no pictures yet; a talk gets its voice after the founder has seen it with captions and asked for the voice`,
+		);
+	}
+	const seen = new Set<string>();
+	return surfaceTalkSpokenLines(read.talk).flatMap((line) => {
+		const hash = captionHash(line.trim());
+		if (seen.has(hash)) return [];
+		seen.add(hash);
+		return [{ hash, text: line.trim() }];
+	});
 }
 
 function dirOf(relativePath: string): string {
@@ -204,8 +243,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 	return {
 		name: "narrate_explainer",
 		source: "runtime",
-		description:
-			"Synthesize spoken narration clips for an animated breakdown (scenes.js) or guided Studio voice tour (tour.json) using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash.",
+		description: `Synthesize spoken narration clips for an animated breakdown (scenes.js), a guided Studio voice tour (tour.json) or a talk (talks/<name>/${SURFACE_TALK_FILE}) using the member's configured Voice model and voice profile, and stage the audio clips plus voice/clips.json into the interface's Preview. Only captions missing clips are synthesized; existing clips are reused by caption hash. A talk is recorded only after the founder has asked for its voice; its captions always stay on.`,
 		inputSchema: {
 			type: "object",
 			additionalProperties: false,
@@ -215,8 +253,7 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					type: "string",
 					minLength: 4,
 					maxLength: 256,
-					description:
-						"Relative path to scenes.js or tour.json inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js or tour.json).",
+					description: `Relative path to scenes.js, tour.json or a talk's ${SURFACE_TALK_FILE} inside this interface folder (e.g. breakdowns/buyer-ux/scenes.js, tour.json or talks/what-we-found/${SURFACE_TALK_FILE}).`,
 				},
 				title: {
 					type: "string",
@@ -257,28 +294,32 @@ export function createNarrateExplainerTool(options: StudioNarrateToolOptions): C
 					`SCENES_NOT_FOUND: ${args.scenesPath} was not found; stage it with stage_surface_patch before calling narrate_explainer`,
 				);
 			}
-			const isTour = args.scenesPath.toLowerCase().endsWith(".json");
-			const captions = isTour
-				? (() => {
-						const doc = parseStudioTourDocument(scenesJs);
-						if (!doc) {
-							throw new CloudToolRefusal(
-								`INVALID_TOUR: ${args.scenesPath} is not a valid tour.json document with spoken beats`,
-							);
-						}
-						return studioTourCaptionTexts(doc).map((text) => ({ hash: captionHash(text), text }));
-					})()
-				: extractExplainerCaptionEntries(scenesJs);
+			const kind = narratedKind(args.scenesPath);
+			const isTour = kind === "tour";
+			const captions =
+				kind === "talk"
+					? talkCaptionEntries(args.scenesPath, scenesJs)
+					: isTour
+						? (() => {
+								const doc = parseStudioTourDocument(scenesJs);
+								if (!doc) {
+									throw new CloudToolRefusal(
+										`INVALID_TOUR: ${args.scenesPath} is not a valid tour.json document with spoken beats`,
+									);
+								}
+								return studioTourCaptionTexts(doc).map((text) => ({ hash: captionHash(text), text }));
+							})()
+						: extractExplainerCaptionEntries(scenesJs);
 			if (captions.length === 0) {
 				throw new CloudToolRefusal(
-					isTour
-						? 'NO_CAPTIONS: no spoken "say" beats were found in tour.json; add beats and stage tour.json first'
+					isTour || kind === "talk"
+						? `NO_CAPTIONS: no spoken "say" lines were found in ${args.scenesPath}; add them and stage the file first`
 						: 'NO_CAPTIONS: no s.say("...") captions were found in scenes.js; add spoken captions and stage scenes.js first',
 				);
 			}
 			if (captions.length > MAX_UNIQUE_CAPTIONS) {
 				throw new CloudToolRefusal(
-					`TOO_MANY_CAPTIONS: scenes.js has ${captions.length} unique captions (max ${MAX_UNIQUE_CAPTIONS}); trim the breakdown to one focused story`,
+					`TOO_MANY_CAPTIONS: ${args.scenesPath} has ${captions.length} unique captions (max ${MAX_UNIQUE_CAPTIONS}); trim it to one focused story`,
 				);
 			}
 

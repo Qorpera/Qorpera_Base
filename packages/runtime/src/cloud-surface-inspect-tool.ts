@@ -18,6 +18,7 @@ import {
 	parseSurfaceReportEvidence,
 	readSurfaceLayout,
 	readSurfaceLibrary,
+	readSurfaceTalk,
 	resolveSurfaceSource,
 	SURFACE_LAYOUT_PATH,
 	type SurfaceAskSource,
@@ -35,6 +36,7 @@ import {
 	surfaceGlobMatches,
 	surfaceLegacyModelKey,
 	surfaceLibraryThemeKey,
+	surfaceTalkSeconds,
 } from "@qorpera/contracts";
 import { decodeInspectImageOutput } from "./cloud-coding-image-inspect.ts";
 import { cloudControlPause } from "./cloud-control-errors.ts";
@@ -1618,6 +1620,45 @@ function renderBlockHtml(
 				`${library.line ? `<p class="pv-sub">${escapeHtml(library.line)}</p>` : ""}<div class="pv-pills">${pills}</div><div class="pv-grid">${cards}</div>`,
 				posts.length > 0,
 			);
+		}
+		case "talks": {
+			const title = block.heading ?? "Talks";
+			const rootPrefix = snapshot.folderRoot ? `${snapshot.folderRoot}/` : "";
+			const cards = Object.keys(snapshot.files)
+				.filter(
+					(p) =>
+						p.startsWith(rootPrefix) &&
+						surfaceGlobMatches(block.match, block.match.startsWith("/") ? `/${p}` : p.slice(rootPrefix.length)),
+				)
+				.sort()
+				.flatMap((path) => {
+					let parsed: unknown;
+					try {
+						parsed = JSON.parse(snapshot.files[path] ?? "");
+					} catch {
+						return [];
+					}
+					const read = readSurfaceTalk(parsed);
+					if (!read.talk) {
+						warnings.push(
+							`Talk ${path.slice(rootPrefix.length)} does not read and is not shown: ${read.problems[0]}`,
+						);
+						return [];
+					}
+					const talk = read.talk;
+					const pictures = talk.chapters.reduce((sum, chapter) => sum + chapter.pictures.length, 0);
+					const state =
+						talk.state === "made"
+							? `${Math.max(1, Math.round(surfaceTalkSeconds(talk) / 60))} min · ${talk.chapters.length} chapters · ${pictures} pictures`
+							: talk.state === "points"
+								? `${talk.points.length} points for the founder's yes`
+								: `waits for the founder's words · ${talk.asks.length} questions`;
+					return [
+						`<article class="pv-card"><strong>${escapeHtml(talk.title)}</strong><p>${escapeHtml(state)}</p></article>`,
+					];
+				});
+			if (cards.length === 0) return wrap(title, `<div class="pv-empty">No talks staged yet</div>`, false);
+			return wrap(title, `<div class="pv-grid">${cards.join("")}</div>`, true);
 		}
 		case "explainer": {
 			const title = block.heading ?? "Explainer";

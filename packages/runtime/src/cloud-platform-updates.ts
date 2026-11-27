@@ -629,6 +629,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "One Research tab: themes first, then posts",
 		text: "Research posts now have one home on an interface: a Research tab. It shows the themes the company must answer, each with its question and how many posts answer it, then a featured post and every post with its number, date and cover. A theme opens to what is known so far, each line leading to its post, beside what is still open and what would close it. A post opens with its short answer, marks that open each source, what it changes, how it was found and what could not be found. Posts no longer sit under each tab of Strategy. When you ask a session for research, name the themes you want answered: one with no post yet shows as empty, so everyone sees what is still open.",
 	},
+	{
+		id: "talks",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Talks: one question, told in pictures",
+		text: "A page with a Research tab can now have a Talks tab. A talk is a short narrated presentation the founders watch: pictures, each with one spoken line as its caption, answering one question. Seven suit every company: why it exists, why it can work, how it should feel, what we found, what stands in the way, what we are still guessing, what we do next. Propose a talk once its subject has enough behind it, and ask a session for it only on the founders' yes. The session shows them its questions or its points before it draws. A talk gets a voice only when a founder asks.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;
