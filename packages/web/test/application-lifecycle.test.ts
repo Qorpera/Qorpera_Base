@@ -40,7 +40,11 @@ import {
 	visibleText,
 } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
-import { summary as surfaceSummary, workspace as surfaceWorkspace } from "./surface-fixtures.ts";
+import {
+	session as surfaceSession,
+	summary as surfaceSummary,
+	workspace as surfaceWorkspace,
+} from "./surface-fixtures.ts";
 import "./register-lazy.ts";
 
 let dispose: (() => void) | undefined;
@@ -2662,5 +2666,113 @@ describe("cold-boot waterfall optimizations", () => {
 		await draw();
 		await draw();
 		expect(f.root.querySelector("main .surface-page")).not.toBeNull();
+	});
+
+	it("transitions main to a warm surface when switching from another company thread even if reviving one rail figure throws, and skips detached legacy rows", async () => {
+		const disposeFigure = vi.fn();
+		const mountFigure = stubFigureMotion(disposeFigure);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const webApp = surfaceSummary({
+				id: id(821),
+				slug: "web-app",
+				title: "Web App",
+				archetype: "live_build",
+				siteSlug: null,
+				liveUrl: null,
+				activeSessionCount: 2,
+			});
+			const website = surfaceSummary({
+				id: id(822),
+				slug: "website",
+				title: "Website",
+				archetype: "live_build",
+				siteSlug: null,
+				liveUrl: null,
+				activeSessionCount: 1,
+			});
+			const webAppSessions = [
+				surfaceSession(["staged"], { id: id(831), surfaceId: webApp.id, title: "Fix nav" }),
+				surfaceSession(["staged"], { id: id(832), surfaceId: webApp.id, title: "Polish hero" }),
+			];
+			const websiteSessions = [
+				surfaceSession(["staged"], { id: id(833), surfaceId: website.id, title: "Update footer" }),
+			];
+			vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+			vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([webApp, website]);
+			vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockImplementation(async (surfaceId: string) =>
+				surfaceId === webApp.id
+					? surfaceWorkspace(webAppSessions, { surface: webApp })
+					: surfaceWorkspace(websiteSessions, { surface: website }),
+			);
+			vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+			vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+				new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+			);
+			vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+			const cofounderA: HostedStaffAgent = {
+				...staff,
+				id: id(841),
+				templateId: "co-founder",
+				displayName: "Co-Founder",
+			};
+			const workerA: HostedStaffAgent = { ...staff, id: id(842), displayName: "Designer", role: "Design" };
+			const sessionB = {
+				...session,
+				sessionId: id(851),
+				profileId: profileB.profileId,
+				environmentId: profileB.environmentId,
+			};
+			const f = mounted(`#/c/${profileA.profileId}/s/web-app`);
+			vi.mocked(f.api.listProfiles).mockResolvedValue([profileA, profileB]);
+			vi.mocked(f.api.listStaff).mockImplementation(async (envId) =>
+				envId === profileA.environmentId ? [cofounderA, workerA] : [{ ...staff, templateId: "co-founder" }],
+			);
+			vi.mocked(f.api.listSessions).mockImplementation(async (envId) =>
+				envId === profileB.environmentId ? [sessionB] : [session],
+			);
+			vi.mocked(f.api.readSessionEventsTail).mockResolvedValue([event(1, "Brooks thread message")]);
+
+			await draw();
+			await draw();
+			expect(f.root.querySelector("main .surface-page")).not.toBeNull();
+			expect(f.root.querySelector('.rail-surface[data-surface-slug="web-app"]')?.classList.contains("active")).toBe(
+				true,
+			);
+			expect(f.root.querySelectorAll(".rail .rail-row-agent")).toHaveLength(0);
+			const railCrewBefore = [...f.root.querySelectorAll<HTMLElement>(".rail-surface .figure")];
+			expect(railCrewBefore.length).toBeGreaterThanOrEqual(3);
+
+			location.hash = `#/c/${profileB.profileId}/chat/${sessionB.sessionId}`;
+			await draw();
+			await draw();
+			expect(f.root.querySelector("main .thread")).not.toBeNull();
+			expect(f.root.textContent).toContain("Brooks thread message");
+			expect(railCrewBefore.every((el) => el.dataset.figureDisposed === "true")).toBe(true);
+
+			let injectedFailure = false;
+			mountFigure.mockImplementation((_host, _figureId, _color, _artworkArg, options) => {
+				if (!injectedFailure && options?.identity === `surface-session:${webAppSessions[0]!.id}`) {
+					injectedFailure = true;
+					throw new DOMException(
+						"The image argument is a canvas element with a width or height of 0.",
+						"InvalidStateError",
+					);
+				}
+				return { dispose: disposeFigure, play: () => {} };
+			});
+
+			location.hash = `#/c/${profileA.profileId}/s/web-app`;
+			await draw();
+			await draw();
+			expect(injectedFailure).toBe(true);
+			expect(errorSpy).toHaveBeenCalledWith("figure revive failed:", expect.any(DOMException));
+			expect(f.root.querySelector("main .thread")).toBeNull();
+			expect(f.root.querySelector("main .surface-page")).not.toBeNull();
+			expect(f.root.querySelectorAll(".rail [data-figure-disposed]")).toHaveLength(0);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

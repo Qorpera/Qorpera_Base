@@ -2489,47 +2489,50 @@ export function mountApplication(
 			controller.agentsWaitingOnMe() +
 				offersWaitingOn(surfacesOf(controller)?.state.automations ?? [], controller.userId),
 		);
-		if (!rail.hidden)
-			renderRail(rail, controller, {
-				...context,
-				agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
-				openAgentCard,
-				openGroupCard,
-				hideInterfacePage: (page, hidden) =>
-					(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
-						// Reset sidebar counts hidden pages among the member's changes (20260930727000), and a newer choice
-						// is never undone by an older reset's Undo.
-						if (controller.ownSidebar()) {
-							controller.store.set({ sidebarReset: undefined });
-							void controller.refreshSidebar();
-						}
-					}),
-				refreshInterfacePages: () => void interfacePages?.refresh(),
-				searchFolder: () => {
-					const role = controller.store.get().team?.role;
-					const current = () => {
-						if (
-							disposed ||
-							company !== controller ||
-							auth.userId !== controller.userId ||
-							controller.store.get().accessLost
-						)
-							throw new Error(t("Company access changed."));
-					};
-					current();
-					if (!role) throw new Error(t("Company access changed."));
-					return new WebCompanyFiles(
-						cloud,
-						controller.profile,
-						controller.userId,
-						role,
-						controller.signal,
-						current,
-					).folder();
-				},
-				openInFiles,
-				searchBlocked: () => Boolean(settings || feedback || friendsWindow),
-			});
+		if (!rail.hidden) {
+			try {
+				renderRail(rail, controller, {
+					...context,
+					agentActions: { ...agentActions, ...groupActions, ...workspaceActions },
+					openAgentCard,
+					openGroupCard,
+					hideInterfacePage: (page, hidden) =>
+						(interfacePages?.hide(page, hidden) ?? Promise.resolve()).then(() => {
+							if (controller.ownSidebar()) {
+								controller.store.set({ sidebarReset: undefined });
+								void controller.refreshSidebar();
+							}
+						}),
+					refreshInterfacePages: () => void interfacePages?.refresh(),
+					searchFolder: () => {
+						const role = controller.store.get().team?.role;
+						const current = () => {
+							if (
+								disposed ||
+								company !== controller ||
+								auth.userId !== controller.userId ||
+								controller.store.get().accessLost
+							)
+								throw new Error(t("Company access changed."));
+						};
+						current();
+						if (!role) throw new Error(t("Company access changed."));
+						return new WebCompanyFiles(
+							cloud,
+							controller.profile,
+							controller.userId,
+							role,
+							controller.signal,
+							current,
+						).folder();
+					},
+					openInFiles,
+					searchBlocked: () => Boolean(settings || feedback || friendsWindow),
+				});
+			} catch (error) {
+				console.error("rail render failed:", error);
+			}
+		}
 		// The drawer may draw an app otherwise now (the member's icon or colour for it, its group's colour): its cards
 		// in the messages follow.
 		syncAppCardObserver();
@@ -3768,8 +3771,11 @@ export function mountApplication(
 					const cachedView = warmSurfaces.get(warmKey);
 					if (cachedView) {
 						warmSurfaces.delete(warmKey);
-						cachedView.activate();
 						surfaceView = { company: controller, view: cachedView };
+						replace(main, cachedView.el);
+						cachedView.activate();
+						if (!frame.inert) cachedView.focus();
+						return;
 					}
 				}
 				if (!surfaceView) {
