@@ -963,7 +963,7 @@ describe("AppWorkbenchView", () => {
 		previewTabBtn().click();
 		view.update();
 		expect(panel.hidden).toBe(false);
-		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-panel"]')!.click();
+		view.el.querySelector<HTMLButtonElement>('.workbench [data-act="toggle-panel"]')!.click();
 		view.update();
 		expect(panel.hidden).toBe(true);
 		previewTabBtn().click();
