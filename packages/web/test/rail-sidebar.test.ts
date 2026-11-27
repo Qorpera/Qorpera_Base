@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import type { Route } from "../src/app/router.ts";
+import { attachSurfaces } from "../src/app/surfaces-store.ts";
 import { renderRail, type ShellContext } from "../src/app/views/shell.ts";
 import { CloudRpcError } from "../src/cloud/client.ts";
 import type { GroupChatDetails } from "../src/cloud/group-details.ts";
@@ -22,6 +23,7 @@ import { h } from "../src/ui/dom.ts";
 import { deferred, fixture, id, profileA, session, settle, staff, stubFigureMotion, team, userA } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import { searchFromRail } from "./search-window-helpers.ts";
+import { fakeClient, storeWith, summary as surfaceSummary } from "./surface-fixtures.ts";
 import "./register-lazy.ts";
 
 const agent = (n: number, name: string): HostedStaffAgent => ({
@@ -86,6 +88,7 @@ function companyWith(
 		roster?: string[];
 		/** A shell that opens no cards: a right-click on an agent or a group chat is the browser's. */
 		cardless?: boolean;
+		invites?: boolean;
 	} = {},
 ) {
 	const f = fixture();
@@ -123,6 +126,7 @@ function companyWith(
 			openFeedback: () => {},
 			openFriends: () => {},
 			agentActions: actions,
+			...(extra.invites ? { invites: f.api } : {}),
 			...(extra.cardless ? {} : { openAgentCard: openCard, openGroupCard: openGroup }),
 		});
 	cleanup.push(company.store.subscribe(draw));
@@ -433,6 +437,29 @@ describe("rail sections and pins", () => {
 			await settle();
 			expect(divided(rail)).toEqual(expected);
 		}
+	});
+	it("keeps the compact-rail divider above Members when the surface rail shows the Agents hub, and omits it without an Agents hub", async () => {
+		const none: CompanySidebar = { sections: [], placements: {}, pinned: [], hidden: [] };
+		const { rail, company, draw, ready } = companyWith(none, {}, { invites: true });
+		rail.parentElement!.classList.add("rail-compact");
+		const surfaces = storeWith(
+			fakeClient({
+				listSurfaces: vi.fn(async () => [surfaceSummary({ activeSessionCount: 0, pendingChangeCount: 0 })]),
+			}),
+			{ signal: company.signal },
+		);
+		cleanup.push(() => surfaces.dispose());
+		await surfaces.load();
+		attachSurfaces(company, surfaces);
+		await ready;
+		draw();
+		await settle();
+		expect(rail.querySelector(".rail-agents-hub")).not.toBeNull();
+		expect(rail.querySelector(".rail-members")?.classList.contains("rail-divided")).toBe(true);
+		company.store.set({ staff: [cofounder] });
+		await settle();
+		expect(rail.querySelector(".rail-agents-hub")).toBeNull();
+		expect(rail.querySelector(".rail-members")?.classList.contains("rail-divided")).toBe(false);
 	});
 	it("marks Unassigned empty when every agent is in a section, so its title shows only while dragging", async () => {
 		const unassigned = (rail: HTMLElement) =>
