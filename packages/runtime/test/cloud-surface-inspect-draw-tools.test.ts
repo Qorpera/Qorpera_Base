@@ -721,8 +721,8 @@ describe("Studio visual inspect & draw tools", () => {
 		}
 	});
 
-	it("previews the Strategy starter's Research tab: the library's line, its themes with their posts, and each post", () => {
-		const post = (headline: string, theme?: string) => JSON.stringify({ headline, ...(theme ? { theme } : {}) });
+	it("previews the Strategy starter's Research tab as the page draws it: themes with their posts, newest post first", () => {
+		const post = (report: Record<string, unknown>) => JSON.stringify(report);
 		const library = JSON.stringify({
 			line: "What we have found out, and what we still have to.",
 			themes: [{ name: "Hardware" }, { name: "Hair" }],
@@ -733,15 +733,31 @@ describe("Studio visual inspect & draw tools", () => {
 			starter: "strategy" as const,
 			files: {
 				"surfaces/strategy/research.json": library,
-				"surfaces/strategy/research/1-band.report.json": post(
-					"Nothing on sale does what our band must",
-					"hardware",
-				),
-				"surfaces/strategy/research/2-maker.report.json": post("Our name makes us its maker", "Hardware"),
-				"surfaces/strategy/research/3-prepay.report.json": post("No money before it ships", "Selling"),
-				"surfaces/strategy/plan/old.report.json": post("Where <299> kr goes"),
-				"surfaces/strategy/research/notes.json": post("Not a post"),
-				"surfaces/other/research/4-elsewhere.report.json": post("Another interface's post", "Hardware"),
+				"surfaces/strategy/research/band.report.json": post({
+					headline: "Nothing on sale does what our band must",
+					theme: "hardware",
+					date: "2026-01-10",
+				}),
+				"surfaces/strategy/research/maker.report.json": post({
+					title: "Our name makes us its maker",
+					theme: "Hardware",
+					date: "2026-01-12",
+				}),
+				"surfaces/strategy/research/prepay.report.json": post({
+					headline: "No money before it ships",
+					theme: "Selling",
+					date: "2026-01-11",
+				}),
+				"surfaces/strategy/plan/old.report.json": post({ headline: "Where <299> kr goes", date: "November" }),
+				"surfaces/strategy/research/unread.report.json": post({
+					headline: "A post whose evidence does not read",
+					theme: "Hardware",
+					question: "Is this a research post?",
+					date: "2026-01-13",
+				}),
+				"surfaces/strategy/research/untitled.report.json": post({ theme: "Hardware", date: "2026-01-14" }),
+				"surfaces/strategy/research/notes.json": post({ headline: "Not a post" }),
+				"surfaces/other/research/elsewhere.report.json": post({ headline: "Another interface's post" }),
 			},
 			binaries: {},
 		};
@@ -757,10 +773,11 @@ describe("Studio visual inspect & draw tools", () => {
 		expect(
 			[...rendered.html.matchAll(/<article class="pv-card"><strong>([^<]*)<\/strong>/g)].map((match) => match[1]),
 		).toEqual([
-			"Where &#60;299&#62; kr goes",
-			"Nothing on sale does what our band must",
+			"A post whose evidence does not read",
 			"Our name makes us its maker",
 			"No money before it ships",
+			"Nothing on sale does what our band must",
+			"Where &#60;299&#62; kr goes",
 		]);
 
 		const empty = renderStudioPreviewHtml({

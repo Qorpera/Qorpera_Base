@@ -3,7 +3,7 @@ import { h } from "../../../ui/dom.ts";
 import { t } from "../../../ui/preferences.ts";
 import type { SurfacesStore } from "../../surfaces-store.ts";
 import { SVG_FILE_RE, svgDataUrl } from "./artifacts.ts";
-import type { SurfacePictures } from "./brand-mark.ts";
+import { type SurfacePictures, svgText } from "./brand-mark.ts";
 import { homeEmpty, type SurfaceBlockContext, type SurfaceBlockPrepared } from "./context.ts";
 import { buildLibraryModel, type LibraryModel, type LibraryPost, type LibraryTheme } from "./library-model.ts";
 import { buildPostPage, postDay, postPageClick, sourcesLabel } from "./post-page.ts";
@@ -32,11 +32,6 @@ function postsLabel(count: number): string {
 	return count === 1 ? t("1 post") : t("{count} posts", { count });
 }
 
-function svgText(text: string | undefined): string | undefined {
-	const trimmed = text?.trim();
-	return trimmed && /<svg[\s>]/i.test(trimmed) ? trimmed : undefined;
-}
-
 class LibraryView {
 	readonly el = h("section", { class: "lib", "data-block": "library" });
 	readonly #options: SurfaceLibrariesOptions;
@@ -51,15 +46,23 @@ class LibraryView {
 		this.el.addEventListener("click", (event) => this.#click(event), { signal: options.signal });
 	}
 
-	show(shown: LibraryShown): void {
+	show(shown: LibraryShown, wanted: string | undefined): boolean {
 		const before = this.#shown;
 		this.#shown = shown;
+		const { posts } = shown.model;
+		const place = this.#place;
 		const slug = this.#options.store.state.activeReportSlug;
+		const asked = wanted === undefined ? undefined : posts.find((item) => item.path === wanted);
 		let moved = false;
-		if (slug !== this.#storeSlug) {
+		if (asked) {
+			this.#storeSlug = asked.doc.slug;
+			this.#place = { page: "post", path: asked.path };
+			moved = true;
+		} else if (slug !== this.#storeSlug) {
 			this.#storeSlug = slug;
-			const post = slug ? shown.model.posts.find((item) => item.doc.slug === slug) : undefined;
-			if (post && !(this.#place.page === "post" && this.#place.path === post.path)) {
+			const open = place.page === "post" ? posts.find((item) => item.path === place.path) : undefined;
+			const post = slug && open?.doc.slug !== slug ? posts.find((item) => item.doc.slug === slug) : undefined;
+			if (post) {
 				this.#place = { page: "post", path: post.path };
 				moved = true;
 			}
@@ -70,6 +73,7 @@ class LibraryView {
 			before.signature.length === shown.signature.length &&
 			before.signature.every((part, index) => part === shown.signature[index]);
 		if (!same || moved || this.el.childElementCount === 0) this.#render();
+		return asked !== undefined;
 	}
 
 	open(path: string): boolean {
@@ -416,6 +420,7 @@ export class SurfaceLibraries {
 	readonly #options: SurfaceLibrariesOptions;
 	readonly #views = new Map<string, LibraryView>();
 	readonly #models = new WeakMap<SurfaceBlockContext, Map<string, LibraryModel>>();
+	#wanted: string | undefined;
 
 	constructor(options: SurfaceLibrariesOptions) {
 		this.#options = options;
@@ -485,7 +490,7 @@ export class SurfaceLibraries {
 							view = new LibraryView(this.#options);
 							this.#views.set(key, view);
 						}
-						view.show({ model, ctx, kicker, signature });
+						if (view.show({ model, ctx, kicker, signature }, this.#wanted)) this.#wanted = undefined;
 						return view.el;
 					},
 				},
@@ -493,10 +498,10 @@ export class SurfaceLibraries {
 		};
 	}
 
-	open(path: string): boolean {
+	open(path: string): void {
 		let opened = false;
 		for (const view of this.#views.values()) opened = view.open(path) || opened;
-		return opened;
+		this.#wanted = opened ? undefined : path;
 	}
 
 	keep(keys: ReadonlySet<string>): void {

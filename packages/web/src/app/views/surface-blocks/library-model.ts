@@ -1,4 +1,9 @@
-import { readSurfaceLibrary, type SurfaceLibraryOpen, surfaceLibraryThemeKey } from "@qorpera/contracts";
+import {
+	compareSurfaceLibraryPosts,
+	readSurfaceLibrary,
+	type SurfaceLibraryOpen,
+	surfaceLibraryThemeKey,
+} from "@qorpera/contracts";
 import { parseReportJson, type ReportDocument } from "./report-document.ts";
 
 export interface LibraryPost {
@@ -41,7 +46,6 @@ export interface LibraryInput {
 	readonly resolve: (path: string) => string | undefined;
 }
 
-const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const SOURCE_MARKS = /\s*\[\d{1,3}(?:\s*,\s*\d{1,3})*\]/g;
 
 function readDocument(path: string, value: string, base: string | undefined): ReportDocument | undefined {
@@ -59,10 +63,6 @@ function mostCommon(values: readonly string[]): string | undefined {
 	return best;
 }
 
-function sortDay(doc: ReportDocument): string {
-	return CALENDAR_DAY.test(doc.date) ? doc.date : "";
-}
-
 export function buildLibraryModel(input: LibraryInput): LibraryModel {
 	const file = readSurfaceLibrary(input.file);
 	const documents: ReportDocument[] = [];
@@ -71,7 +71,7 @@ export function buildLibraryModel(input: LibraryInput): LibraryModel {
 		const doc = text.value ? readDocument(path, text.value, text.base) : undefined;
 		if (doc) documents.push(doc);
 	}
-	documents.sort((a, b) => sortDay(a).localeCompare(sortDay(b)) || a.path.localeCompare(b.path));
+	documents.sort(compareSurfaceLibraryPosts);
 
 	const names = new Map(file.themes.map((theme) => [surfaceLibraryThemeKey(theme.name), theme.name]));
 	for (const doc of documents) {

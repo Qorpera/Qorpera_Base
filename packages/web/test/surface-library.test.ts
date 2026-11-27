@@ -490,6 +490,31 @@ describe("The Research tab's library", () => {
 		expect(texts(".lib-kicker")).toEqual(["What we know"]);
 		done();
 	});
+	it("lands on the post a change names by its path, also when two posts share a file name", async () => {
+		const planPath = `${ROOT}/plan/summary.report.json`;
+		const marketPath = `${ROOT}/market/summary.report.json`;
+		const { texts, find, store, surface, view, done } = await open(
+			{
+				[planPath]: JSON.stringify({ headline: "Plan summary", date: "2026-01-02", sections: [] }),
+				[marketPath]: JSON.stringify({ headline: "Market summary", date: "2026-01-03", sections: [] }),
+			},
+			{ tab: "" },
+		);
+		const onTab = () => view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+		expect(onTab()).toBe("plan");
+
+		await store.openChangeDeliverable(surface.id, CHANGES[0], "summary", planPath);
+		await vi.waitFor(() => expect(onTab()).toBe("research"));
+		expect(texts(".po-title")).toEqual(["Plan summary"]);
+		view.update();
+		expect(texts(".po-title")).toEqual(["Plan summary"]);
+
+		await store.openChangeDeliverable(surface.id, CHANGES[0], "summary", marketPath);
+		await vi.waitFor(() => expect(texts(".po-title")).toEqual(["Market summary"]));
+		find<HTMLButtonElement>(".lib-back")!.click();
+		expect(texts(".lib-card-title")).toEqual(["Market summary", "Plan summary"]);
+		done();
+	});
 });
 
 describe("A research post in a report block", () => {

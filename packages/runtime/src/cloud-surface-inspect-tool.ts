@@ -3,6 +3,7 @@ import { gzipSync } from "node:zlib";
 import {
 	CLOUD_CODING_COMMAND_PAGE_BYTES,
 	type CloudCodingCommandReceipt,
+	compareSurfaceLibraryPosts,
 	IDENTITY_TOKENS_CSS_PATH,
 	isSurfaceAskSource,
 	isUuid,
@@ -14,6 +15,7 @@ import {
 	parseStrategyLandscapeDocument,
 	parseStrategyPlaysDocument,
 	parseSurfaceChartDocument,
+	parseSurfaceReportEvidence,
 	readSurfaceLayout,
 	readSurfaceLibrary,
 	resolveSurfaceSource,
@@ -1569,16 +1571,29 @@ function renderBlockHtml(
 						/\.report\.json$/i.test(p) &&
 						surfaceGlobMatches(block.match, block.match.startsWith("/") ? `/${p}` : p.slice(rootPrefix.length)),
 				)
-				.sort()
-				.flatMap((p) => {
+				.flatMap((path) => {
+					let parsed: unknown;
 					try {
-						const parsed = JSON.parse(snapshot.files[p] ?? "") as Record<string, unknown>;
-						const headline = typeof parsed.headline === "string" ? parsed.headline : (p.split("/").pop() ?? p);
-						return [{ headline, theme: typeof parsed.theme === "string" ? parsed.theme.trim() : "" }];
+						parsed = JSON.parse(snapshot.files[path] ?? "");
 					} catch {
 						return [];
 					}
-				});
+					if (!isPlainRecord(parsed)) return [];
+					const headline =
+						typeof parsed.headline === "string" && parsed.headline
+							? parsed.headline
+							: typeof parsed.title === "string"
+								? parsed.title
+								: "";
+					if (!headline) return [];
+					let theme = "";
+					try {
+						theme = parseSurfaceReportEvidence(parsed, { path }).theme ?? "";
+					} catch {}
+					return [{ path, headline, theme, date: typeof parsed.date === "string" ? parsed.date : "" }];
+				})
+				.sort(compareSurfaceLibraryPosts)
+				.reverse();
 			const themes = new Map(library.themes.map((theme) => [surfaceLibraryThemeKey(theme.name), theme.name]));
 			for (const post of posts)
 				if (post.theme && !themes.has(surfaceLibraryThemeKey(post.theme)))

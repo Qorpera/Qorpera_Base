@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	compareSurfaceLibraryPosts,
 	describeSurfaceBlocks,
 	describeSurfaceFormats,
 	parseSurfaceLayout,
@@ -196,6 +197,23 @@ describe("a library file", () => {
 		expect(read.themes).toHaveLength(SURFACE_LIBRARY_THEMES_MAX);
 		expect(read.themes[0]?.open).toHaveLength(SURFACE_LIBRARY_OPEN_MAX);
 		expect(read.featured).toHaveLength(SURFACE_LIBRARY_FEATURED_MAX);
+	});
+
+	it("orders posts oldest first by calendar day, then by path, with undated posts first", () => {
+		const posts = [
+			{ date: "2026-01-12", path: "research/b.report.json" },
+			{ date: "November 2026", path: "plan/old.report.json" },
+			{ date: "2026-01-12", path: "research/a.report.json" },
+			{ date: "2026-01-05", path: "research/z.report.json" },
+			{ date: "", path: "notes/first.report.json" },
+		];
+		expect([...posts].sort(compareSurfaceLibraryPosts).map((post) => post.path)).toEqual([
+			"notes/first.report.json",
+			"plan/old.report.json",
+			"research/z.report.json",
+			"research/a.report.json",
+			"research/b.report.json",
+		]);
 	});
 
 	it("matches a post's theme to a named one whatever its case or spacing", () => {

@@ -331,8 +331,8 @@ export class SurfaceStudioView {
 		this.#tab = place.tab;
 		queueMicrotask(() => {
 			if (this.#lifetime.signal.aborted) return;
-			this.update();
 			if (place.in === "posts") this.#layout?.showPost(path);
+			this.update();
 			if (place.in === "files") this.#showFile(path, 40);
 		});
 		return true;

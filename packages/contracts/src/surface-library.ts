@@ -28,6 +28,7 @@ export interface SurfaceLibraryFile {
 const EMPTY_LIBRARY: SurfaceLibraryFile = { themes: [], featured: [] };
 const ICON_FILE = /\.svg$/i;
 const REPORT_FILE = /\.report\.json$/i;
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -43,6 +44,14 @@ function folderPath(value: unknown, file: RegExp): string | undefined {
 	if (path === undefined || !file.test(path) || path.includes("\\") || path.includes("\0")) return undefined;
 	const parts = (path.startsWith("/") ? path.slice(1) : path).split("/");
 	return parts.some((part) => part === "" || part === "." || part === "..") ? undefined : path;
+}
+
+export function compareSurfaceLibraryPosts(
+	a: { readonly date: string; readonly path: string },
+	b: { readonly date: string; readonly path: string },
+): number {
+	const day = (date: string) => (CALENDAR_DAY.test(date) ? date : "");
+	return day(a.date).localeCompare(day(b.date)) || a.path.localeCompare(b.path);
 }
 
 export function surfaceLibraryThemeKey(name: string): string {

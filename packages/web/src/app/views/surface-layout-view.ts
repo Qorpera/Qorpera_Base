@@ -598,8 +598,8 @@ export class SurfaceLayoutView {
 		return files ? { tab: files.id, in: "files" } : undefined;
 	}
 
-	showPost(path: string): boolean {
-		return this.#libraries.open(path);
+	showPost(path: string): void {
+		this.#libraries.open(path);
 	}
 
 	click(target: HTMLElement, root: HTMLElement): boolean {
