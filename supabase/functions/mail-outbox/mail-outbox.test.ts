@@ -610,15 +610,12 @@ describe("mail outbox attachments", () => {
 		);
 		assert.throws(() => new ObjectGatewayReader("https://user:pass@objects.internal.example", validToken), /clean https origin/);
 		assert.throws(() => new ObjectGatewayReader("https://objects.internal.example", "short-token"), /43-character/);
-		assert.throws(
-			() =>
-				createMailObjectReader({
-					objectGatewayUrl: "https://objects.internal.example",
-					supabaseUrl: "https://project.example.test",
-					secretKey: KEY,
-				}),
-			/must be set together/,
-		);
+		const sharedGatewayFallback = createMailObjectReader({
+			objectGatewayUrl: "https://objects.internal.example",
+			supabaseUrl: "https://project.example.test",
+			secretKey: KEY,
+		});
+		assert.ok(sharedGatewayFallback instanceof StorageObjectReader);
 		assert.throws(
 			() =>
 				createMailObjectReader({
@@ -626,7 +623,7 @@ describe("mail outbox attachments", () => {
 					supabaseUrl: "https://project.example.test",
 					secretKey: KEY,
 				}),
-			/must be set together/,
+			/QORPERA_OBJECT_GATEWAY_URL is required/,
 		);
 		const fallback = createMailObjectReader({
 			supabaseUrl: "https://project.example.test",

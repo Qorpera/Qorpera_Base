@@ -110,7 +110,6 @@ interface MailboxUi {
 	search: string;
 	/** Messages opened or folded by the member, by `thread:kind:id`; the rest follow the default (the newest open). */
 	expanded: Record<string, boolean>;
-	remoteImages: Record<string, boolean>;
 	blockedLink: { readonly message: string; readonly href: string } | null;
 	writing: boolean;
 	/** The Write window's new email. */
@@ -205,8 +204,7 @@ const newDraft = (): Draft => ({
 
 interface MailFrameEntry {
 	readonly html: string;
-	allowRemote: boolean;
-	sanitized: SanitizedMailHtml;
+	readonly sanitized: SanitizedMailHtml;
 	readonly frame: MailFrame;
 	page: Page;
 }
@@ -568,7 +566,6 @@ export function renderMailbox(
 			letterAgent: null,
 			search: "",
 			expanded: {},
-			remoteImages: {},
 			blockedLink: null,
 			writing: false,
 			write: newDraft(),
@@ -1642,14 +1639,12 @@ function messageSigs(
 ): {
 	readonly key: string;
 	readonly open: boolean;
-	readonly allowRemote: boolean;
 	readonly sig: string;
 	readonly htmlFrameSig: string | null;
 } {
 	const { ui, company } = page;
 	const key = messageKey(thread, message);
 	const open = ui.expanded[key] ?? newest;
-	const allowRemote = ui.remoteImages[key] === true;
 	const blockedHref = ui.blockedLink?.message === key ? ui.blockedLink.href : null;
 	const state = company.store.get();
 	const base = [
@@ -1660,73 +1655,37 @@ function messageSigs(
 		cachedStaffJson(state.staff),
 		cachedTeamMembersJson(state.team?.members),
 	];
-	const sig = JSON.stringify([...base, allowRemote, blockedHref]);
+	const sig = JSON.stringify([...base, blockedHref]);
 	const htmlFrameSig =
 		open && message.kind === "received" && !message.account && message.html ? JSON.stringify(base) : null;
-	return { key, open, allowRemote, sig, htmlFrameSig };
+	return { key, open, sig, htmlFrameSig };
 }
 
-function htmlBars(
-	page: Page,
-	key: string,
-	html: string,
-	htmlEntry: MailFrameEntry,
-	allowRemote: boolean,
-): HTMLElement[] {
+function htmlBars(page: Page, key: string): HTMLElement[] {
 	const { ui } = page;
-	const bars: HTMLElement[] = [];
-	if (!allowRemote && htmlEntry.sanitized.remoteImageCount > 0) {
-		bars.push(
-			h(
-				"div",
-				{ class: "mailbox-html-bar" },
-				h("span", { class: "mailbox-muted" }, t("Images from outside are hidden.")),
-				h(
-					"button",
-					{
-						type: "button",
-						class: "mailbox-text",
-						"data-focus-key": `show-images:${key}`,
-						onclick: (event: MouseEvent) => {
-							ui.remoteImages = { ...ui.remoteImages, [key]: true };
-							const next = sanitizeMailHtml(html, { allowRemoteImages: true });
-							htmlEntry.allowRemote = true;
-							htmlEntry.sanitized = next;
-							htmlEntry.frame.update(next);
-							(event.currentTarget as HTMLElement).closest(".mailbox-html-bar")?.remove();
-							if (!page.syncKey?.()) page.redraw();
-						},
-					},
-					t("Show images"),
-				),
-			),
-		);
-	}
 	const blocked = ui.blockedLink?.message === key ? ui.blockedLink : null;
-	if (blocked) {
-		bars.push(
+	if (!blocked) return [];
+	return [
+		h(
+			"div",
+			{ class: "mailbox-html-bar" },
 			h(
-				"div",
-				{ class: "mailbox-html-bar" },
-				h(
-					"a",
-					{
-						class: "mailbox-text",
-						href: blocked.href,
-						target: "_blank",
-						rel: "noopener noreferrer",
-						onclick: () => {
-							ui.blockedLink = null;
-							page.redraw();
-						},
+				"a",
+				{
+					class: "mailbox-text",
+					href: blocked.href,
+					target: "_blank",
+					rel: "noopener noreferrer",
+					onclick: () => {
+						ui.blockedLink = null;
+						page.redraw();
 					},
-					t("Open link"),
-				),
-				h("span", { class: "mailbox-muted mailbox-link-url" }, blocked.href),
+				},
+				t("Open link"),
 			),
-		);
-	}
-	return bars;
+			h("span", { class: "mailbox-muted mailbox-link-url" }, blocked.href),
+		),
+	];
 }
 
 function patchOpenThread(container: HTMLElement, page: Page, key: string, targetFocus: string | undefined): boolean {
@@ -1811,13 +1770,7 @@ function patchOpenThread(container: HTMLElement, page: Page, key: string, target
 	const desired: HTMLLIElement[] = [];
 	for (const message of read.thread.messages) {
 		const newest = message === last;
-		const {
-			key: msgKey,
-			open,
-			allowRemote,
-			sig,
-			htmlFrameSig,
-		} = messageSigs(page, ui.open, message, newest, summary);
+		const { key: msgKey, open, sig, htmlFrameSig } = messageSigs(page, ui.open, message, newest, summary);
 		const existing = existingByKey.get(msgKey);
 		if (existing && existing.dataset.messageSig === sig) {
 			if (open && message.kind === "received" && message.html) {
@@ -1840,10 +1793,10 @@ function patchOpenThread(container: HTMLElement, page: Page, key: string, target
 			message.kind === "received" &&
 			message.html
 		) {
-			const frameEntry = mailFrameFor(page, msgKey, message.html, allowRemote, usedFrames);
+			const frameEntry = mailFrameFor(page, msgKey, message.html, usedFrames);
 			const barsHost = existing.querySelector<HTMLElement>(".mailbox-html-bars");
 			if (frameEntry && barsHost && existing.contains(frameEntry.frame.frame)) {
-				replace(barsHost, ...htmlBars(page, msgKey, message.html, frameEntry, allowRemote));
+				replace(barsHost, ...htmlBars(page, msgKey));
 				existing.dataset.messageSig = sig;
 				desired.push(existing);
 				continue;
@@ -1983,13 +1936,7 @@ function openMailLink(page: Page, key: string, href: string): void {
 	page.redraw();
 }
 
-function mailFrameFor(
-	page: Page,
-	key: string,
-	html: string,
-	allowRemote: boolean,
-	usedFrames: Set<string>,
-): MailFrameEntry | null {
+function mailFrameFor(page: Page, key: string, html: string, usedFrames: Set<string>): MailFrameEntry | null {
 	const { ui } = page;
 	let frames = mailFrames.get(ui);
 	if (!frames) {
@@ -1999,18 +1946,13 @@ function mailFrameFor(
 	const existing = frames.get(key);
 	if (existing && existing.html === html) {
 		existing.page = page;
-		if (existing.allowRemote !== allowRemote) {
-			existing.allowRemote = allowRemote;
-			existing.sanitized = sanitizeMailHtml(html, { allowRemoteImages: allowRemote });
-			existing.frame.update(existing.sanitized);
-		}
 		if (!existing.sanitized.hasContent) return null;
 		usedFrames.add(key);
 		return existing;
 	}
 	existing?.frame.dispose();
 	frames.delete(key);
-	const sanitized = sanitizeMailHtml(html, { allowRemoteImages: allowRemote });
+	const sanitized = sanitizeMailHtml(html, { allowRemoteImages: true });
 	if (!sanitized.hasContent) return null;
 	let entry: MailFrameEntry;
 	const frame = new MailFrame(sanitized, t("From outside the company"), {
@@ -2022,7 +1964,7 @@ function mailFrameFor(
 			}
 		},
 	});
-	entry = { html, allowRemote, sanitized, frame, page };
+	entry = { html, sanitized, frame, page };
 	frames.set(key, entry);
 	usedFrames.add(key);
 	return entry;
@@ -2044,7 +1986,7 @@ function messageItem(
 	usedTexts: Set<string>,
 ): HTMLElement {
 	const { ui } = page;
-	const { key, open, allowRemote, sig, htmlFrameSig } = messageSigs(page, thread, message, newest, summary);
+	const { key, open, sig, htmlFrameSig } = messageSigs(page, thread, message, newest, summary);
 	const received = message.kind === "received";
 	if (received && message.account) {
 		const account = message.account;
@@ -2116,7 +2058,7 @@ function messageItem(
 				: message.status === "cancelled"
 					? h("span", { class: "mailbox-status is-failed" }, t("Cancelled"))
 					: h("span", { class: "mailbox-status" }, t("Sending"));
-	const htmlEntry = received && html ? mailFrameFor(page, key, html, allowRemote, usedFrames) : null;
+	const htmlEntry = received && html ? mailFrameFor(page, key, html, usedFrames) : null;
 	const showHtml = htmlEntry !== null;
 	const truncated = showHtml ? received && message.htmlTruncated : received && message.textTruncated;
 	const notes = [
@@ -2162,9 +2104,7 @@ function messageItem(
 				h("span", { class: "mailbox-when" }, status, h("time", { datetime: message.at }, fmtTime(message.at))),
 			),
 			notes.length ? h("p", { class: "mailbox-note" }, notes.join(" ")) : null,
-			showHtml
-				? h("div", { class: "mailbox-html-bars" }, ...htmlBars(page, key, html, htmlEntry, allowRemote))
-				: null,
+			showHtml ? h("div", { class: "mailbox-html-bars" }, ...htmlBars(page, key)) : null,
 			showHtml
 				? h("div", { class: "mailbox-html-body", title: t("From outside the company") }, htmlEntry.frame.frame)
 				: text

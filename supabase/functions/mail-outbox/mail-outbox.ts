@@ -500,8 +500,8 @@ export function createMailObjectReader(options: {
 }): ObjectReader {
 	const gatewayUrl = options.objectGatewayUrl?.trim();
 	const internalToken = options.objectGatewayInternalToken?.trim();
-	if (Boolean(gatewayUrl) !== Boolean(internalToken)) {
-		throw new Error("QORPERA_OBJECT_GATEWAY_URL and QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN must be set together");
+	if (internalToken && !gatewayUrl) {
+		throw new Error("QORPERA_OBJECT_GATEWAY_URL is required when QORPERA_OBJECT_GATEWAY_INTERNAL_TOKEN is set");
 	}
 	if (gatewayUrl && internalToken) {
 		return new ObjectGatewayReader(gatewayUrl, internalToken, options.fetcher);
