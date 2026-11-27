@@ -4,6 +4,7 @@ import {
 	SURFACE_LIBRARY_FORMAT,
 } from "./surface-library.ts";
 import { SURFACE_REPORT_FORMAT } from "./surface-report.ts";
+import { SURFACE_TALK_FORMAT, SURFACE_TALKS_DEFAULT_MATCH } from "./surface-talk.ts";
 import { WireValueError } from "./wire-values.ts";
 
 export const SURFACE_LAYOUT_PATH = "layout.json";
@@ -105,6 +106,7 @@ export const SURFACE_BLOCK_TYPES = [
 	"chart",
 	"report",
 	"library",
+	"talks",
 	"explainer",
 	"artifacts",
 	"module",
@@ -309,6 +311,12 @@ export interface SurfaceLibraryBlock extends SurfaceBlockBase {
 	readonly heading?: string;
 }
 
+export interface SurfaceTalksBlock extends SurfaceBlockBase {
+	readonly type: "talks";
+	readonly match: string;
+	readonly heading?: string;
+}
+
 export interface SurfaceExplainerFileBlock extends SurfaceBlockBase {
 	readonly type: "explainer";
 	readonly from: string;
@@ -355,6 +363,7 @@ export type SurfaceBlock =
 	| SurfaceChartBlock
 	| SurfaceReportBlock
 	| SurfaceLibraryBlock
+	| SurfaceTalksBlock
 	| SurfaceExplainerBlock
 	| SurfaceArtifactsBlock
 	| SurfaceModuleBlock;
@@ -606,6 +615,12 @@ export const SURFACE_BLOCKS: readonly SurfaceBlockDefinition[] = [
 			{ name: "match", kind: "glob", required: false, note: SURFACE_LIBRARY_DEFAULT_MATCH },
 			HEADING_FIELD,
 		],
+	},
+	{
+		type: "talks",
+		family: "talks",
+		summary: "narrated talks: a shelf, a player",
+		fields: [{ name: "match", kind: "glob", required: false, note: SURFACE_TALKS_DEFAULT_MATCH }, HEADING_FIELD],
 	},
 	{
 		type: "explainer",
@@ -1280,6 +1295,7 @@ function finishBlock(type: SurfaceBlockType, block: Record<string, unknown>, lab
 		block.from ??= SURFACE_LIBRARY_DEFAULT_FILE;
 		block.match ??= SURFACE_LIBRARY_DEFAULT_MATCH;
 	}
+	if (type === "talks") block.match ??= SURFACE_TALKS_DEFAULT_MATCH;
 	if (type === "report" && (block.from !== undefined) === (block.match !== undefined)) {
 		fail(label, "report needs from or match, exactly one of them");
 	}
@@ -2054,6 +2070,7 @@ const SURFACE_BLOCK_FORMATS: Readonly<Partial<Record<SurfaceBlockType, string | 
 	chart: SURFACE_CHART_FORMAT,
 	report: SURFACE_REPORT_FORMAT,
 	library: [SURFACE_REPORT_FORMAT, SURFACE_LIBRARY_FORMAT],
+	talks: SURFACE_TALK_FORMAT,
 	module: SURFACE_TOKENS_FORMAT,
 };
 

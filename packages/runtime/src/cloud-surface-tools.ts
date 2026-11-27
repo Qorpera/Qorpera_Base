@@ -14,6 +14,7 @@ import {
 	parseRecord,
 	parseSha256Hex,
 	parseStudioPatchOps,
+	parseSurfaceBinding,
 	parseSurfaceLayoutText,
 	parseSurfaceReportEvidence,
 	parseSurfaceSessionArtifact,
@@ -21,7 +22,10 @@ import {
 	parseSurfaceSessionProgressStep,
 	parseSurfaceSlug,
 	parseUuid,
+	readSurfaceLayout,
+	readSurfaceTalk,
 	resolveStudioFolderPath,
+	resolveSurfaceSource,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
@@ -51,6 +55,7 @@ import {
 	SURFACE_SESSION_STATES,
 	SURFACE_SOURCE_KINDS,
 	SURFACE_STATUSES,
+	SURFACE_TALK_FILE,
 	type SurfaceArchetype,
 	type SurfaceAutomationStatus,
 	type SurfaceChangeDiffStats,
@@ -67,7 +72,10 @@ import {
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
+	type SurfaceTalk,
 	surfaceReportMarkedKey,
+	surfaceTalkPosts,
+	surfaceTalkStarter,
 	WireValueError,
 } from "@qorpera/contracts";
 import { withAbortScopes } from "./abort-scope.ts";
@@ -1636,6 +1644,7 @@ export interface SurfaceLayoutStaging {
 	readonly folderRoot: string;
 	readonly waitingOps: readonly StudioPatchOp[] | null;
 	readLayout(signal: AbortSignal): Promise<string | null>;
+	readText?(relativePath: string, signal: AbortSignal): Promise<string | null>;
 }
 
 export type StagedLayoutCheck = "checked" | "unchecked";
@@ -1667,6 +1676,9 @@ const LAYOUT_REFUSAL_PREFIX = `${SURFACE_LAYOUT_PATH} would not draw:`;
 const LAYOUT_REFUSAL_FIX = "Fix it and stage the patch again; nothing was staged.";
 const REPORT_FILE_RE = /\.report\.json$/i;
 const STANDALONE_HTML_FILE_RE = /\.html?$/i;
+const TALK_FILE_RE = new RegExp(`(?:^|/)${SURFACE_TALK_FILE.replace(".", "\\.")}$`, "i");
+const LANDSCAPE_DEFAULT_FILE = "landscape.json";
+const TALK_RIVALS_MAX = 60;
 const MODULE_PATH_RE = /(?:^|\/)modules\/[^/]+\//i;
 const REPORT_BLOCK_KINDS = new Set(["quote", "bar_chart", "line_chart", "table", "callout", "figure"]);
 
@@ -1688,8 +1700,30 @@ function reportRefusal(path: string, problem: string): CloudToolRefusal {
 	return new CloudToolRefusal(`${prefix} ${plain.length > room ? `${plain.slice(0, room)}...` : plain}. ${fix}`);
 }
 
+function talkRefusal(path: string, problems: readonly string[]): CloudToolRefusal {
+	const rawPath = path.replace(/[^\u0020-\u007e]/g, "?");
+	const safePath = rawPath.length > 160 ? `${rawPath.slice(0, 157)}...` : rawPath;
+	const prefix = `${safePath} is not a talk the founder can be shown:`;
+	const fix = "Fix it and stage the talk whole again; nothing was staged.";
+	const plain = problems.join("; ").replace(/[^\u0020-\u007e]/g, "?");
+	const room = Math.max(80, 1000 - prefix.length - fix.length - 4);
+	return new CloudToolRefusal(`${prefix} ${plain.length > room ? `${plain.slice(0, room)}...` : plain}. ${fix}`);
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stagedTalk(path: string, content: string, rivals: readonly string[] = []): SurfaceTalk {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		throw talkRefusal(path, ["content is not valid JSON"]);
+	}
+	const read = readSurfaceTalk(parsed, { rivals });
+	if (!read.talk) throw talkRefusal(path, read.problems);
+	return read.talk;
 }
 
 function nonEmptyString(value: unknown): boolean {
@@ -1791,13 +1825,20 @@ export function checkStagedSurfaceDeliverables(
 	options?: { readonly allowMultipleDeliverables?: boolean },
 ): void {
 	const deliverablePaths = new Set<string>();
+	let talks = 0;
 	for (const op of ops) {
 		if (op.op === "delete") continue;
 		const normalized = op.path
 			.trim()
 			.replace(/^\/+|\/+$/g, "")
 			.toLowerCase();
-		if (REPORT_FILE_RE.test(op.path)) {
+		if (TALK_FILE_RE.test(op.path)) {
+			if (!deliverablePaths.has(normalized)) talks += 1;
+			deliverablePaths.add(normalized);
+			if (op.op === "merge_json")
+				throw talkRefusal(op.path, ["a talk is written whole, with write_text, never merged"]);
+			if (op.op === "write_text") stagedTalk(op.path, op.content);
+		} else if (REPORT_FILE_RE.test(op.path)) {
 			deliverablePaths.add(normalized);
 			if (op.op === "write_text") {
 				let parsed: unknown;
@@ -1850,9 +1891,90 @@ export function checkStagedSurfaceDeliverables(
 		}
 	}
 	if (!options?.allowMultipleDeliverables && deliverablePaths.size > 1) {
+		if (talks > 0)
+			throw new CloudToolRefusal(
+				"Stage each talk alone in its own stage_surface_patch call, apart from any other talk, report (*.report.json) or standalone HTML document, so members can preview and approve it on its own. Nothing was staged.",
+			);
 		throw new CloudToolRefusal(
 			"Stage each report (*.report.json) or standalone HTML document in its own stage_surface_patch call so members can preview, toggle, and approve each deliverable independently. Nothing was staged.",
 		);
+	}
+}
+
+async function pageRivals(staging: SurfaceLayoutStaging, signal: AbortSignal): Promise<string[]> {
+	const read = staging.readText;
+	if (!read) return [];
+	const layoutText = await staging.readLayout(signal);
+	const layout = layoutText === null ? undefined : readSurfaceLayout(layoutText);
+	const sources: unknown[] = [];
+	if (layout && "layout" in layout) {
+		for (const tab of layout.layout.tabs)
+			for (const node of tab.blocks)
+				for (const block of node.type === "row" ? node.blocks : [node])
+					if (block.type === "landscape") sources.push(block.from);
+	} else sources.push(LANDSCAPE_DEFAULT_FILE);
+	const files = new Map<string, unknown>();
+	for (const choice of sources.flat()) {
+		if (typeof choice !== "string") continue;
+		let path: string;
+		try {
+			path = parseSurfaceBinding(choice).path;
+		} catch {
+			continue;
+		}
+		if (path.startsWith("/") || files.has(path)) continue;
+		try {
+			files.set(path, JSON.parse((await read(path, signal)) ?? ""));
+		} catch {
+			files.set(path, undefined);
+		}
+	}
+	const names: string[] = [];
+	for (const source of sources) {
+		const landscape = resolveSurfaceSource(source, (path) => files.get(path));
+		const players =
+			landscape.found && isPlainRecord(landscape.value) && Array.isArray(landscape.value.players)
+				? landscape.value.players
+				: [];
+		for (const player of players)
+			if (
+				isPlainRecord(player) &&
+				player.isUs !== true &&
+				nonEmptyString(player.name) &&
+				names.length < TALK_RIVALS_MAX
+			)
+				names.push((player.name as string).trim());
+	}
+	return names;
+}
+
+export async function checkStagedSurfaceTalks(
+	ops: readonly StudioPatchOp[],
+	staging: SurfaceLayoutStaging,
+	signal: AbortSignal,
+): Promise<void> {
+	const read = staging.readText;
+	if (!read) return;
+	const relative = (path: string): string => {
+		const clean = path.trim().replace(/^\/+|\/+$/g, "");
+		return clean.startsWith(`${staging.folderRoot}/`) ? clean.slice(staging.folderRoot.length + 1) : clean;
+	};
+	const written = new Set(ops.filter((op) => op.op !== "delete").map((op) => relative(op.path).toLowerCase()));
+	let rivals: readonly string[] | undefined;
+	for (const op of ops) {
+		if (op.op !== "write_text" || !TALK_FILE_RE.test(op.path)) continue;
+		let talk = stagedTalk(op.path, op.content);
+		if (surfaceTalkStarter(talk.starter)?.never.includes("rivals")) {
+			rivals ??= await pageRivals(staging, signal);
+			talk = stagedTalk(op.path, op.content, rivals);
+		}
+		for (const post of surfaceTalkPosts(talk)) {
+			if (post.startsWith("/") || written.has(relative(post).toLowerCase())) continue;
+			if ((await read(relative(post), signal)) === null)
+				throw talkRefusal(op.path, [
+					`a picture rests on ${post}, which is not in this folder: a picture rests on a post that exists, on a bet, on the plan or on the founders' own words`,
+				]);
+		}
 	}
 }
 
@@ -2243,6 +2365,7 @@ export function createStageSurfacePatchTool(
 				allowMultipleDeliverables: options.allowMultipleDeliverables,
 			});
 			if (!layout) return parsed;
+			await checkStagedSurfaceTalks(deliverableOps, layout, context.signal);
 			let waitingOps: readonly StudioPatchOp[] | null;
 			if (targetId && req.replaceAll) {
 				const allOtherKnown = openChanges.every(

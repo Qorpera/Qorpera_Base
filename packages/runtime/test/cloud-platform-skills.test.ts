@@ -37,11 +37,11 @@ describe("the platform's skills", () => {
 		expect([...CLOUD_PLATFORM_SKILLS.keys()]).toEqual(names);
 	});
 
-	it("give every Studio starter its own skill, and ship two more: the research writer's and its second reader's", () => {
+	it("give every Studio starter its own skill, and ship four more: research's writer and second reader, a talk's writer and cold listener", () => {
 		expect(Object.keys(SURFACE_STARTER_SKILLS).sort()).toEqual([...SURFACE_STARTER_KINDS].sort());
-		expect([...Object.values(SURFACE_STARTER_SKILLS), "research-check", "research-posts"].sort()).toEqual([
-			...CLOUD_PLATFORM_SKILLS.keys(),
-		]);
+		expect(
+			[...Object.values(SURFACE_STARTER_SKILLS), "research-check", "research-posts", "talk-listen", "talks"].sort(),
+		).toEqual([...CLOUD_PLATFORM_SKILLS.keys()]);
 	});
 
 	it("hand a research question from Strategy to the writer, and the writer's draft to a second reader", () => {

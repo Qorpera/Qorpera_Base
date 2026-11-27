@@ -2937,7 +2937,7 @@ it("explains read-only coding_finish handoffs and archiving unneeded blocked cod
 		'A question that starts "Second reader needed:" asks nothing of the founder: dispatch one worker with manage_worker, on a todo that records this surfaceSessionId',
 	);
 	expect(completion).toContain(
-		"A worker whose todo records a surfaceSessionId did a research check for an interface session: relay it, do not share it. Call steer_surface_session with that id and the worker's lines unchanged, send nothing to a member, and close the todo.",
+		"A worker whose todo records a surfaceSessionId did a research check or a cold listen for an interface session: relay it, do not share it. Call steer_surface_session with that id and the worker's lines unchanged, send nothing to a member, and close the todo.",
 	);
 });
 
