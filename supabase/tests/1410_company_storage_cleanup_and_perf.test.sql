@@ -17,6 +17,8 @@ declare
 	v_profile_v1 uuid := '00000000-0000-4000-8000-000000009288';
 	v_env_v1 uuid := '00000000-0000-4000-8000-000000009289';
 	v_graph_v1 uuid := '00000000-0000-4000-8000-00000000928a';
+	v_profile2 uuid := '00000000-0000-4000-8000-00000000928b';
+	v_env2 uuid := '00000000-0000-4000-8000-00000000928c';
 	v_c1 uuid := '00000000-0000-4000-8000-000000009284';
 	v_c2 uuid := '00000000-0000-4000-8000-000000009285';
 	v_c3 uuid := '00000000-0000-4000-8000-000000009286';
@@ -57,6 +59,7 @@ declare
 	v_t_newer timestamptz := now() - interval '2 hours';
 	v_surface uuid := '00000000-0000-4000-8000-000000009310';
 	v_surface_folder uuid := '00000000-0000-4000-8000-00000000931f';
+	v_surface2 uuid := '00000000-0000-4000-8000-00000000931e';
 	v_ss_ready uuid := '00000000-0000-4000-8000-000000009311';
 	v_ss_young uuid := '00000000-0000-4000-8000-000000009312';
 	v_ss_chat uuid := '00000000-0000-4000-8000-000000009313';
@@ -66,6 +69,7 @@ declare
 	v_ss_disc_done uuid := '00000000-0000-4000-8000-000000009317';
 	v_ss_disc_clean uuid := '00000000-0000-4000-8000-000000009318';
 	v_ss_disc_folder uuid := '00000000-0000-4000-8000-000000009319';
+	v_ss_disc_other uuid := '00000000-0000-4000-8000-00000000931a';
 	v_w_ready uuid := '00000000-0000-4000-8000-000000009321';
 	v_w_young uuid := '00000000-0000-4000-8000-000000009322';
 	v_w_chat uuid := '00000000-0000-4000-8000-000000009323';
@@ -75,7 +79,9 @@ declare
 	v_w_disc_done uuid := '00000000-0000-4000-8000-000000009327';
 	v_w_disc_clean uuid := '00000000-0000-4000-8000-000000009328';
 	v_w_disc_folder uuid := '00000000-0000-4000-8000-000000009329';
+	v_w_disc_other uuid := '00000000-0000-4000-8000-00000000932a';
 	v_agent uuid := '00000000-0000-4000-8000-000000009330';
+	v_agent2 uuid := '00000000-0000-4000-8000-000000009331';
 	v_token uuid;
 	v_retire uuid[];
 	v_backfilled integer;
@@ -304,17 +310,24 @@ begin
 	insert into public.qorpera_code_repositories (environment_id, profile_id, owner, name, next_care_at)
 	values (v_env, v_profile, 'surfaces', 'app', now() - interval '1 hour');
 
+	insert into public.qorpera_profiles (id, name, created_by_user_id) values (v_profile2, 'Storage Co 2', v_user);
+	insert into public.qorpera_profile_members (profile_id, user_id, email, display_name, role)
+	values (v_profile2, v_user, 'storage-1410@example.com', 'Owner', 'owner');
+	insert into public.qorpera_company_environments (id, profile_id, name, contract_version, created_by_user_id)
+	values (v_env2, v_profile2, 'Environment', 1, v_user);
+	perform public.qorpera_folder_enable(v_env2);
+
 	insert into public.qorpera_profile_staff (
 		profile_id, staff_agent_id, display_name, role, charter, appearance_color, appearance_shape,
 		employment_status, created_at, updated_at, updated_by_user_id
-	) values (
-		v_profile, v_agent, 'Builder', 'Engineer', 'Builds apps.', '#336699', 'circle',
-		'active', now(), now(), v_user
-	);
+	) values
+		(v_profile, v_agent, 'Builder', 'Engineer', 'Builds apps.', '#336699', 'circle', 'active', now(), now(), v_user),
+		(v_profile2, v_agent2, 'Builder 2', 'Engineer', 'Builds apps.', '#336699', 'circle', 'active', now(), now(), v_user);
 
 	insert into public.qorpera_surfaces (id, profile_id, slug, title, surface_group, archetype, source_kind, repository_key, status) values
 		(v_surface, v_profile, 'app', 'App', 'products', 'live_build', 'code_repo', 'surfaces/app', 'active'),
-		(v_surface_folder, v_profile, 'notes-studio', 'Notes', 'products', 'studio', 'folder', null, 'active');
+		(v_surface_folder, v_profile, 'notes-studio', 'Notes', 'products', 'studio', 'folder', null, 'active'),
+		(v_surface2, v_profile2, 'app2', 'App 2', 'products', 'live_build', 'code_repo', 'surfaces/app2', 'active');
 
 	insert into public.qorpera_surface_sessions (
 		id, profile_id, surface_id, title, prompt, state, has_active_chat, closed_at, branch_head_sha
@@ -327,7 +340,8 @@ begin
 		(v_ss_disc_failed, v_profile, v_surface, 'Discarded failed cleanup', 'p', 'discarded', false, now() - interval '2 days', repeat('e', 40)),
 		(v_ss_disc_done, v_profile, v_surface, 'Discarded done cleanup', 'p', 'discarded', false, now() - interval '2 days', repeat('f', 40)),
 		(v_ss_disc_clean, v_profile, v_surface, 'Discarded already clean', 'p', 'discarded', false, now() - interval '2 days', null),
-		(v_ss_disc_folder, v_profile, v_surface_folder, 'Discarded folder', 'p', 'discarded', false, now() - interval '2 days', repeat('c', 40));
+		(v_ss_disc_folder, v_profile, v_surface_folder, 'Discarded folder', 'p', 'discarded', false, now() - interval '2 days', repeat('c', 40)),
+		(v_ss_disc_other, v_profile2, v_surface2, 'Discarded other company', 'p', 'discarded', false, now() - interval '2 days', repeat('b', 40));
 
 	perform set_config('session_replication_role', 'replica', true);
 	insert into public.qorpera_runtime_workers (
@@ -343,7 +357,8 @@ begin
 		(v_w_disc_failed, v_profile, v_env, v_agent, 'w-disc-2', 'coding', 'Disc 2', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_failed),
 		(v_w_disc_done, v_profile, v_env, v_agent, 'w-disc-3', 'coding', 'Disc 3', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_done),
 		(v_w_disc_clean, v_profile, v_env, v_agent, 'w-disc-4', 'coding', 'Disc 4', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_clean),
-		(v_w_disc_folder, v_profile, v_env, v_agent, 'w-disc-5', 'coding', 'Disc 5', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_folder);
+		(v_w_disc_folder, v_profile, v_env, v_agent, 'w-disc-5', 'coding', 'Disc 5', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_folder),
+		(v_w_disc_other, v_profile2, v_env2, v_agent2, 'w-disc-6', 'coding', 'Disc 6', 'write', 'each', '{}'::jsonb, 'succeeded', v_user, '{"summary":"ok"}'::jsonb, v_user, v_user, 1, true, v_ss_disc_other);
 	perform set_config('session_replication_role', 'origin', true);
 
 	update public.qorpera_surface_sessions set worker_id = v_w_disc_unarch where id = v_ss_disc_unarch;
@@ -351,6 +366,7 @@ begin
 	update public.qorpera_surface_sessions set worker_id = v_w_disc_done where id = v_ss_disc_done;
 	update public.qorpera_surface_sessions set worker_id = v_w_disc_clean where id = v_ss_disc_clean;
 	update public.qorpera_surface_sessions set worker_id = v_w_disc_folder where id = v_ss_disc_folder;
+	update public.qorpera_surface_sessions set worker_id = v_w_disc_other where id = v_ss_disc_other;
 
 	insert into public.qorpera_coding_sessions (
 		worker_id, profile_id, environment_id, harness, repository, branch, phase, archived_at, archived_by, surface_session_id
@@ -362,7 +378,8 @@ begin
 		(v_w_disc_unarch, v_profile, v_env, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app","baseBranch":"main"}', 'qorpera/coding/d1', 'completed', null, null, v_ss_disc_unarch),
 		(v_w_disc_failed, v_profile, v_env, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app","baseBranch":"main"}', 'qorpera/coding/d2', 'completed', now() - interval '1 day', 'kernel', v_ss_disc_failed),
 		(v_w_disc_done, v_profile, v_env, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app","baseBranch":"main"}', 'qorpera/coding/d3', 'completed', now() - interval '1 day', 'kernel', v_ss_disc_done),
-		(v_w_disc_clean, v_profile, v_env, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app","baseBranch":"main"}', 'qorpera/coding/d4', 'completed', now() - interval '1 day', 'kernel', v_ss_disc_clean);
+		(v_w_disc_clean, v_profile, v_env, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app","baseBranch":"main"}', 'qorpera/coding/d4', 'completed', now() - interval '1 day', 'kernel', v_ss_disc_clean),
+		(v_w_disc_other, v_profile2, v_env2, 'codex', '{"host":"qorpera","owner":"surfaces","name":"app2","baseBranch":"main"}', 'qorpera/coding/d6', 'completed', null, null, v_ss_disc_other);
 
 	insert into public.qorpera_surface_jobs (profile_id, surface_id, session_id, kind, status, payload) values
 		(v_profile, v_surface, v_ss_job, 'publish_surface', 'queued', '{}'::jsonb),
@@ -383,11 +400,12 @@ begin
 	end if;
 
 	v_backfilled := public.qorpera_surface_backfill_discarded_cleanups();
-	if v_backfilled <> 2 then
-		raise exception 'expected 2 discarded code_repo sessions backfilled, got %', v_backfilled;
+	if v_backfilled <> 3 then
+		raise exception 'expected 3 discarded code_repo sessions backfilled across 2 companies, got %', v_backfilled;
 	end if;
-	if (select archived_at from public.qorpera_coding_sessions where worker_id = v_w_disc_unarch) is null then
-		raise exception 'discarded unarchived coding session was not archived by backfill';
+	if (select archived_at from public.qorpera_coding_sessions where worker_id = v_w_disc_unarch) is null
+		or (select archived_at from public.qorpera_coding_sessions where worker_id = v_w_disc_other) is null then
+		raise exception 'discarded unarchived coding sessions were not archived by backfill';
 	end if;
 	if not exists (
 		select 1 from public.qorpera_surface_jobs
@@ -395,8 +413,11 @@ begin
 	) or not exists (
 		select 1 from public.qorpera_surface_jobs
 		where session_id = v_ss_disc_failed and kind = 'cleanup_session' and status = 'queued'
+	) or not exists (
+		select 1 from public.qorpera_surface_jobs
+		where session_id = v_ss_disc_other and kind = 'cleanup_session' and status = 'queued'
 	) then
-		raise exception 'backfill did not enqueue cleanup_session for unarchived and failed-cleanup discarded sessions';
+		raise exception 'backfill did not enqueue cleanup_session for unarchived, failed-cleanup, and second-company discarded sessions';
 	end if;
 	if exists (
 		select 1 from public.qorpera_surface_jobs

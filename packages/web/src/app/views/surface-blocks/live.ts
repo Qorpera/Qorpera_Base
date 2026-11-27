@@ -22,6 +22,8 @@ const ZONED_HOUR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]
 const MONTH_TEXT = /^(\d{4})-(\d{2})$/;
 const WHOLE_FROM = 100;
 const GROUPED_FROM = 10_000;
+const MAX_CELL_DECIMALS = 2;
+const MAX_WRITTEN_DECIMALS = 20;
 
 const QORPERA_CODES: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
 	"money-now": {
@@ -137,8 +139,9 @@ export function lastRecord(answer: CloudMemberDataAnswer): Record<string, unknow
 	return answerRecords(answer).at(-1);
 }
 
-function numberText(number: number, grouping: boolean, fractions: number): string {
+function numberText(number: number, grouping: boolean, fractions: number, least = 0): string {
 	return new Intl.NumberFormat(presentationLocale(), {
+		minimumFractionDigits: least,
 		maximumFractionDigits: fractions,
 		useGrouping: grouping,
 	}).format(number);
@@ -153,14 +156,56 @@ export function figureText(value: unknown): string | undefined {
 	return undefined;
 }
 
-export function cellText(value: unknown): string | undefined {
-	if (typeof value === "string" && (CODE_TEXT.test(value.trim()) || /^-?\d+$/.test(value.trim()))) return value;
-	const number = answerNumber(value);
-	if (number !== null) {
-		const grouped = !Number.isInteger(number) || (typeof value === "number" && Math.abs(number) >= GROUPED_FROM);
-		return numberText(number, grouped, 2);
+export interface TableColumnText {
+	readonly texts: readonly (string | undefined)[];
+	readonly numeric: boolean;
+}
+
+interface CellNumber {
+	readonly value: number;
+	readonly decimals: number | undefined;
+	readonly written?: string;
+}
+
+function cellNumber(value: unknown, readsText: boolean): CellNumber | undefined {
+	if (typeof value === "number") {
+		if (!Number.isFinite(value)) return undefined;
+		if (Number.isInteger(value)) return { value, decimals: 0 };
+		return { value, decimals: /\.(\d+)$/.exec(String(value))?.[1]?.length };
 	}
-	return figureText(value);
+	if (!readsText || typeof value !== "string") return undefined;
+	const text = value.trim();
+	if (CODE_TEXT.test(text) || !NUMBER_TEXT.test(text)) return undefined;
+	return { value: Number(text), decimals: text.split(".")[1]?.length ?? 0, written: value };
+}
+
+function isBlank(value: unknown): boolean {
+	return value === null || value === undefined || (typeof value === "string" && value.trim() === "");
+}
+
+// WHY: a file's column keeps every digit the agent wrote (padded, never rounded); only live answers round to 2.
+export function columnTexts(values: readonly unknown[], live: boolean): TableColumnText {
+	const numbers = values.map((value) => cellNumber(value, live));
+	const numeric = numbers.some(Boolean) && values.every((value, at) => numbers[at] !== undefined || isBlank(value));
+	const cap = live ? MAX_CELL_DECIMALS : MAX_WRITTEN_DECIMALS;
+	let decimals = 0;
+	let grouped = false;
+	for (const number of numbers) {
+		if (!number) continue;
+		if (number.decimals === undefined && !live) return { numeric, texts: values.map(() => undefined) };
+		decimals = Math.max(decimals, Math.min(number.decimals ?? cap, cap));
+		if (number.written === undefined && Math.abs(number.value) >= GROUPED_FROM) grouped = true;
+	}
+	return {
+		numeric,
+		texts: numbers.map((number) => {
+			if (!number) return undefined;
+			if (decimals > 0) return numberText(number.value, true, decimals, decimals);
+			if (!live) return String(number.value);
+			if (number.written === undefined) return numberText(number.value, grouped, 0);
+			return grouped && Number.isSafeInteger(number.value) ? numberText(number.value, true, 0) : number.written;
+		}),
+	};
 }
 
 export function withUnit(text: string, unit: string | undefined): string {

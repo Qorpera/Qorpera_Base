@@ -1032,7 +1032,10 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   message's text on one line (at most 200 characters; never for account mail; absent once the text is no longer kept),
   and each send of `qorpera_member_mail_waiting` may carry `snippet`, the start of the text the agent wants to send,
   and `cc`, its cc recipients as the agent gave them.
-  Both are outside words to show as text only; a client must also work without them.
+  Since 20260930930000 a received message of `qorpera_member_mail_thread` may also carry `html` (at most 262,144
+  characters while its stored message is kept; never for account mail) and `htmlTruncated`, and
+  `qorpera_mail_thread_snippet` falls back to stripped text from `html` when `text` is absent or blank.
+  Both are outside words to show safely; a client must also work without them.
 - Members send mail (20260930716000_member_mail_send, step M2e; founder decision, 10 November 2026): a member who
   may write in the company (owner, admin or contributor) calls
   `qorpera_send_member_mail(p_environment_id, p_request)` with `{sendId, from, to, cc?, subject, text}` →
@@ -2405,8 +2408,7 @@ text, an account number, a single payment or the summary's items. Design: the co
   company's today or tomorrow (a month that leads, in a zone behind UTC; either month may be named as `month`, and the
   company's own then has no rows). A summary of an earlier month is never this month's: the company's month has no
   rows until the vault fetches again.
-  - `money-now`: one row always: `state` (`none` no bank or disconnected, `waiting` no summary yet, `current`,
-    `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
+  - `money-now`: one row: `state` (`waiting` no summary yet, `current`, `paused` the bank stopped sharing), `bank`, `balance`, `available`, `reserved`, `as_of` (the summary's time),
     `paused_since`; the numbers are null without a summary.
   - `money-balance` (`from`, `to`; default the 90 days to today, at most 366 days): `day`, `balance` (end of day).
   - `money-expected`: `day`, `balance`, the summary's forecast (an estimate).
@@ -2456,8 +2458,8 @@ text, an account number, a single payment or the summary's items. Design: the co
     currencies (JPY, KRW, ...) whole, its three-decimal ones (KWD, BHD, ...) three. An order is a paid one: a session
     still unpaid or whose payment failed is not counted (except in `orders-states`' `failed`). Only counts and sums,
     never one order. Days and months are the company's, by the zone rule above; refunds count on the order's day.
-  - `orders-now` (`currency`, `test`): one row always: `stripe` (`none` no Stripe hook, `waiting` none has verified a
-    delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
+  - `orders-now` (`currency`, `test`): one row: `stripe` (`none` no Stripe hook (its orders stay: a removed hook's, or
+    those added by hand), `waiting` none has verified a delivery yet, `live`), `orders_today`, `sales_today`, `to_pack` (paid, not refunded in full, a free one too, no state of the
     company's yet, and, for Stripe's orders, made no earlier than the first Stripe order of the same mode, live or test,
     that the company ever gave a state of its own, so a shop that starts marking on day 40 sees only orders from then
     on; an added order never moves that start and, paid with no state of the company's, is to pack whenever it was
@@ -2485,6 +2487,17 @@ text, an account number, a single payment or the summary's items. Design: the co
     the zone the company had then.
 - A name of another shape, a parameter the question does not take or a value out of its bounds: 22023 in plain words
   (`The question takes no :x`, `:from is a day as YYYY-MM-DD`, `From :from to :to is at most 366 days`, ...).
+- Not connected (20260930929000_company_numbers_not_connected): a question whose source the company has not connected
+  answers 55000 with words that start `Not connected:` and say what would connect it, never zero-filled rows. The
+  `orders-*` questions while the company environment has no Stripe hook (one not removed) and no order of any kind
+  (Stripe's or added by hand, live or test): `Not connected: orders count once card payments are connected or an order
+  is added by hand`. `site-now`, `site-hours`, `site-days` and `site-pages` while the company has no files site with a
+  live version or a live deployment (one taken down later still counts): `Not connected: visits count once the company
+  publishes a website`; `sites` lists the company's sites either way. The `money-*` questions with no bank or a
+  disconnected one: `Not connected: the bank's numbers come once the company connects its bank` (a bank waiting for
+  its first summary, or paused, answers). A connected source with no activity answers its zeros. Every other refusal
+  comes first: 22023 (a name of another shape, then the question's parameters), P0002 (no such question, or one the
+  caller may not read) and the doors' 42501.
 - A run asks the same with `qorpera_run_company_numbers(environment, actor, question, params)` through the native
   host's call (scope folder), with its own path authority.
 

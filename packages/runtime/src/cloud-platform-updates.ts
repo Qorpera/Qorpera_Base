@@ -567,6 +567,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A platform number whose source the company has not connected (card payments, a published site, the bank) now answers data_query with words starting Not connected: that say what would connect it; a connected source with nothing happening still answers real zeros. Never read or write that as zero: on an Analytics page keep its block bound (it fills itself once connected) and tell the member what to connect. A Studio page preview reports such a number as not connected. Every Analytics tab now has one big chart and at most four figures, month charts start at the first month with data, and an estimate is drawn dashed and called one.",
 	},
 	{
+		id: "analytics-round-3",
+		kind: "behaviour",
+		date: "2026-11-27",
+		title: "Numbers name no one, in a reply either",
+		text: "On an Analytics page or a numbers tab, and in every reply about its numbers, give counts, sums and groups: never a person's name or email, one order or one visit, because you read with more access than the member may have. Asked who (best customers, who came back), say how many fall in which groups, and where the member can look for themselves (the company database or the source the numbers came from).",
+	},
+	{
 		id: "mailbox-email-actions",
 		kind: "capability",
 		date: "2026-11-27",

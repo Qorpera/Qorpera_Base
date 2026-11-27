@@ -49,6 +49,16 @@
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Content-Security-Policy: default-src 'none'; script-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
   X-Frame-Options: SAMEORIGIN
+# Sandboxed HTML email view (src/ui/mail-frame.ts): opaque origin with only the
+# frame's own hashed bootstrap script; no untrusted scripts, forms, frames, or network
+# requests except user-enabled HTTPS images.
+/mail-preview/*
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  ! Permissions-Policy
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src 'sha256-bwHpGhgbig0e9he45LXM/65QkHLqrd0Jtyx/sCvCxxU='; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
 /assets/*
   ! Cache-Control
   Cache-Control: public, max-age=86400

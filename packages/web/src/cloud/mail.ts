@@ -181,6 +181,8 @@ export type MailMessage =
 			 * message is still kept. None before migration 20260930740000. */
 			readonly replyTo: readonly string[];
 			readonly textTruncated: boolean;
+			readonly html?: string;
+			readonly htmlTruncated: boolean;
 			readonly automated: boolean;
 			readonly handledBy?: MailAgent;
 			readonly account?: MailAccount;
@@ -440,6 +442,8 @@ function parseMessage(value: unknown): MailMessage {
 			...base,
 			replyTo: found ? [] : recipients(item.replyTo),
 			textTruncated: !found && flag(item.textTruncated, "mail text truncated"),
+			...(found ? {} : optional("html", shownText(item.html, 262_144))),
+			htmlTruncated: !found && flag(item.htmlTruncated, "mail html truncated"),
 			automated: flag(item.automated, "mail automated"),
 			at: timestamp(item.receivedAt, "mail message time"),
 			...(handledBy ? { handledBy } : {}),

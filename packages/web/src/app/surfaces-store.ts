@@ -1837,32 +1837,36 @@ export class SurfacesStore {
 		return Boolean(this.state.loadingCloudFiles[surfaceId]);
 	}
 
+	isSurfaceMerging(surfaceId: string): boolean {
+		const state = this.state;
+		const workspace = state.workspaces[surfaceId];
+		if (!workspace) return false;
+		for (const session of workspace.activeSessions) {
+			if (state.busy[`session:${session.id}`]) return true;
+			for (const change of session.changes) {
+				if (change.status === "merging" || state.busy[`change:${change.id}`] || state.busy[`undo:${change.id}`]) {
+					return true;
+				}
+			}
+		}
+		for (const session of workspace.recentHistory) {
+			for (const change of session.changes) {
+				if (state.busy[`undo:${change.id}`]) return true;
+			}
+		}
+		for (const exploration of workspace.explorations) {
+			if (state.busy[`exploration:${exploration.id}`]) return true;
+		}
+		return false;
+	}
+
 	surfaceUpdatePhase(surfaceId: string): SurfaceUpdatePhase | null {
 		const state = this.state;
 		const surface = state.surfaces.find((item) => item.id === surfaceId);
 		if (state.busy[`publish:${surfaceId}`] || surface?.publishStatus === "publishing") return "publishing";
+		if (this.isSurfaceMerging(surfaceId)) return "merging";
 		const workspace = state.workspaces[surfaceId];
 		if (workspace) {
-			for (const session of workspace.activeSessions) {
-				if (state.busy[`session:${session.id}`]) return "merging";
-				for (const change of session.changes) {
-					if (
-						change.status === "merging" ||
-						state.busy[`change:${change.id}`] ||
-						state.busy[`undo:${change.id}`]
-					) {
-						return "merging";
-					}
-				}
-			}
-			for (const session of workspace.recentHistory) {
-				for (const change of session.changes) {
-					if (state.busy[`undo:${change.id}`]) return "merging";
-				}
-			}
-			for (const exploration of workspace.explorations) {
-				if (state.busy[`exploration:${exploration.id}`]) return "merging";
-			}
 			if (
 				workspace.previewState.primary.status === "reconciling" ||
 				(workspace.reconciliations ?? []).some((rec) => rec.status === "queued" || rec.status === "running")
