@@ -52,6 +52,175 @@ const RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const MAX_GEMINI_RETRY_WAIT_MS = 15_000;
 const CALL_ID = /^[A-Za-z0-9_:.-]{1,160}$/;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
+const CLOUD_GEMINI_SEARCH_CITATION_INSTRUCTIONS =
+	"When using Google Search results in your reply, integrate facts naturally in plain prose and never include inline bracketed citation markers or numeric footnote tags such as [1.1.3] or [1.2, 1.4].";
+const CITATION_TEXT_TOOLS = new Set(["send_message", "ask_member"]);
+
+function stripCitationBracketsInProse(prose: string, includeTwoPart: boolean): string {
+	const itemPattern = includeTwoPart ? "\\d+(?:\\.\\d+)+" : "\\d+(?:\\.\\d+){2,}";
+	const group = `\\[(?:${itemPattern}(?:\\s*,\\s*${itemPattern})*)\\]`;
+	const regex = new RegExp(`([ \\t]*)(${group}(?:[ \\t]*${group})*)([ \\t]*)`, "g");
+	return prose.replace(
+		regex,
+		(full, beforeSpace: string, matchedGroup: string, afterSpace: string, offset: number) => {
+			const before = prose.slice(0, offset);
+			const tail = prose.slice(offset + full.length);
+			const tailStart = prose.slice(offset + beforeSpace.length + matchedGroup.length);
+			if (/^[ \t]*(?:\(|\[)/.test(tailStart)) return full;
+			const lineStart = before.lastIndexOf("\n") + 1;
+			const linePrefix = before.slice(lineStart) + beforeSpace;
+			if (/^[ \t]*(?:#+[ \t]+|[-*+][ \t]+|\d+\.[ \t]+)?$/.test(linePrefix)) {
+				if (/^:/.test(tailStart) || (afterSpace.length > 0 && !/^[.,;:!?)}\]\r\n]/.test(tail))) {
+					return full;
+				}
+				if (linePrefix.trim().startsWith("#")) return full;
+			}
+			const prevChar = offset > 0 ? prose[offset - 1] : "";
+			const nextChar = tail[0] ?? "";
+			if (beforeSpace.length > 0 && (nextChar === "" || /^[.,;:!?)}\]\r\n]/.test(nextChar))) {
+				return "";
+			}
+			if (prevChar === "" || prevChar === "\n" || prevChar === "(" || prevChar === "[") {
+				return "";
+			}
+			if (beforeSpace.length === 0 && (nextChar === "" || /^[.,;:!?)}\]\r\n]/.test(nextChar))) {
+				return "";
+			}
+			return " ";
+		},
+	);
+}
+
+export function stripGeminiGroundingCitations(text: string, includeTwoPart = false): string {
+	let output = "";
+	let proseStart = 0;
+	let index = 0;
+	let fenceChar = "";
+	let fenceLen = 0;
+	let inInlineTicks = 0;
+
+	const flushProse = (end: number): void => {
+		if (end > proseStart) {
+			output += stripCitationBracketsInProse(text.slice(proseStart, end), includeTwoPart);
+		}
+	};
+
+	while (index < text.length) {
+		if (inInlineTicks > 0) {
+			if (text[index] === "`") {
+				let run = 0;
+				while (index + run < text.length && text[index + run] === "`") run += 1;
+				if (run === inInlineTicks) {
+					output += text.slice(proseStart, index + run);
+					index += run;
+					proseStart = index;
+					inInlineTicks = 0;
+					continue;
+				}
+				index += run;
+				continue;
+			}
+			index += 1;
+			continue;
+		}
+
+		const atLineStart = index === 0 || text[index - 1] === "\n";
+		if (atLineStart) {
+			let scan = index;
+			while (scan < text.length && (text[scan] === " " || text[scan] === "\t")) scan += 1;
+			const ch = text[scan];
+			if (ch === "`" || ch === "~") {
+				let run = 0;
+				while (scan + run < text.length && text[scan + run] === ch) run += 1;
+				if (
+					fenceLen === 0 &&
+					run >= 3 &&
+					(ch === "~" ||
+						!text
+							.slice(
+								scan + run,
+								text.indexOf("\n", scan + run) === -1 ? text.length : text.indexOf("\n", scan + run),
+							)
+							.includes("`"))
+				) {
+					flushProse(index);
+					proseStart = index;
+					fenceChar = ch;
+					fenceLen = run;
+					const lineEnd = text.indexOf("\n", scan + run);
+					index = lineEnd === -1 ? text.length : lineEnd + 1;
+					continue;
+				}
+				if (fenceLen > 0 && ch === fenceChar && run >= fenceLen) {
+					const lineEnd = text.indexOf("\n", scan + run);
+					const restOfLine = text.slice(scan + run, lineEnd === -1 ? text.length : lineEnd);
+					if (/^[ \t]*\r?$/.test(restOfLine)) {
+						index = lineEnd === -1 ? text.length : lineEnd + 1;
+						output += text.slice(proseStart, index);
+						proseStart = index;
+						fenceChar = "";
+						fenceLen = 0;
+						continue;
+					}
+				}
+			}
+			if (fenceLen > 0) {
+				const lineEnd = text.indexOf("\n", index);
+				index = lineEnd === -1 ? text.length : lineEnd + 1;
+				continue;
+			}
+		}
+
+		if (fenceLen > 0) {
+			index += 1;
+			continue;
+		}
+
+		if (text[index] === "`") {
+			let run = 0;
+			while (index + run < text.length && text[index + run] === "`") run += 1;
+			let probe = index + run;
+			let matched = false;
+			while (probe < text.length) {
+				if (text[probe] === "`") {
+					let closeRun = 0;
+					while (probe + closeRun < text.length && text[probe + closeRun] === "`") closeRun += 1;
+					if (closeRun === run) {
+						matched = true;
+						break;
+					}
+					probe += closeRun;
+				} else {
+					probe += 1;
+				}
+			}
+			if (matched) {
+				flushProse(index);
+				proseStart = index;
+				inInlineTicks = run;
+			}
+			index += run;
+			continue;
+		}
+		index += 1;
+	}
+
+	if (fenceLen > 0 || inInlineTicks > 0) {
+		output += text.slice(proseStart);
+	} else {
+		flushProse(text.length);
+	}
+	return output;
+}
+
+function sanitizeGeminiToolCallArgs(callName: string, args: JsonValue, sawGrounding: boolean): JsonValue {
+	if (!sawGrounding || !CITATION_TEXT_TOOLS.has(callName) || !isPlainObject(args) || typeof args.text !== "string") {
+		return args;
+	}
+	const cleaned = stripGeminiGroundingCitations(args.text, true);
+	if (!cleaned.trim() || cleaned === args.text) return args;
+	return { ...args, text: cleaned };
+}
 
 export {
 	GEMINI_PROVIDER_ERROR_CODES,
@@ -1169,10 +1338,11 @@ export async function runCloudGeminiToolSession(options: {
 				};
 		const composer = opened.composeContext ?? options.composeContext;
 		const rawInstructions = opened.runtimeInstructions ?? "";
+		const baseInstructions = opened.resultRulesInside
+			? rawInstructions
+			: [CLOUD_TOOL_RESULT_INSTRUCTIONS, rawInstructions].filter(Boolean).join("\n\n");
 		const systemText = redactCloudWebhookSecrets(
-			opened.resultRulesInside
-				? rawInstructions
-				: [CLOUD_TOOL_RESULT_INSTRUCTIONS, rawInstructions].filter(Boolean).join("\n\n"),
+			[baseInstructions, CLOUD_GEMINI_SEARCH_CITATION_INSTRUCTIONS].filter(Boolean).join("\n\n"),
 		);
 		const initialPrompt = redactCloudWebhookSecrets(opened.prompt);
 		const declarations = geminiFunctionDeclarations(options.boundary.specification);
@@ -1238,6 +1408,7 @@ export async function runCloudGeminiToolSession(options: {
 			];
 			let pendingFenceInputs: CloudNativeResultInput[] = [];
 			let correctionSent = false;
+			let sawGrounding = false;
 			let turnIndex = 0;
 			let countedTurns = 0;
 			let isCorrectionTurn = false;
@@ -1303,6 +1474,9 @@ export async function runCloudGeminiToolSession(options: {
 				});
 				const visibleText = extractVisibleText(response.parts);
 				if (visibleText) options.boundary.runLog?.agentText(visibleText);
+				if (response.groundingMetadata !== undefined) {
+					sawGrounding = true;
+				}
 
 				const functionCalls = extractFunctionCalls(response.parts);
 				// WHY: overlap cumulative usage flush with tool batch execution; total spend updates synchronously first.
@@ -1371,12 +1545,17 @@ export async function runCloudGeminiToolSession(options: {
 											assignedCallIds[0],
 											"qorpera",
 											functionCalls[0].name,
-											functionCalls[0].args,
+											sanitizeGeminiToolCallArgs(functionCalls[0].name, functionCalls[0].args, sawGrounding),
 										),
 									]
 								: await Promise.all(
 										functionCalls.map((call, index) =>
-											options.boundary.invoke(assignedCallIds[index], "qorpera", call.name, call.args),
+											options.boundary.invoke(
+												assignedCallIds[index],
+												"qorpera",
+												call.name,
+												sanitizeGeminiToolCallArgs(call.name, call.args, sawGrounding),
+											),
 										),
 									);
 					} finally {

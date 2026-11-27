@@ -148,6 +148,16 @@ export function cloudCodingCommandTools(options: {
 			return content;
 		}
 	};
+	const parseOperationKey = (raw: unknown): string => {
+		if (
+			typeof raw !== "string" ||
+			!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(raw) ||
+			raw.startsWith("studio-inspect:")
+		) {
+			throw new Error("Invalid coding operation key");
+		}
+		return raw;
+	};
 	const parse = (value: JsonValue, action: "start" | "read" | "cancel"): Record<string, JsonValue> => {
 		if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid coding command");
 		if (action === "read") {
@@ -162,8 +172,7 @@ export function cloudCodingCommandTools(options: {
 			const allowed = ["operationKey", "runChecks", "checkNames", "failFast", "cleanCopy", "validateSite"];
 			if (!Object.hasOwn(value, "operationKey") || Object.keys(value).some((key) => !allowed.includes(key)))
 				throw new Error("Invalid coding command");
-			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
-				throw new Error("Invalid coding operation key");
+			parseOperationKey(value.operationKey);
 			if (value.failFast !== undefined && typeof value.failFast !== "boolean")
 				throw new Error("Invalid coding command");
 			if (value.cleanCopy !== undefined && typeof value.cleanCopy !== "boolean")
@@ -188,9 +197,8 @@ export function cloudCodingCommandTools(options: {
 				Object.keys(value).some((key) => key !== "operationKey" && key !== "inspectImage")
 			)
 				throw new Error("Invalid coding command");
-			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
-				throw new Error("Invalid coding operation key");
-			return { operationKey: value.operationKey, inspectImage: parseCodingInspectImagePath(value.inspectImage) };
+			const operationKey = parseOperationKey(value.operationKey);
+			return { operationKey, inspectImage: parseCodingInspectImagePath(value.inspectImage) };
 		}
 		if (action === "start" && value.preflightLand !== undefined) {
 			if (
@@ -199,9 +207,8 @@ export function cloudCodingCommandTools(options: {
 				Object.keys(value).some((key) => key !== "operationKey" && key !== "preflightLand")
 			)
 				throw new Error("Invalid coding command");
-			if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
-				throw new Error("Invalid coding operation key");
-			return { operationKey: value.operationKey, preflightLand: true };
+			const operationKey = parseOperationKey(value.operationKey);
+			return { operationKey, preflightLand: true };
 		}
 		const keys = Object.keys(value).sort().join();
 		if (
@@ -210,8 +217,7 @@ export function cloudCodingCommandTools(options: {
 				: keys !== "commandId,operationKey"
 		)
 			throw new Error("Invalid coding command");
-		if (typeof value.operationKey !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/.test(value.operationKey))
-			throw new Error("Invalid coding operation key");
+		parseOperationKey(value.operationKey);
 		if (action === "start") {
 			if (
 				typeof value.command !== "string" ||

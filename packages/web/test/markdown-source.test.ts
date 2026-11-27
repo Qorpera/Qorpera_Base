@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { markdown, markdownSourceOffset } from "../src/ui/markdown.ts";
+import { markdown, markdownBubbles, markdownSourceOffset } from "../src/ui/markdown.ts";
 
 afterEach(() => document.body.replaceChildren());
 
 /** Draws `source` as an agent's card does and says where a caret in the drawn text falls in it: `offset` characters
  * into the drawn run of text that holds `text` (the `nth` such run, from 0). */
-function drawing(source: string) {
-	const root = markdown(source, { links: false, sourceRanges: true });
+function drawing(source: string, options: { stripGroundingCitations?: boolean } = {}) {
+	const root = markdown(source, { links: false, sourceRanges: true, ...options });
 	document.body.replaceChildren(root);
 	const run = (text: string, nth = 0): Text => {
 		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -293,6 +293,50 @@ describe("a place in drawn Markdown, found in its source", () => {
 			expect(parseSpy).toHaveBeenCalledTimes(5);
 		} finally {
 			parseSpy.mockRestore();
+		}
+	});
+
+	it("strips inline Gemini grounding citations from prose while keeping headings, links, code, and source offsets", () => {
+		const sample = [
+			"## [1.2.3] Release notes",
+			"",
+			"Locked to one catalog [1.1.3, 1.1.4]. Adjacent [1.1.4] [1.1.5] tags, and two-part [1.2].",
+			"",
+			"Keep `[1.1.3, 1.1.4]` in code and [1.2.5](https://example.com) in links, even after [1.2.5, 1.2.9]!",
+		].join("\n");
+		expect([...markdown(sample).querySelectorAll("p")].map((el) => el.textContent)).toEqual([
+			"Locked to one catalog [1.1.3, 1.1.4]. Adjacent [1.1.4] [1.1.5] tags, and two-part [1.2].",
+			"Keep [1.1.3, 1.1.4] in code and 1.2.5 in links, even after [1.2.5, 1.2.9]!",
+		]);
+
+		const bubbles = markdownBubbles(sample, undefined, { stripGroundingCitations: true });
+		expect(bubbles.map((el) => el.textContent)).toEqual([
+			"[1.2.3] Release notes",
+			"Locked to one catalog. Adjacent tags, and two-part [1.2].",
+			"Keep [1.1.3, 1.1.4] in code and 1.2.5 in links, even after!",
+		]);
+
+		const { root } = drawing(sample, { stripGroundingCitations: true });
+		expect(root.querySelector("h2")?.textContent).toBe("[1.2.3] Release notes");
+		const paragraphs = [...root.querySelectorAll("p")].map((el) => el.textContent);
+		expect(paragraphs).toEqual([
+			"Locked to one catalog. Adjacent tags, and two-part [1.2].",
+			"Keep [1.1.3, 1.1.4] in code and 1.2.5 in links, even after!",
+		]);
+
+		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+		for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+			const text = node.textContent ?? "";
+			let before = -1;
+			for (let offset = 0; offset <= text.length; offset += 1) {
+				const mapped = markdownSourceOffset(node, offset);
+				expect(mapped).toBeTypeOf("number");
+				expect(mapped!).toBeGreaterThanOrEqual(before);
+				before = mapped!;
+				if (offset < text.length) {
+					expect(sample[mapped!]).toBe(text[offset]);
+				}
+			}
 		}
 	});
 });

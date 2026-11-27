@@ -2372,14 +2372,28 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 				.slice(0, 20);
 			const work = `${WORK_ROOT}-${tag}`;
 
-			const init = await runMachineStep({
-				machine: options.machine,
-				key: `studio-inspect:${tag}:init`,
-				command: `rm -rf ${work} && mkdir -p ${work}/site && cat > ${work}/capture.cjs <<'${SCRIPT_END}'\n${CAPTURE_SCRIPT_CJS}\n${SCRIPT_END}\n: > ${work}/site/index.html.gz.b64${stagedGzB64 ? ` && : > ${work}/site/staged.json.gz.b64` : ""}`,
-				timeoutMs: SETUP_TIMEOUT_MS,
-				context,
-				pollMs,
-			});
+			const runInspectStep = async (stepKey: string, command: string, timeoutMs: number) => {
+				try {
+					return await runMachineStep({
+						machine: options.machine,
+						key: stepKey,
+						command,
+						timeoutMs,
+						context,
+						pollMs,
+					});
+				} catch (error) {
+					if (context.signal.aborted || error instanceof CloudToolRefusal) throw error;
+					throw new CloudToolRefusal(
+						"INSPECT_SURFACE_UNAVAILABLE: could not reach the coding machine to render the Studio preview.",
+					);
+				}
+			};
+			const init = await runInspectStep(
+				`studio-inspect:${tag}:init`,
+				`rm -rf ${work} && mkdir -p ${work}/site && cat > ${work}/capture.cjs <<'${SCRIPT_END}'\n${CAPTURE_SCRIPT_CJS}\n${SCRIPT_END}\n: > ${work}/site/index.html.gz.b64${stagedGzB64 ? ` && : > ${work}/site/staged.json.gz.b64` : ""}`,
+				SETUP_TIMEOUT_MS,
+			);
 			if (init.state !== "succeeded") {
 				throw new CloudToolRefusal(
 					`INSPECT_SURFACE_UNAVAILABLE: could not prepare Studio preview on the coding machine (exit ${init.exitCode ?? init.state}).`,
@@ -2388,14 +2402,11 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 
 			for (let offset = 0, part = 0; offset < gzB64.length; offset += UPLOAD_CHUNK_BYTES, part += 1) {
 				const slice = gzB64.slice(offset, offset + UPLOAD_CHUNK_BYTES);
-				const step = await runMachineStep({
-					machine: options.machine,
-					key: `studio-inspect:${tag}:chunk:${part}`,
-					command: `printf '%s' '${slice}' >> ${work}/site/index.html.gz.b64`,
-					timeoutMs: SETUP_TIMEOUT_MS,
-					context,
-					pollMs,
-				});
+				const step = await runInspectStep(
+					`studio-inspect:${tag}:chunk:${part}`,
+					`printf '%s' '${slice}' >> ${work}/site/index.html.gz.b64`,
+					SETUP_TIMEOUT_MS,
+				);
 				if (step.state !== "succeeded") {
 					throw new CloudToolRefusal(
 						`INSPECT_SURFACE_UNAVAILABLE: could not upload Studio preview chunk (exit ${step.exitCode ?? step.state}).`,
@@ -2405,14 +2416,11 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 
 			for (let offset = 0, part = 0; offset < stagedGzB64.length; offset += UPLOAD_CHUNK_BYTES, part += 1) {
 				const slice = stagedGzB64.slice(offset, offset + UPLOAD_CHUNK_BYTES);
-				const step = await runMachineStep({
-					machine: options.machine,
-					key: `studio-inspect:${tag}:staged:${part}`,
-					command: `printf '%s' '${slice}' >> ${work}/site/staged.json.gz.b64`,
-					timeoutMs: SETUP_TIMEOUT_MS,
-					context,
-					pollMs,
-				});
+				const step = await runInspectStep(
+					`studio-inspect:${tag}:staged:${part}`,
+					`printf '%s' '${slice}' >> ${work}/site/staged.json.gz.b64`,
+					SETUP_TIMEOUT_MS,
+				);
 				if (step.state !== "succeeded") {
 					throw new CloudToolRefusal(
 						`INSPECT_SURFACE_UNAVAILABLE: could not upload Studio asset chunk (exit ${step.exitCode ?? step.state}).`,
@@ -2425,14 +2433,11 @@ export function createInspectSurfaceTool(options: InspectSurfaceToolOptions): Cl
 					? { width: 390, height: 844, mobile: "1" }
 					: { width: 1280, height: 800, mobile: "0" };
 			const folderArg = snapshot.folderRoot ? shellQuote(snapshot.folderRoot) : "''";
-			const capture = await runMachineStep({
-				machine: options.machine,
-				key: `studio-inspect:${tag}:capture`,
-				command: `if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" ${work}/capture.cjs ${work} ${dims.width} ${dims.height} ${dims.mobile} ${args.fullPage ? "1" : "0"} ${args.scrollY} ${folderArg} 2>/dev/null`,
-				timeoutMs: CAPTURE_TIMEOUT_MS,
-				context,
-				pollMs,
-			});
+			const capture = await runInspectStep(
+				`studio-inspect:${tag}:capture`,
+				`if [ -x /usr/bin/node ]; then NODE_BIN=/usr/bin/node; else NODE_BIN=node; fi; NODE_OPTIONS= "$NODE_BIN" ${work}/capture.cjs ${work} ${dims.width} ${dims.height} ${dims.mobile} ${args.fullPage ? "1" : "0"} ${args.scrollY} ${folderArg} 2>/dev/null`,
+				CAPTURE_TIMEOUT_MS,
+			);
 
 			if (capture.state !== "succeeded") {
 				throw new CloudToolRefusal(
