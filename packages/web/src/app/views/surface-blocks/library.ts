@@ -513,6 +513,7 @@ export class SurfaceLibraries {
 	}
 
 	deactivate(): void {
+		this.#wanted = undefined;
 		for (const view of this.#views.values()) view.deactivate();
 	}
 }

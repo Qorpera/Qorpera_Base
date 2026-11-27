@@ -490,6 +490,31 @@ describe("The Research tab's library", () => {
 		expect(texts(".lib-kicker")).toEqual(["What we know"]);
 		done();
 	});
+	it("leaves the library where it was when a change's post opens in a report block on another tab", async () => {
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			tabs: [
+				{ id: "overview", title: "Overview", blocks: [{ type: "title" }] },
+				{ id: "posts", title: "Posts", blocks: [{ type: "report", match: "research/**" }] },
+				{ id: "findings", title: "Findings", blocks: [{ type: "library" }] },
+			],
+		};
+		const { texts, find, tab, store, surface, view, done } = await open(
+			{ ...researchFiles(), [`${ROOT}/layout.json`]: JSON.stringify(layout) },
+			{ tab: "" },
+		);
+		const onTab = () => view.el.querySelector<HTMLElement>(".studio-tab.is-on")?.dataset.tab;
+
+		await store.openChangeDeliverable(surface.id, CHANGES[0], "3-prepay", PREPAY_PATH);
+		await vi.waitFor(() => expect(onTab()).toBe("posts"));
+		expect(texts(".po-title")).toEqual([PREPAY.headline]);
+		expect(find(".lib")).toBeNull();
+
+		tab("findings");
+		expect(find(".lib")?.dataset.at).toBe("front");
+		done();
+	});
+
 	it("lands on the post a change names by its path, also when two posts share a file name", async () => {
 		const planPath = `${ROOT}/plan/summary.report.json`;
 		const marketPath = `${ROOT}/market/summary.report.json`;

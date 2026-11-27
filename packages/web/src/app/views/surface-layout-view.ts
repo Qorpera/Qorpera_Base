@@ -258,6 +258,7 @@ export class SurfaceLayoutView {
 	#postTabs: readonly {
 		readonly id: string;
 		readonly posts: PathTest;
+		readonly library: PathTest;
 		readonly modules: PathTest;
 		readonly files: PathTest;
 	}[] = [];
@@ -337,11 +338,10 @@ export class SurfaceLayoutView {
 		this.#postTabs = layout.tabs.map((tab) => {
 			const blocks = tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node]));
 			const posts = blocks.flatMap((block) =>
-				block.type === "report"
-					? [reportFiles(block, ctx, this.#apart).include]
-					: block.type === "library"
-						? [this.#libraries.holds(block, ctx, this.#apart)]
-						: [],
+				block.type === "report" ? [reportFiles(block, ctx, this.#apart).include] : [],
+			);
+			const libraries = blocks.flatMap((block) =>
+				block.type === "library" ? [this.#libraries.holds(block, ctx, this.#apart)] : [],
 			);
 			const files = blocks.flatMap((block) => (block.type === "artifacts" ? [artifactsHold(block, ctx)] : []));
 			const folders = blocks.flatMap((block) => {
@@ -351,6 +351,7 @@ export class SurfaceLayoutView {
 			return {
 				id: tab.id,
 				posts: (path: string) => posts.some((include) => include(path)),
+				library: (path: string) => libraries.some((holds) => holds(path)),
 				modules: (path: string) => folders.some((folder) => path.startsWith(`${folder}/`)),
 				files: (path: string) => !claimed.has(path) && files.some((hold) => hold(path)),
 			};
@@ -589,9 +590,9 @@ export class SurfaceLayoutView {
 		return tasks;
 	}
 
-	placeOf(path: string): { readonly tab: string; readonly in: "posts" | "module" | "files" } | undefined {
-		const posts = this.#postTabs.find((tab) => tab.posts(path));
-		if (posts) return { tab: posts.id, in: "posts" };
+	placeOf(path: string): { readonly tab: string; readonly in: "posts" | "library" | "module" | "files" } | undefined {
+		const posts = this.#postTabs.find((tab) => tab.posts(path) || tab.library(path));
+		if (posts) return { tab: posts.id, in: posts.library(path) ? "library" : "posts" };
 		const module = this.#postTabs.find((tab) => tab.modules(path));
 		if (module) return { tab: module.id, in: "module" };
 		const files = this.#postTabs.find((tab) => tab.files(path));
