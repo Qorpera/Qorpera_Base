@@ -51,6 +51,7 @@ const COFOUNDER_TOOLS = [
 	"make_picture",
 	"manage_code",
 	"manage_hook",
+	"manage_mail",
 	"manage_routine",
 	"manage_site",
 	"manage_todo",

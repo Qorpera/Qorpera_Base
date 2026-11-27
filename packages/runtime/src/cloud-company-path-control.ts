@@ -162,6 +162,7 @@ const PERMITTED_RPCS: ReadonlySet<CloudCompanyPathRpc> = new Set([
 	"qorpera_folder_manage_hook",
 	"qorpera_send_agent_mail",
 	"qorpera_find_agent_mail",
+	"qorpera_manage_agent_mail",
 	"qorpera_find_company_accounts",
 	"qorpera_memory_zoom",
 	"qorpera_memory_release",

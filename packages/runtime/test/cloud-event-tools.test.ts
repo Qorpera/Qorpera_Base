@@ -3,6 +3,7 @@ import {
 	CloudCompanyFolderClient,
 	type CloudCompanyFolderSignedHooks,
 } from "@qorpera/runtime/cloud-company-folder-client";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
 import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
@@ -679,7 +680,7 @@ describe("agent event tools", () => {
 		for (const [callId, answer] of [
 			["s11", { runId: "73100000-0000-4000-8000-0000000000ff" }],
 			["s12", { schema: "qorpera.agent-mail/v1" }],
-			["s13", { mails: Array.from({ length: 11 }, () => mail) }],
+			["s13", { mails: Array.from({ length: 51 }, () => mail) }],
 			["s14", { more: "no" }],
 		] as const) {
 			const other = await fixture((_method, _args, runId) =>
@@ -1155,6 +1156,184 @@ describe("agent event tools", () => {
 				expect(f.call).not.toHaveBeenCalled();
 			} finally {
 				f.run.close();
+			}
+		});
+	});
+
+	describe("manage_mail", () => {
+		const threadId = "A".repeat(43);
+		const deliveryId = "73100000-0000-4000-8000-0000000000aa";
+
+		it("forwards trash, star, unsubscribe (with preview prepare), block_sender, and list_blocked to qorpera_manage_agent_mail", async () => {
+			const calls: unknown[] = [];
+			const f = await fixture((method, args, runId) => {
+				expect(method).toBe("qorpera_manage_agent_mail");
+				const req = args.p_request as Record<string, unknown>;
+				calls.push(req);
+				if (req.preview === true) {
+					return {
+						schema: "qorpera.agent-mail-action/v1",
+						runId,
+						action: "unsubscribe",
+						preview: true,
+						thread: threadId,
+						deliveryId,
+						fromAddress: "news@example.org",
+						method: "mailto",
+						to: "leave@example.org",
+						subject: "Unsubscribe",
+						body: "Unsubscribe",
+					};
+				}
+				return {
+					schema: "qorpera.agent-mail-action/v1",
+					runId,
+					action: req.action,
+					updatedCount: 1,
+				};
+			});
+			try {
+				const trashed = await f.boundary.invoke("m1", "qorpera", "manage_mail", {
+					action: "trash",
+					threadIds: [threadId],
+				});
+				expect(trashed.success).toBe(true);
+				const unsub = await f.boundary.invoke("m2", "qorpera", "manage_mail", {
+					action: "unsubscribe",
+					threadId,
+				});
+				expect(unsub.success).toBe(true);
+				const blocked = await f.boundary.invoke("m3", "qorpera", "manage_mail", {
+					action: "block_sender",
+					sender: "promo@example.org",
+					trashExisting: true,
+				});
+				expect(blocked.success).toBe(true);
+				const listed = await f.boundary.invoke("m4", "qorpera", "manage_mail", {
+					action: "list_blocked",
+				});
+				expect(listed.success).toBe(true);
+				expect(calls).toEqual([
+					{ action: "trash", threadIds: [threadId] },
+					{ action: "unsubscribe", threadId, preview: true },
+					{ action: "unsubscribe", threadId, deliveryId },
+					{ action: "block_sender", sender: "promo@example.org", trashExisting: true },
+					{ action: "list_blocked" },
+				]);
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("refuses invalid manage_mail arguments without calling the cloud", async () => {
+			const f = await fixture();
+			try {
+				for (const [id, args] of [
+					["b1", { action: "delete" }],
+					["b2", { action: "trash" }],
+					["b3", { action: "star", threadIds: ["too-short"] }],
+					["b4", { action: "unsubscribe" }],
+					["b5", { action: "block_sender", sender: "x" }],
+					["b6", { action: "list_blocked", sender: "a@b.co" }],
+				] as const) {
+					const result = await f.boundary.invoke(id, "qorpera", "manage_mail", args);
+					expect(result.success, id).toBe(false);
+				}
+				expect(f.call).not.toHaveBeenCalled();
+			} finally {
+				f.run.close();
+			}
+		});
+
+		it("surfaces PostgREST unsubscribe SQL refusals through HttpCloudCompanyPathControl as REFUSED", async () => {
+			const postgrestError = (status: number, code: string, message: string): Response =>
+				new Response(JSON.stringify({ code, details: null, hint: null, message }), {
+					status,
+					headers: { "content-type": "application/json" },
+				});
+			const cases: ReadonlyArray<readonly [string, (runId: string) => Response[], string]> = [
+				[
+					"r1",
+					() => [postgrestError(403, "42501", "Mailto unsubscribe target does not match the sender domain")],
+					"REFUSED: Mailto unsubscribe target does not match the sender domain; use the web link or block the sender instead",
+				],
+				[
+					"r2",
+					() => [postgrestError(403, "42501", "Account verification mail cannot be unsubscribed")],
+					"REFUSED: Account verification mail cannot be unsubscribed",
+				],
+				[
+					"r3",
+					() => [postgrestError(400, "22023", "This conversation has no unsubscribe information")],
+					"REFUSED: This conversation has no unsubscribe information",
+				],
+				[
+					"r4",
+					(runId) => [
+						new Response(
+							JSON.stringify({
+								schema: "qorpera.agent-mail-action/v1",
+								runId,
+								action: "unsubscribe",
+								preview: true,
+								thread: threadId,
+								deliveryId,
+								fromAddress: "news@example.org",
+								method: "mailto",
+								to: "leave@example.org",
+								subject: "Unsubscribe",
+								body: "Unsubscribe",
+							}),
+							{ status: 200, headers: { "content-type": "application/json" } },
+						),
+						postgrestError(400, "P0001", "The company has reached its email sending limit"),
+					],
+					"REFUSED: The company has reached its email sending limit",
+				],
+				[
+					"r5",
+					() => [postgrestError(501, "0A000", "Sending company mail is switched off")],
+					"REFUSED: Sending company mail is switched off",
+				],
+			];
+			for (const [callId, buildResponses, expected] of cases) {
+				const { binding, authority } = nativeToolAuthorityFixture();
+				const run = await CloudNativeToolRun.open(
+					binding,
+					{ describeToolAuthority: async () => authority },
+					new AbortController().signal,
+				);
+				const queue = [...buildResponses(binding.runId)];
+				const control = new HttpCloudCompanyPathControl({
+					supabaseUrl: "https://example.supabase.test/",
+					serviceRoleKey: "sb_secret_test",
+					fetch: async () => {
+						const next = queue.shift();
+						if (!next) throw new Error("unexpected fetch");
+						return next;
+					},
+				});
+				const boundary = new CloudNativeToolBoundary({
+					companyId: run.identity.companyId,
+					runId: run.identity.runId,
+					identity: run.identity,
+					tools: cloudEventTools(binding, run.identity, control),
+					assertActive: (signal) => run.assertActive(signal),
+					signal: run.signal,
+				});
+				try {
+					const reply = await boundary.invoke(callId, "qorpera", "manage_mail", {
+						action: "unsubscribe",
+						threadId,
+					});
+					expect(reply.success, callId).toBe(false);
+					const envelope = JSON.parse(reply.contentItems[0]!.text) as CloudToolResult;
+					expect(envelope.status, callId).toBe("denied");
+					expect(envelope.content, callId).toMatchObject({ kind: "text", text: expected });
+					expect(queue, callId).toHaveLength(0);
+				} finally {
+					run.close();
+				}
 			}
 		});
 	});

@@ -79,6 +79,37 @@ function store(secretKey: string): MailOutboxStore {
 			});
 			if (error) throw new Error("The mail message id could not be recorded");
 		},
+		async claimUnsubscribes(limit, leaseId) {
+			const { data, error } = await client.rpc("qorpera_claim_mail_unsubscribes", {
+				p_limit: limit,
+				p_lease_id: leaseId,
+			});
+			if (error) return [];
+			return data;
+		},
+		async completeUnsubscribe(unsubscribeId, leaseId) {
+			const { data, error } = await client.rpc("qorpera_complete_mail_unsubscribe", {
+				p_unsubscribe_id: unsubscribeId,
+				p_lease_id: leaseId,
+			});
+			if (error || data !== true) throw new Error("The unsubscribe completion could not be recorded");
+		},
+		async failUnsubscribe(unsubscribeId, leaseId, message, retryable) {
+			const { data, error } = await client.rpc("qorpera_fail_mail_unsubscribe", {
+				p_unsubscribe_id: unsubscribeId,
+				p_lease_id: leaseId,
+				p_error: message,
+				p_retryable: retryable,
+			});
+			if (error || data !== true) throw new Error("The unsubscribe failure could not be recorded");
+		},
+		async releaseUnsubscribe(unsubscribeId, leaseId) {
+			const { error } = await client.rpc("qorpera_release_mail_unsubscribe", {
+				p_unsubscribe_id: unsubscribeId,
+				p_lease_id: leaseId,
+			});
+			if (error) throw new Error("The unsubscribe lease could not be released");
+		},
 	};
 }
 

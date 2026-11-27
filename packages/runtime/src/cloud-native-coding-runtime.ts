@@ -100,6 +100,7 @@ import {
 	isCodingWorkspaceKind,
 	isSurfaceWorkspaceKind,
 	prepareSurfaceCodingWorkspace,
+	type SurfaceInboxMailToolsPort,
 } from "./cloud-surface-coding-tools.ts";
 import { CODING_ATTACHMENT_VIEW_SCHEMA, createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
 import { STUDIO_INSPECT_SURFACE_SCHEMA } from "./cloud-surface-inspect-tool.ts";
@@ -139,6 +140,7 @@ export interface CloudNativeCodingTurnContext {
 	folder?: CloudCompanyFolderClient;
 	folderSearch?: CloudFolderSearch;
 	companyData?: CloudCompanyDataDoor;
+	inboxMail?: SurfaceInboxMailToolsPort;
 	companyInterfaces?: CompanyInterfacesContext;
 	surfaceSession?: SurfaceCodingTurnBinding;
 	pictures?: CloudPictureChannel;
@@ -885,6 +887,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						...(context.folder ? { folder: context.folder } : {}),
 						...(context.folderSearch ? { folderSearch: context.folderSearch } : {}),
 						...(context.companyData ? { companyData: context.companyData } : {}),
+						...(context.inboxMail ? { inboxMail: context.inboxMail } : {}),
 						...(pictures ? { pictures } : {}),
 						isClaudeTurn,
 						newDisk: turn.machine.newDisk,

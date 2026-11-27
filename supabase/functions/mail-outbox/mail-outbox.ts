@@ -19,6 +19,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { resolve4, resolve6 } from "node:dns/promises";
 import { withTimeoutScope } from "../_shared/abort-timeout.ts";
 import {
 	BodyTooLargeError,
@@ -28,11 +29,14 @@ import {
 } from "../_shared/http-guards.ts";
 
 export const BATCH = 10;
+export const UNSUBSCRIBE_BATCH = 20;
 /** Sent emails whose Message-ID is read back in one call, paced like the sends. */
 export const MESSAGE_ID_BATCH = 5;
 /** Between two sends: the provider allows a few requests a second across the platform's email. */
 export const PACE_MS = 600;
 const SEND_TIMEOUT_MS = 10_000;
+const UNSUBSCRIBE_TIMEOUT_MS = 10_000;
+const UNSUBSCRIBE_MAX_RESPONSE_BYTES = 4096;
 const RESEND_RESPONSE_MAX_BYTES = 64 * 1024;
 const CHUNK_PREFETCH_WINDOW = 3;
 const TRUSTED_BASE64_SEGMENTS = new WeakSet<readonly string[]>();
@@ -90,6 +94,13 @@ export class MailSendError extends Error {
 	}
 }
 
+export interface MailUnsubscribeJob {
+	readonly unsubscribeId: string;
+	readonly leaseId: string;
+	readonly url: string;
+	readonly attemptCount: number;
+}
+
 /** The database's side of the outbox. */
 export interface MailOutboxStore {
 	claim(limit: number, leaseId: string): Promise<unknown>;
@@ -98,6 +109,10 @@ export interface MailOutboxStore {
 	/** Sent emails whose Message-ID is still unknown: `[{mailId, providerMessageId}]`. */
 	messageIdsDue(limit: number): Promise<unknown>;
 	recordMessageId(mailId: string, providerMessageId: string, messageId: string): Promise<void>;
+	claimUnsubscribes?(limit: number, leaseId: string): Promise<unknown>;
+	completeUnsubscribe?(unsubscribeId: string, leaseId: string): Promise<void>;
+	failUnsubscribe?(unsubscribeId: string, leaseId: string, message: string, retryable: boolean): Promise<void>;
+	releaseUnsubscribe?(unsubscribeId: string, leaseId: string): Promise<void>;
 }
 
 /** Sends one email; resolves to the provider's message id or throws MailSendError. */
@@ -118,6 +133,8 @@ export interface MailOutbox {
 	store(secretKey: string): MailOutboxStore;
 	objects?(secretKey: string): ObjectReader;
 	sender: MailSender;
+	unsubscribeFetch?: typeof fetch;
+	resolveHost?: (hostname: string) => Promise<readonly string[]>;
 	leaseId?: () => string;
 	pace?: number;
 	sleep?: (ms: number) => Promise<void>;
@@ -663,7 +680,17 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 	const sleep = outbox.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 	const now = outbox.now ?? Date.now;
 	const deadline = now() + (outbox.budgetMs ?? 45_000);
-	const counts = {
+	const counts: {
+		claimed: number;
+		sent: number;
+		retrying: number;
+		failed: number;
+		rejected: number;
+		deferred: number;
+		messageIds: number;
+		unsubscribed?: number;
+		unsubscribeFailed?: number;
+	} = {
 		claimed: claim.jobs.length + claim.rejected.length,
 		sent: 0,
 		retrying: 0,
@@ -752,5 +779,217 @@ export async function handleMailOutbox(request: Request, outbox: MailOutbox): Pr
 			}
 		} catch {}
 	}
+	if (now() < deadline && store.claimUnsubscribes && store.completeUnsubscribe && store.failUnsubscribe) {
+		counts.unsubscribed = 0;
+		counts.unsubscribeFailed = 0;
+		let jobs: MailUnsubscribeJob[] = [];
+		try {
+			jobs = parseUnsubscribeClaim(await store.claimUnsubscribes(UNSUBSCRIBE_BATCH, leaseId));
+		} catch {}
+		const resolveHost = outbox.resolveHost ?? defaultResolveHost;
+		const fetchImpl = outbox.unsubscribeFetch ?? fetch;
+		for (let index = 0; index < jobs.length; index += 1) {
+			const job = jobs[index]!;
+			if (now() >= deadline) {
+				if (store.releaseUnsubscribe) {
+					for (const remaining of jobs.slice(index)) {
+						try {
+							await store.releaseUnsubscribe(remaining.unsubscribeId, remaining.leaseId);
+						} catch {}
+					}
+				}
+				break;
+			}
+			try {
+				await sendOneClickUnsubscribe(job.url, { fetchImpl, resolveHost });
+				await store.completeUnsubscribe(job.unsubscribeId, job.leaseId);
+				counts.unsubscribed += 1;
+			} catch (error) {
+				const failure =
+					error instanceof MailSendError
+						? error
+						: new MailSendError("The one-click unsubscribe request failed", true);
+				try {
+					await store.failUnsubscribe(job.unsubscribeId, job.leaseId, failure.message, failure.retryable);
+				} catch {}
+				counts.unsubscribeFailed += 1;
+			}
+		}
+	}
 	return json(counts);
+}
+
+function parseUnsubscribeClaim(value: unknown): MailUnsubscribeJob[] {
+	if (!Array.isArray(value)) return [];
+	const jobs: MailUnsubscribeJob[] = [];
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+		const row = entry as Record<string, unknown>;
+		if (
+			typeof row.unsubscribeId === "string" &&
+			UUID.test(row.unsubscribeId) &&
+			typeof row.leaseId === "string" &&
+			UUID.test(row.leaseId) &&
+			typeof row.url === "string" &&
+			row.url.length <= 2048 &&
+			typeof row.attemptCount === "number" &&
+			Number.isSafeInteger(row.attemptCount) &&
+			row.attemptCount >= 1
+		) {
+			jobs.push({
+				unsubscribeId: row.unsubscribeId,
+				leaseId: row.leaseId,
+				url: row.url,
+				attemptCount: row.attemptCount,
+			});
+		}
+	}
+	return jobs;
+}
+
+function isPublicIpv4(ip: string): boolean {
+	const parts = ip.split(".");
+	if (parts.length !== 4) return false;
+	const octets: number[] = [];
+	for (const part of parts) {
+		if (!/^\d{1,3}$/.test(part)) return false;
+		const n = Number(part);
+		if (!Number.isInteger(n) || n < 0 || n > 255) return false;
+		octets.push(n);
+	}
+	const [a, b, c] = octets as [number, number, number, number];
+	if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+	if (a === 100 && b >= 64 && b <= 127) return false;
+	if (a === 169 && b === 254) return false;
+	if (a === 172 && b >= 16 && b <= 31) return false;
+	if (a === 192 && b === 168) return false;
+	if (a === 192 && b === 0 && (c === 0 || c === 2)) return false;
+	if (a === 198 && (b === 18 || b === 19)) return false;
+	if (a === 198 && b === 51 && c === 100) return false;
+	if (a === 203 && b === 0 && c === 113) return false;
+	return true;
+}
+
+function expandIpv6(ip: string): number[] | null {
+	const cleaned = ip.toLowerCase().split("%")[0] ?? "";
+	if (!cleaned.includes(":")) return null;
+	const halves = cleaned.split("::");
+	if (halves.length > 2) return null;
+	const parseSide = (side: string): number[] | null => {
+		if (!side) return [];
+		const out: number[] = [];
+		const segments = side.split(":");
+		for (let i = 0; i < segments.length; i += 1) {
+			const seg = segments[i] as string;
+			if (seg.includes(".")) {
+				if (i !== segments.length - 1) return null;
+				const v4 = seg.split(".");
+				if (v4.length !== 4 || !v4.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)) return null;
+				out.push(((Number(v4[0]) << 8) | Number(v4[1])) >>> 0, ((Number(v4[2]) << 8) | Number(v4[3])) >>> 0);
+			} else {
+				if (!/^[0-9a-f]{1,4}$/.test(seg)) return null;
+				out.push(Number.parseInt(seg, 16));
+			}
+		}
+		return out;
+	};
+	const left = parseSide(halves[0] ?? "");
+	const right = halves.length === 2 ? parseSide(halves[1] ?? "") : [];
+	if (!left || !right) return null;
+	if (halves.length === 1) return left.length === 8 ? left : null;
+	const missing = 8 - left.length - right.length;
+	if (missing < 1) return null;
+	return [...left, ...new Array<number>(missing).fill(0), ...right];
+}
+
+export function isPublicIpAddress(ip: string): boolean {
+	if (isPublicIpv4(ip)) return true;
+	const groups = expandIpv6(ip);
+	if (!groups) return false;
+	const [g0, g1] = groups as [number, number];
+	if ((g0 & 0xe000) !== 0x2000) return false;
+	if (g0 === 0x2001 && (g1 === 0x0db8 || g1 === 0x0000)) return false;
+	if (g0 === 0x2002) return false;
+	return true;
+}
+
+const DISALLOWED_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa", ".arpa"];
+
+async function defaultResolveHost(hostname: string): Promise<readonly string[]> {
+	const denoApi = (globalThis as { Deno?: { resolveDns?: (q: string, t: "A" | "AAAA") => Promise<string[]> } }).Deno;
+	if (typeof denoApi?.resolveDns === "function") {
+		const [v4, v6] = await Promise.all([
+			denoApi.resolveDns(hostname, "A").catch(() => [] as string[]),
+			denoApi.resolveDns(hostname, "AAAA").catch(() => [] as string[]),
+		]);
+		return [...v4, ...v6];
+	}
+	const [v4, v6] = await Promise.all([
+		resolve4(hostname).catch(() => [] as string[]),
+		resolve6(hostname).catch(() => [] as string[]),
+	]);
+	return [...v4, ...v6];
+}
+
+export async function sendOneClickUnsubscribe(
+	rawUrl: string,
+	options: {
+		readonly fetchImpl?: typeof fetch;
+		readonly resolveHost?: (hostname: string) => Promise<readonly string[]>;
+	} = {},
+): Promise<void> {
+	let parsed: URL;
+	try {
+		parsed = new URL(rawUrl);
+	} catch {
+		throw new MailSendError("The unsubscribe URL is invalid", false);
+	}
+	if (
+		parsed.protocol !== "https:" ||
+		parsed.username ||
+		parsed.password ||
+		(parsed.port !== "" && parsed.port !== "443") ||
+		rawUrl.length > 2048
+	) {
+		throw new MailSendError("Only HTTPS one-click unsubscribe URLs on port 443 are allowed", false);
+	}
+	const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+	if (
+		!hostname ||
+		hostname === "localhost" ||
+		!hostname.includes(".") ||
+		hostname.startsWith("[") ||
+		/^\d+(?:\.\d+){0,3}$/.test(hostname) ||
+		DISALLOWED_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))
+	) {
+		throw new MailSendError("The unsubscribe host is not a public domain", false);
+	}
+	const resolveHost = options.resolveHost ?? defaultResolveHost;
+	const ips = await resolveHost(hostname);
+	if (ips.length === 0) {
+		throw new MailSendError("The unsubscribe host could not be resolved", true);
+	}
+	if (ips.some((ip) => !isPublicIpAddress(ip))) {
+		throw new MailSendError("The unsubscribe host resolves to a non-public IP address", false);
+	}
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const response = await withTimeoutScope(UNSUBSCRIBE_TIMEOUT_MS, (signal) =>
+		fetchImpl(parsed.href, {
+			method: "POST",
+			headers: {
+				"content-type": "application/x-www-form-urlencoded",
+				"user-agent": "QorperaMailUnsubscribe/1.0",
+			},
+			body: "List-Unsubscribe=One-Click",
+			redirect: "error",
+			signal,
+		}),
+	);
+	await readHttpBoundedBytes(response, UNSUBSCRIBE_MAX_RESPONSE_BYTES, {
+		timeoutMs: 3_000,
+		ignoreContentLength: true,
+	}).catch(() => undefined);
+	if (response.status >= 200 && response.status < 300) return;
+	const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+	throw new MailSendError(`The unsubscribe endpoint returned HTTP ${response.status}`, retryable);
 }
