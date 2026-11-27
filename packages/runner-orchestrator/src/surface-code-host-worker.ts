@@ -1986,7 +1986,7 @@ export class SurfaceCodeHostWorker {
 							break;
 						} catch {
 							if (attempt < 2) {
-								await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+								await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
 							}
 						}
 					}

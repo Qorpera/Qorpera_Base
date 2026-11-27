@@ -363,6 +363,38 @@ begin
 		exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_1),
 		'orphaned running preview deployment with pruned version_id is immediately due for stop'
 	);
+
+	v_reg_preview_2 := pg_temp.sahs_service(format(
+		$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 0, 0, false, false, %L, 'Publish precheck target', 'server', %L, 3000, '/health', 900, 512, 1.0, '127.0.0.1:41011', '{"PORT":"3000"}'::jsonb)$q$,
+		v_surface, repeat('f', 40), repeat('f', 64), v_empty_manifest::text, repeat('5', 40), v_img_prev
+	));
+	v_dep_prev_2 := (v_reg_preview_2 ->> 'deploymentId')::uuid;
+	update public.qorpera_company_site_deployments set updated_at = clock_timestamp() - interval '3 minutes' where id = v_dep_prev_2;
+	perform pg_temp.sahs_service(format(
+		$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 0, 0, false, false, %L, 'Publish precheck target', 'server', %L, 3000, '/health', 900, 512, 1.0, null, '{"PORT":"3000"}'::jsonb, true)$q$,
+		v_surface, repeat('f', 40), repeat('f', 64), v_empty_manifest::text, repeat('5', 40), v_img_prev
+	));
+	perform pg_temp.sahs_assert(
+		(select upstream_addr is null from public.qorpera_company_site_deployments where id = v_dep_prev_2),
+		'non-live register with p_check_public_promote=true clears stale upstream_addr on ready row'
+	);
+	v_due := pg_temp.sahs_service('select public.qorpera_surface_stale_app_deployments_due(16)');
+	perform pg_temp.sahs_assert(
+		not exists (select 1 from jsonb_array_elements(v_due) elem where (elem ->> 'deploymentId')::uuid = v_dep_prev_2),
+		'deployment with upstream_addr nulled by publish pre-check is excluded from stale sweep: ' || v_due::text
+	);
+	update public.qorpera_company_site_deployments
+	set upstream_addr = '127.0.0.1:41011', last_stop_attempt_at = clock_timestamp(), rollback_claimed_at = null
+	where id = v_dep_prev_2;
+	v_reg_preview_2 := pg_temp.sahs_service(format(
+		$q$select public.qorpera_surface_site_deployment_register(%L, %L, %L, %L::jsonb, 0, 0, false, true, %L, 'Promote with sweep stamp', 'server', %L, 3000, '/health', 900, 512, 1.0, '127.0.0.1:41012', '{"PORT":"3000"}'::jsonb)$q$,
+		v_surface, repeat('f', 40), repeat('f', 64), v_empty_manifest::text, repeat('5', 40), v_img_prev
+	));
+	perform pg_temp.sahs_assert(
+		(v_reg_preview_2 ->> 'deploymentState') = 'live'
+		and (select state = 'live' and last_stop_attempt_at is null from public.qorpera_company_site_deployments where id = v_dep_prev_2),
+		'promote_live succeeds when only stale-sweep last_stop_attempt_at is set and rollback_claimed_at is null: ' || v_reg_preview_2::text
+	);
 end $$;
 
 rollback;
