@@ -37,6 +37,7 @@ function base64url(text: string): string {
 }
 
 class FakeGmail {
+	emailAddress = "Owner@Gmail.com";
 	messages: FakeMessage[] = [];
 	historyId = "1000";
 	history: { id: string; message: FakeMessage }[] = [];
@@ -71,7 +72,7 @@ class FakeGmail {
 		const path = url.pathname.replace("/gmail/v1/users/me", "");
 		if (path === "/profile")
 			return Response.json({
-				emailAddress: "Owner@Gmail.com",
+				emailAddress: this.emailAddress,
 				historyId: this.historyId,
 				messagesTotal: this.messages.length,
 			});
@@ -646,6 +647,42 @@ it("holds a send for a new sign-in when Google refuses the token", async () => {
 	await f.mailboxes.pass(signal);
 	expect(gmail.sent).toHaveLength(0);
 	expect(f.failed).toEqual([expect.objectContaining({ error: GMAIL_SIGN_IN_AGAIN, retryable: true, refused: true })]);
+});
+
+it("refuses reads and sends before touching Gmail when the token opens a different Google account", async () => {
+	const reading = new FakeGmail(3);
+	reading.emailAddress = "other@gmail.com";
+	reading.historyGone = true;
+	const readFixture = fixture({
+		claims: [claim(), claim({ state: "live", historyId: "10" })],
+		gmail: reading,
+	});
+	const readOutcome = await readFixture.mailboxes.pass(signal);
+	expect(readOutcome.refused).toBe(2);
+	expect(readFixture.order).toEqual([]);
+	expect(readFixture.finished).toEqual([
+		expect.objectContaining({ outcome: "refused", error: GMAIL_SIGN_IN_AGAIN }),
+		expect.objectContaining({ outcome: "refused", error: GMAIL_SIGN_IN_AGAIN }),
+	]);
+	expect(reading.calls).toEqual([
+		"POST /token",
+		"GET /gmail/v1/users/me/profile",
+		"POST /token",
+		"GET /gmail/v1/users/me/profile",
+	]);
+
+	const sending = new FakeGmail(0);
+	sending.emailAddress = "other@gmail.com";
+	const sendFixture = fixture({ claims: [], gmail: sending, sends: [send()] });
+	const sendOutcome = await sendFixture.mailboxes.pass(signal);
+	expect(sendOutcome.refused).toBe(1);
+	expect(sending.drafts.size).toBe(0);
+	expect(sending.sent).toHaveLength(0);
+	expect(sendFixture.completed).toEqual([]);
+	expect(sendFixture.failed).toEqual([
+		expect.objectContaining({ error: GMAIL_SIGN_IN_AGAIN, retryable: true, refused: true }),
+	]);
+	expect(sending.calls).toEqual(["POST /token", "GET /gmail/v1/users/me/profile"]);
 });
 
 it("writes a Gmail message as the mail door stores company mail, within 256 KiB", () => {

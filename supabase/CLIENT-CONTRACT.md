@@ -1080,7 +1080,8 @@ Contract: the 2026-10-02 amendment "quoted outside content in a member's message
   at Google; a reconnect's import of the mail from while the address was removed keeps it, since the older mail is still
   missing. Show "The newest 50,000 messages are here." when `state` is `live` and `capped`.
   `qorpera_pause_google_mailbox(p_mailbox_id, p_paused)` takes the entry's `hookId` and stops or restarts bringing mail
-  in. Remove is `qorpera_set_event_hook_status(hookId, 'removed')`: the Google sign-in ends, the mail brought in stays;
+  in. Remove is `qorpera_set_event_hook_status(hookId, 'removed')`: a mailbox-owned Google sign-in ends while a linked
+  Settings company Gmail connection stays active, and the mail brought in stays;
   when the same company connects the same address again, the same mailbox comes back (confirm `outcome: "relinked"`,
   same `hookId`) and brings in the mail of the time it was removed, then finishes any import Remove interrupted (`state`
   stays `bringing_in` until both are done). Sending from a Google address leaves through Gmail; while the state is

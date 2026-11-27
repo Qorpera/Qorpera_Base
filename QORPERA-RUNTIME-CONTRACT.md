@@ -5044,7 +5044,9 @@ complete section 16.3's listener triggers and section 11.5's broker. Design:
    addresses included), never as if from Qorpera, the AI line and the
    automatic review for an agent's email, and the company's limits counted
    together with all its other email. It carries no attached files. Remove
-   ends the Google sign-in; the mail brought in stays with the company.
+   ends a mailbox-owned Google sign-in while leaving a linked Settings
+   company Gmail connection active; the mail brought in stays with the
+   company.
 
 Section 21, item 33, is the event-wake acceptance item.
 

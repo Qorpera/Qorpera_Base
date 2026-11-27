@@ -891,9 +891,9 @@ export class CloudGmailMailboxes {
 	}
 
 	async #withApi<T>(
-		signIn: SealedSignIn,
+		signIn: SealedSignIn & { readonly address: string },
 		signal: AbortSignal,
-		work: (api: GmailMailboxApi) => Promise<T>,
+		work: (api: GmailMailboxApi, profile: GmailProfile) => Promise<T>,
 	): Promise<T> {
 		const envelope = Buffer.from(signIn.encryptedEnvelopeBase64, "base64");
 		try {
@@ -910,7 +910,10 @@ export class CloudGmailMailboxes {
 				},
 				async (fields): Promise<{ value: T } | { error: unknown }> => {
 					try {
-						return { value: await work(await this.#gmail.api(fields.refresh_token ?? "", signal)) };
+						const api = await this.#gmail.api(fields.refresh_token ?? "", signal);
+						const profile = await api.profile(signal);
+						if (profile.address !== signIn.address) throw new GmailSignInRefused();
+						return { value: await work(api, profile) };
 					} catch (error) {
 						return { error };
 					}
@@ -961,10 +964,10 @@ export class CloudGmailMailboxes {
 			);
 		let end: PassEnd;
 		try {
-			end = await this.#withApi(claim, signal, (api) =>
+			end = await this.#withApi(claim, signal, (api, profile) =>
 				claim.state === "bringing_in"
-					? this.#import(api, claim, signal, spent, tally)
-					: this.#follow(api, claim, signal, spent, tally),
+					? this.#import(api, profile, claim, signal, spent, tally)
+					: this.#follow(api, profile, claim, signal, spent, tally),
 			);
 		} catch (error) {
 			if (error instanceof GmailSignInRefused) {
@@ -1026,14 +1029,14 @@ export class CloudGmailMailboxes {
 
 	async #import(
 		api: GmailMailboxApi,
+		profile: GmailProfile,
 		claim: MailboxClaim,
 		signal: AbortSignal,
 		spent: () => boolean,
 		tally: { messages: number },
 	): Promise<PassEnd> {
-		const profile = claim.historyId === null || claim.total === null ? await api.profile(signal) : null;
-		const historyId = claim.historyId ?? (profile as GmailProfile).historyId;
-		const total = profile?.messagesTotal ?? claim.total;
+		const historyId = claim.historyId ?? profile.historyId;
+		const total = claim.historyId === null || claim.total === null ? (profile.messagesTotal ?? claim.total) : claim.total;
 		let pageToken = claim.pageToken;
 		let count = claim.importCount;
 		for (;;) {
@@ -1061,6 +1064,7 @@ export class CloudGmailMailboxes {
 
 	async #follow(
 		api: GmailMailboxApi,
+		profile: GmailProfile,
 		claim: MailboxClaim,
 		signal: AbortSignal,
 		spent: () => boolean,
@@ -1073,7 +1077,7 @@ export class CloudGmailMailboxes {
 			try {
 				page = await api.history(mark, pageToken, signal);
 			} catch (error) {
-				if (error instanceof GmailHistoryGone) return this.#restart(api, claim, signal, tally);
+				if (error instanceof GmailHistoryGone) return this.#restart(api, profile, claim, signal, tally);
 				throw error;
 			}
 			for (const id of await this.#unknown(claim, [...new Set(page.added.map((message) => message.id))])) {
@@ -1091,11 +1095,12 @@ export class CloudGmailMailboxes {
 
 	async #restart(
 		api: GmailMailboxApi,
+		profile: GmailProfile,
 		claim: MailboxClaim,
 		signal: AbortSignal,
 		tally: { messages: number },
 	): Promise<PassEnd> {
-		const { historyId } = await api.profile(signal);
+		const { historyId } = profile;
 		const page = await api.list(null, signal);
 		for (const id of await this.#unknown(claim, [...new Set(page.messages.map((message) => message.id))])) {
 			const outcome = await this.#bring(api, claim, id, true, signal);

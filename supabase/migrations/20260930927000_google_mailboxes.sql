@@ -27,6 +27,7 @@ create table public.qorpera_google_mailboxes (
 	address text not null check (char_length(address) <= 254 and address = lower(address)
 		and address ~ '^[a-z0-9.!#$%&''*+/=?^_`{|}~-]{1,64}@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'),
 	secret_id uuid not null references public.qorpera_cloud_secrets(id) on delete cascade,
+	secret_owned boolean not null default true,
 	state text not null default 'bringing_in' check (state in ('bringing_in', 'live', 'sign_in_again')),
 	paused boolean not null default false,
 	history_id text check (history_id ~ '^[0-9]{1,20}$'),
@@ -214,7 +215,7 @@ begin
 	set removed_at = new.removed_at, due_at = null, lease_id = null, lease_until = null, updated_at = clock_timestamp()
 	where mailbox_id = new.id and removed_at is null
 	returning * into v_google;
-	if v_google.mailbox_id is not null then
+	if v_google.mailbox_id is not null and v_google.secret_owned then
 		perform public.qorpera_google_mailbox_end_sign_in(v_google.secret_id, auth.uid());
 	end if;
 	return null;
@@ -234,20 +235,27 @@ begin
 		set state = 'sign_in_again', due_at = null, lease_id = null, lease_until = null,
 			last_error = 'The Google sign-in was ended', updated_at = clock_timestamp()
 		where secret_id = new.id and removed_at is null;
-	elsif new.current_version <> old.current_version then
+	elsif new.current_version <> old.current_version or new.account_label is distinct from old.account_label then
 		update public.qorpera_google_mailboxes
-		set state = case when imported_at is null then 'bringing_in' else 'live' end,
-			due_at = case when paused then null else clock_timestamp() end, attempts = 0, last_error = null,
-			updated_at = clock_timestamp()
-		where secret_id = new.id and removed_at is null and state = 'sign_in_again'
-			and address = lower(coalesce(new.account_label, ''));
+		set state = 'sign_in_again', due_at = null, lease_id = null, lease_until = null,
+			last_error = 'The Google sign-in belongs to another account', updated_at = clock_timestamp()
+		where secret_id = new.id and removed_at is null
+			and address <> lower(btrim(coalesce(new.account_label, '')));
+		if new.current_version <> old.current_version then
+			update public.qorpera_google_mailboxes
+			set state = case when imported_at is null then 'bringing_in' else 'live' end,
+				due_at = case when paused then null else clock_timestamp() end, attempts = 0, last_error = null,
+				updated_at = clock_timestamp()
+			where secret_id = new.id and removed_at is null and state = 'sign_in_again'
+				and address = lower(btrim(coalesce(new.account_label, '')));
+		end if;
 	end if;
 	return null;
 end
 $$;
 revoke all on function public.qorpera_google_mailbox_follow_secret()
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
-create trigger qorpera_google_mailbox_follow_secret after update of status, current_version on public.qorpera_cloud_secrets
+create trigger qorpera_google_mailbox_follow_secret after update of status, current_version, account_label on public.qorpera_cloud_secrets
 	for each row when (new.connector_id = 'gmail')
 	execute function public.qorpera_google_mailbox_follow_secret();
 
@@ -296,14 +304,16 @@ begin
 			and google.environment_id = p_environment_id and google.removed_at is null;
 		if v_google.mailbox_id is null then
 			raise exception 'This company has no such Google mailbox' using errcode = '22023'; end if;
-		select secret.* into v_secret from public.qorpera_cloud_secrets as secret
-		where secret.id = v_google.secret_id and secret.status = 'active' and secret.owner_kind = 'company'
-			and secret.connector_id = 'gmail';
-		if v_secret.id is not null then
-			update public.qorpera_cloud_secret_capture_tickets
-			set status = 'cancelled'
-			where secret_id = v_secret.id and status = 'pending' and target_version > 1
-				and id in (select mark.ticket_id from public.qorpera_google_mailbox_tickets as mark);
+		if v_google.secret_owned then
+			select secret.* into v_secret from public.qorpera_cloud_secrets as secret
+			where secret.id = v_google.secret_id and secret.status = 'active' and secret.owner_kind = 'company'
+				and secret.connector_id = 'gmail';
+			if v_secret.id is not null then
+				update public.qorpera_cloud_secret_capture_tickets
+				set status = 'cancelled'
+				where secret_id = v_secret.id and status = 'pending' and target_version > 1
+					and id in (select mark.ticket_id from public.qorpera_google_mailbox_tickets as mark);
+			end if;
 		end if;
 	end if;
 	v_ticket := public.qorpera_begin_cloud_secret_capture(v_profile_id, p_environment_id, 'company', null, 'gmail',
@@ -372,12 +382,13 @@ begin
 		v_old_secret := v_google.secret_id;
 		update public.qorpera_google_mailboxes
 		set secret_id = v_secret.id,
+			secret_owned = false,
 			state = case when state = 'sign_in_again' then case when imported_at is null then 'bringing_in' else 'live' end
 				else state end,
 			due_at = case when paused then null else clock_timestamp() end,
 			lease_id = null, lease_until = null, attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_google.mailbox_id;
-		if v_old_secret <> v_secret.id then
+		if v_google.secret_owned and v_old_secret <> v_secret.id then
 			perform public.qorpera_google_mailbox_end_sign_in(v_old_secret, auth.uid());
 		end if;
 		return jsonb_build_object('schema', 'qorpera.google-mailbox-connected/v1', 'outcome', 'relinked',
@@ -405,7 +416,7 @@ begin
 		where id = v_removed.hook_id;
 		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
 		update public.qorpera_google_mailboxes
-		set removed_at = null, secret_id = v_secret.id, state = 'bringing_in', paused = false,
+		set removed_at = null, secret_id = v_secret.id, secret_owned = false, state = 'bringing_in', paused = false,
 			history_id = null, page_token = null, import_count = 0, gap = true,
 			resume_pending = case when gap then resume_pending else imported_at is null end,
 			resume_page_token = case when gap then resume_page_token when imported_at is null then page_token end,
@@ -431,9 +442,9 @@ begin
 		'google_' || encode(extensions.gen_random_bytes(12), 'hex'), auth.uid())
 	returning id into v_mailbox_id;
 	insert into public.qorpera_google_mailboxes (mailbox_id, hook_id, profile_id, environment_id, address, secret_id,
-		state, due_at, created_by_user_id)
+		secret_owned, state, due_at, created_by_user_id)
 	values (v_mailbox_id, v_hook.id, v_profile_id, p_environment_id, v_address, v_secret.id,
-		'bringing_in', clock_timestamp(), auth.uid());
+		false, 'bringing_in', clock_timestamp(), auth.uid());
 	return jsonb_build_object('schema', 'qorpera.google-mailbox-connected/v1', 'outcome', 'linked',
 		'mailboxId', v_mailbox_id, 'hookId', v_hook.id, 'address', v_address, 'secretId', v_secret.id);
 end
@@ -515,6 +526,7 @@ declare
 	v_reused uuid;
 	v_removed public.qorpera_google_mailboxes%rowtype;
 	v_secret_id uuid;
+	v_secret_owned boolean;
 	v_old_secret uuid;
 	v_domain text;
 	v_hook public.qorpera_event_hooks%rowtype;
@@ -598,6 +610,7 @@ begin
 	if v_reused is not null then
 		update public.qorpera_cloud_secret_capture_tickets set status = 'cancelled' where id = v_ticket.id;
 		v_secret_id := v_reused;
+		v_secret_owned := false;
 		v_outcome := 'linked';
 	else
 		perform set_config('qorpera.google_mailbox_capture', v_ticket.id::text, true);
@@ -605,17 +618,19 @@ begin
 			p_capture_capability_sha256, p_encrypted_envelope_base64, p_envelope_sha256, v_address);
 		perform set_config('qorpera.google_mailbox_capture', '', true);
 		v_secret_id := v_ticket.secret_id;
+		v_secret_owned := true;
 	end if;
 	if v_google.mailbox_id is not null then
 		v_old_secret := v_google.secret_id;
 		update public.qorpera_google_mailboxes
 		set secret_id = v_secret_id,
+			secret_owned = v_secret_owned,
 			state = case when state = 'sign_in_again' then case when imported_at is null then 'bringing_in' else 'live' end
 				else state end,
 			due_at = case when paused then null else clock_timestamp() end,
 			lease_id = null, lease_until = null, attempts = 0, last_error = null, updated_at = clock_timestamp()
 		where mailbox_id = v_google.mailbox_id;
-		if v_old_secret <> v_secret_id then
+		if v_google.secret_owned and v_old_secret <> v_secret_id then
 			perform public.qorpera_google_mailbox_end_sign_in(v_old_secret, v_ticket.created_by_user_id);
 		end if;
 		v_mailbox_id := v_google.mailbox_id;
@@ -625,7 +640,7 @@ begin
 		where id = v_removed.hook_id;
 		update public.qorpera_company_mailboxes set removed_at = null where id = v_removed.mailbox_id;
 		update public.qorpera_google_mailboxes
-		set removed_at = null, secret_id = v_secret_id, state = 'bringing_in', paused = false,
+		set removed_at = null, secret_id = v_secret_id, secret_owned = v_secret_owned, state = 'bringing_in', paused = false,
 			history_id = null, page_token = null, import_count = 0, gap = true,
 			resume_pending = case when gap then resume_pending else imported_at is null end,
 			resume_page_token = case when gap then resume_page_token when imported_at is null then page_token end,
@@ -650,9 +665,9 @@ begin
 			'google_' || encode(extensions.gen_random_bytes(12), 'hex'), v_ticket.created_by_user_id)
 		returning id into v_mailbox_id;
 		insert into public.qorpera_google_mailboxes (mailbox_id, hook_id, profile_id, environment_id, address, secret_id,
-			state, due_at, created_by_user_id)
+			secret_owned, state, due_at, created_by_user_id)
 		values (v_mailbox_id, v_hook.id, v_ticket.profile_id, v_ticket.environment_id, v_address, v_secret_id,
-			'bringing_in', clock_timestamp(), v_ticket.created_by_user_id);
+			v_secret_owned, 'bringing_in', clock_timestamp(), v_ticket.created_by_user_id);
 		v_outcome := coalesce(v_outcome, 'created');
 	end if;
 	return jsonb_build_object('schema', 'qorpera.google-mailbox-connected/v1', 'outcome', v_outcome,

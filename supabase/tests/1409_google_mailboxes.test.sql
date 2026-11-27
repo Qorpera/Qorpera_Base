@@ -409,25 +409,37 @@ insert into public.qorpera_cloud_secret_versions(secret_id, version, broker_auth
 	envelope_sha256, created_by_user_id)
 values ('12970000-0000-4000-8000-000000000f01', 1, '12970000-0000-4000-8000-0000000000d1', 'key-1', '\x01',
 	encode(extensions.digest('\x01'::bytea, 'sha256'), 'hex'), '92400000-0000-4000-8000-000000000001');
+insert into public.qorpera_cloud_secret_operation_grants(profile_id, environment_id, secret_id, grantee_kind,
+	connector_id, operation_id, operation_version, created_by_user_id)
+values ('92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
+	'12970000-0000-4000-8000-000000000f01', 'all_agents', 'gmail', 'search_messages', 1,
+	'92400000-0000-4000-8000-000000000001');
 select set_config('qorpera_test.g_reuse', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
 select set_config('qorpera_test.g_linked', pg_temp.g_complete(current_setting('qorpera_test.g_reuse')::jsonb,
 	'agents@gmail.com')::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.g_linked')::jsonb ->> 'outcome' = 'linked'
 		and (pg_temp.g_box('agents@gmail.com')).secret_id = '12970000-0000-4000-8000-000000000f01'
+		and not (pg_temp.g_box('agents@gmail.com')).secret_owned
 		and (select ticket.status = 'cancelled' from public.qorpera_cloud_secret_capture_tickets as ticket
 			where ticket.id = (current_setting('qorpera_test.g_reuse')::jsonb ->> 'ticketId')::uuid),
-	'The agents'' Gmail connection of the same account becomes the mailbox''s');
+	'The agents'' Gmail connection of the same account becomes the mailbox''s without taking ownership');
 update public.qorpera_google_mailboxes set import_count = 7, page_token = 'page-9', history_id = '4000'
 where address = 'agents@gmail.com';
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_set_event_hook_status((pg_temp.g_box('agents@gmail.com')).hook_id, 'removed') \g /dev/null
 select pg_temp.base_claims('service_role');
+select pg_temp.base_assert((select secret.status = 'active' from public.qorpera_cloud_secrets as secret
+			where secret.id = '12970000-0000-4000-8000-000000000f01')
+		and exists (select 1 from public.qorpera_cloud_secret_operation_grants as grant_row
+			where grant_row.secret_id = '12970000-0000-4000-8000-000000000f01' and grant_row.status = 'active'),
+	'Removing a mailbox linked to an existing company Gmail connection keeps that connection and its agent grants active');
 select set_config('qorpera_test.g_midway', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
 	'92400000-0000-4000-8000-000000000020')::text, true) \g /dev/null
 select pg_temp.base_assert(pg_temp.g_complete(current_setting('qorpera_test.g_midway')::jsonb, 'agents@gmail.com')
-		->> 'outcome' = 'relinked',
-	'A mailbox removed in the middle of its first import comes back');
+		->> 'outcome' = 'linked'
+		and not (pg_temp.g_box('agents@gmail.com')).secret_owned,
+	'A mailbox removed in the middle of its first import comes back reusing the still-active company connection');
 select pg_temp.base_assert((pg_temp.g_box('agents@gmail.com')).state = 'bringing_in'
 		and (pg_temp.g_box('agents@gmail.com')).gap
 		and (pg_temp.g_box('agents@gmail.com')).history_id is null
@@ -634,9 +646,10 @@ select pg_temp.base_claims('service_role');
 select pg_temp.base_assert(current_setting('qorpera_test.g_existing')::jsonb ->> 'outcome' = 'linked'
 		and current_setting('qorpera_test.g_existing')::jsonb ->> 'address' = 'team@example.org'
 		and (pg_temp.g_box('team@example.org')).secret_id = '12970000-0000-4000-8000-000000000f02'
+		and not (pg_temp.g_box('team@example.org')).secret_owned
 		and (pg_temp.g_box('team@example.org')).state = 'bringing_in'
 		and pg_temp.g_entry('team@example.org') ->> 'kind' = 'google',
-	'One-click connect links an existing company Gmail secret straight into the Mailbox');
+	'One-click connect links an existing company Gmail secret straight into the Mailbox without taking ownership');
 select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(current_setting('qorpera_test.g_claim')::jsonb ->> 'address' = 'team@example.org'
 		and current_setting('qorpera_test.g_claim')::jsonb ->> 'secretId' = '12970000-0000-4000-8000-000000000f02',
@@ -649,6 +662,26 @@ select pg_temp.base_claims('service_role');
 select pg_temp.base_assert((pg_temp.g_box('team@example.org')).lease_id::text
 		= current_setting('qorpera_test.g_claim')::jsonb ->> 'lease',
 	'An idempotent connect_existing leaves an in-flight import lease intact');
+update public.qorpera_cloud_secrets
+set current_version = 2, account_label = 'someone-else@example.org'
+where id = '12970000-0000-4000-8000-000000000f02';
+select pg_temp.base_assert((pg_temp.g_box('team@example.org')).state = 'sign_in_again'
+		and (pg_temp.g_box('team@example.org')).due_at is null
+		and (pg_temp.g_box('team@example.org')).lease_id is null,
+	'Rotating a linked company Gmail secret to another account puts the mailbox in sign_in_again and clears its lease');
+select set_config('qorpera_test.g_unowned_begin', pg_temp.g_begin('92400000-0000-4000-8000-000000000001',
+	'92400000-0000-4000-8000-000000000020', (pg_temp.g_box('team@example.org')).mailbox_id)::text, true) \g /dev/null
+select pg_temp.base_assert((current_setting('qorpera_test.g_unowned_begin')::jsonb #>> '{scope,version}')::integer = 1
+		and current_setting('qorpera_test.g_unowned_begin')::jsonb #>> '{scope,secretId}'
+			<> '12970000-0000-4000-8000-000000000f02',
+	'Signing in again for a Settings-linked mailbox mints its own secret rather than overwriting the Settings secret');
+update public.qorpera_cloud_secrets
+set current_version = 3, account_label = 'Team@Example.org'
+where id = '12970000-0000-4000-8000-000000000f02';
+select pg_temp.base_assert((pg_temp.g_box('team@example.org')).state = 'bringing_in'
+		and (pg_temp.g_box('team@example.org')).due_at is not null,
+	'Rotating the linked secret back to the mailbox address wakes the mailbox again');
+select set_config('qorpera_test.g_claim', pg_temp.g_claim()::text, true) \g /dev/null
 select pg_temp.base_assert(pg_temp.g_finish(current_setting('qorpera_test.g_claim')::jsonb, 'refused', null, null, null,
 		'Google refused the sign-in') ->> 'state' = 'sign_in_again',
 	'A refused existing connection waits for sign in again');
@@ -659,14 +692,18 @@ select pg_temp.base_assert(public.qorpera_connect_existing_google_mailbox(
 select pg_temp.base_claims('service_role');
 select pg_temp.base_assert((pg_temp.g_box('team@example.org')).state = 'bringing_in'
 		and (pg_temp.g_box('team@example.org')).secret_id = '12970000-0000-4000-8000-000000000f04'
-		and (select secret.status = 'revoked' from public.qorpera_cloud_secrets as secret
+		and not (pg_temp.g_box('team@example.org')).secret_owned
+		and (select secret.status = 'active' from public.qorpera_cloud_secrets as secret
 			where secret.id = '12970000-0000-4000-8000-000000000f02'),
-	'Relinking switches the mailbox to the replacement secret and revokes the replaced one');
+	'Relinking away from a Settings-owned secret leaves that Settings secret active');
 select set_config('qorpera_test.g_team_box', (pg_temp.g_box('team@example.org')).mailbox_id::text, true) \g /dev/null
 select set_config('qorpera_test.g_team_hook', (pg_temp.g_box('team@example.org')).hook_id::text, true) \g /dev/null
 select pg_temp.base_claims('authenticated', '92400000-0000-4000-8000-000000000001');
 select public.qorpera_set_event_hook_status((pg_temp.g_box('team@example.org')).hook_id, 'removed') \g /dev/null
 select pg_temp.base_claims('service_role');
+select pg_temp.base_assert((select secret.status = 'active' from public.qorpera_cloud_secrets as secret
+		where secret.id = '12970000-0000-4000-8000-000000000f04'),
+	'Removing a mailbox linked via connect_existing leaves its Settings secret active');
 insert into public.qorpera_cloud_secrets(id, profile_id, environment_id, broker_authority_id, owner_kind, connector_id,
 	secret_name, purpose, current_version, created_by_user_id, account_label)
 values ('12970000-0000-4000-8000-000000000f05', '92400000-0000-4000-8000-000000000010', '92400000-0000-4000-8000-000000000020',
@@ -685,7 +722,8 @@ select pg_temp.base_assert((pg_temp.g_box('team@example.org')).mailbox_id::text 
 		and (pg_temp.g_box('team@example.org')).hook_id::text = current_setting('qorpera_test.g_team_hook')
 		and (pg_temp.g_box('team@example.org')).gap
 		and (pg_temp.g_box('team@example.org')).resume_pending
-		and (pg_temp.g_box('team@example.org')).secret_id = '12970000-0000-4000-8000-000000000f05',
+		and (pg_temp.g_box('team@example.org')).secret_id = '12970000-0000-4000-8000-000000000f05'
+		and not (pg_temp.g_box('team@example.org')).secret_owned,
 	'Reviving via an existing company Gmail secret keeps the mailbox row and enters the reconnect gap walk');
 
 do $$
