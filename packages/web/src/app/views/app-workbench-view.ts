@@ -1366,7 +1366,7 @@ export class AppWorkbenchView {
 							approveLabel(t("Ship & publish"), shipPublishArmed),
 						)
 					: null,
-			].filter((item): item is HTMLElement => item !== null);
+			].filter((item): item is HTMLButtonElement => item !== null);
 			replace(
 				this.#trackHead,
 				h(
