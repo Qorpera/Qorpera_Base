@@ -12,6 +12,7 @@ import { tellAgent } from "../src/app/tell-agent.ts";
 import { HubController, renderHub } from "../src/app/views/hub.ts";
 import { pageNoteCard } from "../src/app/views/page-note.ts";
 import { renderRail } from "../src/app/views/shell.ts";
+import { SITE_DOOR_PASS, SITE_DOOR_READY, SITE_DOOR_SHOWN } from "../src/app/views/site-view.ts";
 import { CloudRpcError, describeError } from "../src/cloud/client.ts";
 import { WebCompanyFiles } from "../src/cloud/company-files.ts";
 import type { HostedCompanyOrganization } from "../src/cloud/organization.ts";
@@ -41,9 +42,12 @@ import {
 } from "./fixtures.ts";
 import { folderFake } from "./folder-fake.ts";
 import {
+	PREVIEW_IDS,
+	previewFrame,
 	session as surfaceSession,
 	summary as surfaceSummary,
 	workspace as surfaceWorkspace,
+	VALID_PASS,
 } from "./surface-fixtures.ts";
 import "./register-lazy.ts";
 
@@ -2774,5 +2778,258 @@ describe("cold-boot waterfall optimizations", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+
+	it("keeps Website and Web App loading cleanly when switching back and forth rapidly between warm previews", async () => {
+		const website = surfaceSummary({
+			id: id(811),
+			slug: "website",
+			title: "Website",
+			archetype: "live_build",
+			siteSlug: "stifteren",
+			liveUrl: "https://stifteren.qorpera.site",
+			pendingChangeCount: 1,
+		});
+		const webApp = surfaceSummary({
+			id: id(812),
+			slug: "web-app",
+			title: "Web App",
+			archetype: "live_build",
+			siteSlug: "stifteren-web-app",
+			liveUrl: "https://stifteren-web-app.qorpera.site",
+			pendingChangeCount: 1,
+		});
+		let mintCount = 0;
+		const mintPreviewPass = vi.fn(async (previewId: string) => {
+			mintCount += 1;
+			const slug = previewId === PREVIEW_IDS[0] ? "stifteren" : "stifteren-web-app";
+			return {
+				previewId,
+				doorActionUrl: `https://${slug}--p0.qorpera.site/__qorpera/member`,
+				memberPass: `${VALID_PASS.slice(0, -1)}${mintCount}`,
+			};
+		});
+		const wsFor = (surface: typeof website, previewId: string) =>
+			surfaceWorkspace([surfaceSession(["staged"], { surfaceId: surface.id })], {
+				surface,
+				previewState: {
+					surfaceId: surface.id,
+					mode: "single",
+					primary: previewFrame({
+						previewId,
+						doorActionUrl: `https://${surface.siteSlug}--p0.qorpera.site/__qorpera/member`,
+						memberPass: null,
+					}),
+					compareFrames: [],
+				},
+			});
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([website, webApp]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockImplementation(async (surfaceId: string) =>
+			surfaceId === webApp.id ? wsFor(webApp, PREVIEW_IDS[1]) : wsFor(website, PREVIEW_IDS[0]),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "mintPreviewPass").mockImplementation(mintPreviewPass);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		const f = mounted(`#/c/${profileA.profileId}/s/web-app`);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string) => {
+			if (name === "qorpera_list_company_sites") return [];
+			if (name === "qorpera_company_site_access") return { schema: "qorpera.company-site-access/v1", sites: [] };
+			throw new Error(`Unexpected RPC: ${name}`);
+		});
+		const completeDoor = (iframe: HTMLIFrameElement) => {
+			const posted: unknown[] = [];
+			vi.spyOn(iframe.contentWindow!, "postMessage").mockImplementation(((message: unknown) => {
+				posted.push(message);
+			}) as never);
+			const ready = new MessageEvent("message", { data: { type: SITE_DOOR_READY }, origin: location.origin });
+			Object.defineProperty(ready, "source", { value: iframe.contentWindow });
+			window.dispatchEvent(ready);
+			const shown = new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, origin: location.origin });
+			Object.defineProperty(shown, "source", { value: iframe.contentWindow });
+			window.dispatchEvent(shown);
+			return posted;
+		};
+
+		await draw();
+		await draw();
+		await draw();
+		const firstAppFrame = f.root.querySelector<HTMLIFrameElement>("main iframe.surface-frame.is-staging")!;
+		expect(firstAppFrame).not.toBeNull();
+		expect(completeDoor(firstAppFrame)[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main iframe.surface-frame.is-shown")).toBe(firstAppFrame);
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		await draw();
+		const firstSiteFrame = f.root.querySelector<HTMLIFrameElement>("main iframe.surface-frame.is-staging")!;
+		expect(firstSiteFrame).not.toBeNull();
+		expect(firstSiteFrame.title).toBe("Preview of Website");
+		const ready = new MessageEvent("message", { data: { type: SITE_DOOR_READY }, origin: location.origin });
+		Object.defineProperty(ready, "source", { value: firstSiteFrame.contentWindow });
+		vi.spyOn(firstSiteFrame.contentWindow!, "postMessage").mockImplementation(() => {});
+		window.dispatchEvent(ready);
+
+		location.hash = `#/c/${profileA.profileId}/s/web-app`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/s/web-app`;
+		await draw();
+		await draw();
+		await draw();
+
+		expect(f.root.querySelector("main iframe.surface-frame.is-shown")).toBeNull();
+		const recoveredAppFrame = f.root.querySelector<HTMLIFrameElement>("main iframe.surface-frame.is-staging")!;
+		expect(recoveredAppFrame).not.toBeNull();
+		expect(recoveredAppFrame).not.toBe(firstAppFrame);
+		expect(completeDoor(recoveredAppFrame)[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main iframe.surface-frame.is-shown")).toBe(recoveredAppFrame);
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		await draw();
+		await draw();
+		expect(f.root.querySelector("main iframe.surface-frame.is-shown")).toBeNull();
+		const recoveredSiteFrame = f.root.querySelector<HTMLIFrameElement>("main iframe.surface-frame.is-staging")!;
+		expect(recoveredSiteFrame).not.toBeNull();
+		expect(recoveredSiteFrame).not.toBe(firstSiteFrame);
+		expect(completeDoor(recoveredSiteFrame)[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main iframe.surface-frame.is-shown")).toBe(recoveredSiteFrame);
+	});
+
+	it("reloads live SiteView surfaces cleanly when switching back and forth rapidly between warm live_build surfaces", async () => {
+		const website = surfaceSummary({
+			id: id(821),
+			slug: "website",
+			title: "Website",
+			archetype: "live_build",
+			siteSlug: "stifteren",
+			liveUrl: "https://stifteren.qorpera.site",
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+		});
+		const webApp = surfaceSummary({
+			id: id(822),
+			slug: "web-app",
+			title: "Web App",
+			archetype: "live_build",
+			siteSlug: "stifteren-web-app",
+			liveUrl: "https://stifteren-web-app.qorpera.site",
+			activeSessionCount: 0,
+			pendingChangeCount: 0,
+		});
+		const siteRow = (siteId: string, slug: string, title: string) => ({
+			schema: "qorpera.company-site/v1",
+			id: siteId,
+			slug,
+			title,
+			kind: "files",
+			url: `https://${slug}.qorpera.site/`,
+			state: "live",
+			source: `product/${slug}`,
+			files: 4,
+			bytes: 512,
+			publishedAt: "2026-11-26T10:00:00Z",
+			publishedBy: null,
+			createdAt: "2026-11-26T09:00:00Z",
+			passwordChangedAt: "2026-11-26T09:00:00Z",
+			machine: null,
+			port: null,
+		});
+		const websiteSiteId = id(831);
+		const webAppSiteId = id(832);
+		vi.spyOn(CloudSurfacesClient.prototype, "isSurfacesEnabled").mockResolvedValue(true);
+		vi.spyOn(CloudSurfacesClient.prototype, "listSurfaces").mockResolvedValue([website, webApp]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getSurfaceWorkspace").mockImplementation(async (surfaceId: string) =>
+			surfaceWorkspace([], { surface: surfaceId === webApp.id ? webApp : website }),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "listAutomations").mockResolvedValue([]);
+		vi.spyOn(CloudSurfacesClient.prototype, "getMigrationChecklist").mockRejectedValue(
+			new CloudRpcError("qorpera_surface_migration_checklist", { code: "PGRST202", message: "missing" }, 404),
+		);
+		vi.spyOn(CloudSurfacesClient.prototype, "unseenSurfaceNotes").mockResolvedValue([]);
+
+		let passSeq = 0;
+		const f = mounted(`#/c/${profileA.profileId}/s/web-app`);
+		vi.mocked(f.cloud.rpc).mockImplementation(async (name: string, args?: Record<string, unknown>) => {
+			if (name === "qorpera_list_company_sites") {
+				return [
+					siteRow(websiteSiteId, "stifteren", "Website"),
+					siteRow(webAppSiteId, "stifteren-web-app", "Web App"),
+				];
+			}
+			if (name === "qorpera_company_site_access") return { schema: "qorpera.company-site-access/v1", sites: [] };
+			if (name === "qorpera_company_site_hosting") {
+				return {
+					schema: "qorpera.company-site-hosting/v1",
+					hostsDomain: "qorpera.site",
+					hostsEnabled: true,
+					publicEnabled: true,
+					domainsEnabled: true,
+					sites: [],
+				};
+			}
+			if (name === "qorpera_site_member_pass") {
+				passSeq += 1;
+				const slug = args?.p_site === webAppSiteId ? "stifteren-web-app" : "stifteren";
+				return {
+					schema: "qorpera.site-member-pass/v1",
+					state: "open",
+					host: `${slug}.qorpera.site`,
+					pass: `${VALID_PASS.slice(0, -1)}${passSeq}`,
+					expiresAt: "2026-11-27T10:01:00Z",
+					action: `https://${slug}.qorpera.site/__qorpera/member`,
+				};
+			}
+			throw new Error(`Unexpected RPC: ${name}`);
+		});
+		const completeSiteDoor = () => {
+			const iframe = f.root.querySelector<HTMLIFrameElement>("main iframe.site-frame")!;
+			expect(iframe).not.toBeNull();
+			const posted: unknown[] = [];
+			vi.spyOn(iframe.contentWindow!, "postMessage").mockImplementation(((message: unknown) => {
+				posted.push(message);
+			}) as never);
+			const ready = new MessageEvent("message", { data: { type: SITE_DOOR_READY }, origin: location.origin });
+			Object.defineProperty(ready, "source", { value: iframe.contentWindow });
+			window.dispatchEvent(ready);
+			const shown = new MessageEvent("message", { data: { type: SITE_DOOR_SHOWN }, origin: location.origin });
+			Object.defineProperty(shown, "source", { value: iframe.contentWindow });
+			window.dispatchEvent(shown);
+			return posted;
+		};
+
+		await draw();
+		await draw();
+		await draw();
+		expect(completeSiteDoor()[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(true);
+
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/s/web-app`;
+		await draw();
+		location.hash = `#/c/${profileA.profileId}/s/website`;
+		await draw();
+		await draw();
+		await draw();
+
+		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(false);
+		expect(completeSiteDoor()[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(true);
+
+		location.hash = `#/c/${profileA.profileId}/s/web-app`;
+		await draw();
+		await draw();
+		await draw();
+
+		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(false);
+		expect(completeSiteDoor()[0]).toMatchObject({ type: SITE_DOOR_PASS });
+		expect(f.root.querySelector("main .site-glass")?.classList.contains("is-shown")).toBe(true);
 	});
 });

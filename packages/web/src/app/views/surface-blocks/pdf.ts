@@ -25,6 +25,7 @@ interface LoadedPdf {
 interface PendingPdfFrame {
 	readonly bytes: Uint8Array;
 	readonly title: string;
+	sentWindow: Window | null;
 }
 
 export function formatPdfBytes(bytes: number): string {
@@ -60,13 +61,11 @@ export class SurfacePdfViewer {
 				const data = event.data as { type?: unknown } | null;
 				if (event.origin !== location.origin || data?.type !== PDF_PREVIEW_READY) return;
 				for (const [frame, pending] of this.#pendingFrames) {
-					if (!frame.isConnected) {
-						this.#pendingFrames.delete(frame);
-						continue;
-					}
+					if (!frame.isConnected) continue;
 					const target = frame.contentWindow;
 					if (!target || event.source !== target) continue;
-					this.#pendingFrames.delete(frame);
+					if (pending.sentWindow === target) return;
+					pending.sentWindow = target;
 					target.postMessage(
 						{ type: PDF_PREVIEW_DATA, bytes: pending.bytes, title: pending.title },
 						location.origin,
@@ -159,7 +158,7 @@ export class SurfacePdfViewer {
 					title,
 				});
 				mountedFrame = frame;
-				this.#pendingFrames.set(frame, { bytes, title });
+				this.#pendingFrames.set(frame, { bytes, title, sentWindow: null });
 				stage.replaceChildren(frame);
 			},
 			() => {

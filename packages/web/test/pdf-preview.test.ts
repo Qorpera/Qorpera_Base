@@ -168,6 +168,23 @@ describe("pdf preview door", () => {
 
 			window.dispatchEvent(ready);
 			expect(post).toHaveBeenCalledTimes(1);
+
+			card.remove();
+			document.body.append(card);
+			const reloadedWindow = { postMessage: vi.fn() } as unknown as Window;
+			Object.defineProperty(frame, "contentWindow", { configurable: true, get: () => reloadedWindow });
+			const reloadedReady = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
+			Object.defineProperty(reloadedReady, "source", { value: reloadedWindow });
+			window.dispatchEvent(reloadedReady);
+			expect(reloadedWindow.postMessage).toHaveBeenCalledTimes(1);
+			expect(reloadedWindow.postMessage).toHaveBeenCalledWith(
+				{ type: PDF_PREVIEW_DATA, bytes, title: "Q3 Report" },
+				location.origin,
+			);
+
 			viewer.dispose();
 			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:download"));
 		} finally {
