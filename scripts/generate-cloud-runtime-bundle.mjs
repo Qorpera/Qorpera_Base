@@ -8,25 +8,65 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929029499_runtime_bundle_activation_v294.sql";
-const activationVersion = 294;
-const previousActivationVersion = 293;
-const previousActivationSha256 = "a0f02b961194bfc1c7f786fd581d81986026f9b1f92788635c2d40cfb9b840df";
+const activation = "supabase/migrations/20260929029599_runtime_bundle_activation_v295.sql";
+const activationVersion = 295;
+const previousActivationVersion = 294;
+const previousActivationSha256 = "5483d84fcdfa723e6fbdb0f0b7568b586568fcc7722fbca77b29dc5cb5846b13";
 const activationRequires = Object.freeze([
 	[
 		"20260930926000_company_mail_bare_handle",
-		"#2467 (bare-handle company email addresses): bundle 294 pairs with the bare-handle branch of qorpera_mail_admit_local_part",
+		"#2467 (bare-handle company email addresses): bundle 295 pairs with the bare-handle branch of qorpera_mail_admit_local_part",
 		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_mail_admit_local_part(uuid,text,uuid)')), ''), 'v_box := null;') > 0",
 	],
 	[
 		"20260930927000_google_mailboxes",
-		"#2472 (Google mail in the Mailbox): bundle 294 pairs with qorpera_google_mailboxes",
+		"#2472 (Google mail in the Mailbox): bundle 295 pairs with qorpera_google_mailboxes",
 		"to_regclass('public.qorpera_google_mailboxes') is not null",
 	],
 	[
 		"20260930931000_mailbox_email_actions",
-		"#2483 (mailbox and Gmail email actions): bundle 294 pairs with qorpera_manage_agent_mail",
+		"#2483 (mailbox and Gmail email actions): bundle 295 pairs with qorpera_manage_agent_mail",
 		"to_regprocedure('public.qorpera_manage_agent_mail(jsonb,text,jsonb)') is not null",
+	],
+	[
+		"20260930933000_surface_worker_guard_and_reconcile_hygiene",
+		"#2488 (surface worker guard and supersedeKey): bundle 295 pairs with supersede_key on qorpera_surface_changes",
+		"exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'qorpera_surface_changes' and column_name = 'supersede_key')",
+	],
+	[
+		"20260930934000_surface_repo_subpath_and_branch",
+		"#2490 (surface repository subpath and branch): bundle 295 pairs with qorpera_surface_repository_subpath_valid",
+		"to_regprocedure('public.qorpera_surface_repository_subpath_valid(text)') is not null",
+	],
+	[
+		"20260930935000_surface_app_host_server_hosting",
+		"#2492 (surface server and hybrid hosting): bundle 295 pairs with qorpera_surface_site_deployment_register",
+		"exists (select 1 from pg_proc where pronamespace = 'public'::regnamespace and proname = 'qorpera_surface_site_deployment_register')",
+	],
+	[
+		"20260930936000_surface_app_secrets_and_auth_unblock",
+		"#2493 (app secrets, linked database, and auth unblock): bundle 295 pairs with qorpera_get_surface_app_runtime_config",
+		"to_regprocedure('public.qorpera_get_surface_app_runtime_config(uuid)') is not null",
+	],
+	[
+		"20260930937000_app_workbench_tracks_backend",
+		"#2494 (app workbench tracks, artifacts, and live progress): bundle 295 pairs with qorpera_surface_session_artifacts",
+		"to_regclass('public.qorpera_surface_session_artifacts') is not null",
+	],
+	[
+		"20260930938000_github_track_pr_sync_and_webhooks",
+		"#2497 (GitHub track PR sync and webhooks): bundle 295 pairs with qorpera_surface_github_webhook_receipts",
+		"to_regclass('public.qorpera_surface_github_webhook_receipts') is not null",
+	],
+	[
+		"20260930939000_surface_inspect_receipt_and_activity_hygiene",
+		"#2500 (studio-inspect receipt hygiene): bundle 295 pairs with requires_company_revision exemption in qorpera_folder_complete_run_job",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_complete_run_job(uuid,text,uuid,text,uuid,uuid,uuid,jsonb)')), ''), 'requires_company_revision') > 0",
+	],
+	[
+		"20260930940000_git_http_remote_and_ops_telemetry",
+		"#2503 (scoped Git HTTPS remote, ops executor, and app telemetry): bundle 295 pairs with qorpera_code_git_tokens and qorpera_app_telemetry_hourly",
+		"to_regclass('public.qorpera_code_git_tokens') is not null and to_regclass('public.qorpera_app_telemetry_hourly') is not null",
 	],
 ]);
 const activationRequiresSql = activationRequires
