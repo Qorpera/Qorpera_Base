@@ -1,6 +1,7 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import {
 	ENABLE_BANKING_ORIGIN,
+	EnableBankingApplicationInactive,
 	EnableBankingClient,
 	EnableBankingSessionEnded,
 } from "@qorpera/runtime/cloud-connector-enable-banking";
@@ -261,6 +262,15 @@ describe("the Enable Banking client", () => {
 			).balances("u-1", signal);
 		await expect(answer({ error: "EXPIRED_SESSION", message: "Session expired" }, 401)).rejects.toBeInstanceOf(
 			EnableBankingSessionEnded,
+		);
+		await expect(answer({ code: 403, message: "Application is not active" }, 403)).rejects.toSatisfy(
+			(error: unknown) =>
+				error instanceof EnableBankingApplicationInactive &&
+				error instanceof ConnectorRequestError &&
+				error.reason === "forbidden",
+		);
+		await expect(answer({ error: "APPLICATION_NOT_ACTIVE" }, 403)).rejects.toBeInstanceOf(
+			EnableBankingApplicationInactive,
 		);
 		await expect(answer({ error: "REVOKED_SESSION" }, 401)).rejects.toMatchObject({ code: "REVOKED_SESSION" });
 		await expect(answer({ error: "ASPSP_RATE_LIMIT_EXCEEDED" }, 429)).rejects.toMatchObject({

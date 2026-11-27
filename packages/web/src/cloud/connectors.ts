@@ -461,21 +461,27 @@ export function createWebConnectors(
 			// This tab's proof: only its hash goes to the broker now; the proof
 			// itself only with the confirmation after the provider sends us back.
 			const browserProof = base64Url(crypto.getRandomValues(new Uint8Array(32)));
-			const started = connectorRecord(
-				await capture.post(
-					`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
-					{
-						schema: "qorpera.cloud-connector-oauth-start/v2",
-						captureCapability: issued.captureCapability,
-						// The broker returns only to the app's root page; the route is in the hash.
-						returnTo,
-						browserProofSha256: await sha256Hex(browserProof),
-						...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
-					},
-					signal,
-				),
-				"sign-in start",
+			const answer = await capture.call(
+				`${issued.serviceOrigin}/v1/oauth/${issued.ticketId}/start?company=${company}`,
+				{
+					schema: "qorpera.cloud-connector-oauth-start/v2",
+					captureCapability: issued.captureCapability,
+					// The broker returns only to the app's root page; the route is in the hash.
+					returnTo,
+					browserProofSha256: await sha256Hex(browserProof),
+					...(bank ? { bank: { name: bank.name, country: bank.country, psuType: bank.psuType } } : {}),
+				},
+				signal,
 			);
+			if (answer.status !== 200) {
+				const failed = isRecord(answer.value) ? answer.value : undefined;
+				const reason =
+					failed?.schema === "qorpera.cloud-connector-oauth-failed/v1" && typeof failed.reason === "string"
+						? failed.reason
+						: undefined;
+				throw Object.assign(new Error("The connection could not be started. Try again."), reason ? { reason } : {});
+			}
+			const started = connectorRecord(answer.value, "sign-in start");
 			const url = new URL(text(started.authorizationUrl, "sign-in URL"));
 			if (url.protocol !== "https:") throw new Error("Invalid sign-in URL.");
 			const signIn: HostedConnectorSignIn = {
