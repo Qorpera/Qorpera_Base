@@ -34,6 +34,10 @@ declare
 	v_sha_3 constant text := repeat('3', 40);
 	v_sha_4 constant text := repeat('4', 40);
 	v_msg_count integer;
+	v_before_n integer;
+	v_before_main text;
+	v_pull_n integer;
+	v_undo_res jsonb;
 begin
 	perform pg_temp.base_assert(
 		(select count(*) = 6
@@ -187,7 +191,7 @@ begin
 				'title', 'Billing redesign',
 				'html_url', 'https://github.com/Acme/Shop/pull/42',
 				'updated_at', '2026-11-27T12:00:00Z',
-				'head', jsonb_build_object('ref', 'feat/billing', 'sha', v_sha_1),
+				'head', jsonb_build_object('ref', 'feat/billing', 'sha', v_sha_1, 'repo', jsonb_build_object('full_name', 'Acme/Shop')),
 				'base', jsonb_build_object('ref', 'main')
 			)
 		)::text, 'utf8'),
@@ -215,7 +219,65 @@ begin
 		'Webhook receipt must record matched_sessions = 1'
 	);
 
-	select * into strict v_delivery_row from public.qorpera_event_deliveries where id = v_delivery_id;
+	select count(*) into v_msg_count from public.qorpera_surface_session_messages where session_id = v_session_b;
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'pull_request.opened', 'application/json',
+		convert_to(jsonb_build_object(
+			'action', 'opened',
+			'repository', jsonb_build_object('full_name', 'Acme/Shop'),
+			'pull_request', jsonb_build_object(
+				'number', 999,
+				'state', 'open',
+				'draft', false,
+				'title', 'Fork hijack attempt',
+				'html_url', 'https://github.com/Acme/Shop/pull/999',
+				'updated_at', '2026-11-27T12:01:00Z',
+				'head', jsonb_build_object('ref', 'feat/search-v2', 'sha', v_sha_2, 'repo', jsonb_build_object('full_name', 'attacker/shop')),
+				'base', jsonb_build_object('ref', 'main')
+			)
+		)::text, 'utf8'),
+		100, repeat('9', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-fork-hijack'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select external_pr is null from public.qorpera_surface_sessions where id = v_session_b)
+		and (select count(*) from public.qorpera_surface_session_messages where session_id = v_session_b) = v_msg_count,
+		'Fork pull_request.opened with same branch name must not hijack track or post messages'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'pull_request.opened', 'application/json',
+		convert_to(jsonb_build_object(
+			'action', 'opened',
+			'repository', jsonb_build_object('full_name', 'Acme/Shop'),
+			'pull_request', jsonb_build_object(
+				'number', 998,
+				'state', 'open',
+				'draft', false,
+				'title', 'Duplicate branch PR',
+				'html_url', 'https://github.com/Acme/Shop/pull/998',
+				'updated_at', '2026-11-27T12:01:30Z',
+				'head', jsonb_build_object('ref', 'feat/billing', 'sha', v_sha_1, 'repo', jsonb_build_object('full_name', 'Acme/Shop')),
+				'base', jsonb_build_object('ref', 'main')
+			)
+		)::text, 'utf8'),
+		100, repeat('8', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-other-pr-same-branch'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select (external_pr ->> 'number')::integer = 42 from public.qorpera_surface_sessions where id = v_session_a),
+		'A different PR number on the same branch must not overwrite an already linked external_pr'
+	);
+
+	select * into strict v_delivery_row from public.qorpera_event_deliveries where delivery_key = 'gh-del-opened-1';
 	select count(*) into v_msg_count from public.qorpera_surface_session_messages where session_id = v_session_a;
 	perform pg_temp.base_assert(
 		public.qorpera_surface_apply_github_webhook_delivery(v_delivery_row) = 'duplicate'
@@ -245,6 +307,39 @@ begin
 		'Verified pull_request_review.submitted must append review message'
 	);
 
+	update public.qorpera_surface_sessions
+	set checks_summary = jsonb_build_object(
+		'status', 'passed',
+		'commands', jsonb_build_array(jsonb_build_object('name', 'vitest', 'status', 'passed', 'durationMs', 420))
+	)
+	where id = v_session_a;
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / lint',
+				'conclusion', 'failure',
+				'head_sha', v_sha_1,
+				'pull_requests', jsonb_build_array(jsonb_build_object('number', 42))
+			)
+		)::text, 'utf8'),
+		100, repeat('7', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-fail'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'failed'
+			and external_pr ->> 'checksStatus' = 'failed'
+			and checks_summary -> 'commands' -> 0 ->> 'name' = 'vitest'
+		 from public.qorpera_surface_sessions where id = v_session_a),
+		'Failed check_run must mark status failed while preserving existing checks_summary.commands'
+	);
+
 	v_delivery_id := extensions.gen_random_uuid();
 	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
 	values (
@@ -264,9 +359,33 @@ begin
 	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-1'
 	where id = v_delivery_id;
 	perform pg_temp.base_assert(
-		(select checks_summary ->> 'status' = 'passed' and external_pr ->> 'checksStatus' = 'passed'
+		(select checks_summary ->> 'status' = 'failed'
+			and external_pr ->> 'checksStatus' = 'failed'
+			and checks_summary -> 'commands' -> 0 ->> 'name' = 'vitest'
 		 from public.qorpera_surface_sessions where id = v_session_a),
-		'Verified check_run.completed success must update checks_summary and external_pr.checksStatus'
+		'Later passing check_run on same headSha must not downgrade failed status and must preserve commands'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'other/repo'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / foreign',
+				'conclusion', 'failure',
+				'head_sha', v_sha_2
+			)
+		)::text, 'utf8'),
+		100, repeat('6', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-foreign'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary is null from public.qorpera_surface_sessions where id = v_session_b),
+		'Cross-repo check_run matching branch_head_sha must be ignored'
 	);
 
 	v_delivery_id := extensions.gen_random_uuid();
@@ -285,8 +404,33 @@ begin
 	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-push-1'
 	where id = v_delivery_id;
 	perform pg_temp.base_assert(
-		(select external_pr ->> 'headSha' = v_sha_3 from public.qorpera_surface_sessions where id = v_session_a),
-		'Verified push webhook must update external_pr.headSha'
+		(select external_pr ->> 'headSha' = v_sha_3 and external_pr ->> 'checksStatus' = 'pending'
+		 from public.qorpera_surface_sessions where id = v_session_a),
+		'Verified push webhook must update external_pr.headSha and reset checksStatus to pending'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
+				'name', 'ci / build',
+				'conclusion', 'success',
+				'head_sha', v_sha_3,
+				'pull_requests', jsonb_build_array(jsonb_build_object('number', 42))
+			)
+		)::text, 'utf8'),
+		100, repeat('5', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-new-sha'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary ->> 'status' = 'passed' and external_pr ->> 'checksStatus' = 'passed'
+		 from public.qorpera_surface_sessions where id = v_session_a),
+		'Passing check_run on new pushed headSha must update checks_summary and external_pr.checksStatus to passed'
 	);
 
 	v_delivery_id := extensions.gen_random_uuid();
@@ -302,7 +446,7 @@ begin
 				'merged', true,
 				'title', 'Billing redesign',
 				'html_url', 'https://github.com/acme/shop/pull/42',
-				'head', jsonb_build_object('ref', 'feat/billing', 'sha', v_sha_3),
+				'head', jsonb_build_object('ref', 'feat/billing', 'sha', v_sha_3, 'repo', jsonb_build_object('full_name', 'acme/shop')),
 				'base', jsonb_build_object('ref', 'main')
 			)
 		)::text, 'utf8'),
@@ -332,6 +476,26 @@ begin
 	);
 
 	perform pg_temp.base_claims('service_role');
+	v_res := public.qorpera_folder_code_github_sync(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'gh-unbound-repo',
+			'op', 'sync',
+			'owner', 'company',
+			'name', 'shop',
+			'github', 'acme/shop',
+			'remoteBranch', 'main'
+		)
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'refused' and v_res ->> 'reason' = 'repo_not_authorized',
+		'Unbound GitHub target without imported_from or repo grant must refuse with repo_not_authorized: ' || v_res::text
+	);
+
+	update public.qorpera_code_repositories
+	set imported_from = jsonb_build_object('kind', 'github', 'repository', 'acme/shop')
+	where environment_id = v_env and owner = 'company' and name = 'shop';
+
 	v_res := public.qorpera_folder_code_github_sync(
 		pg_temp.c3_alice(),
 		jsonb_build_object(
@@ -369,7 +533,93 @@ begin
 		connector_id, operation_id, operation_version, tool_name, issued_by_user_id
 	)
 	values
-		(v_profile, v_env, v_secret, v_alice, 'github', 'get_pull_request', 1, 'github_get_pull_request', v_owner),
+		(v_profile, v_env, v_secret, v_alice, 'github', 'get_pull_request', 1, 'github_get_pull_request', v_owner);
+
+	v_res := public.qorpera_folder_code_github_sync(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'gh-push-readonly',
+			'op', 'push',
+			'owner', 'company',
+			'name', 'shop',
+			'github', 'acme/shop',
+			'remoteBranch', 'feat/test'
+		)
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'refused' and v_res ->> 'reason' = 'no_github_write_grant',
+		'Read-only agent must be refused push with no_github_write_grant: ' || v_res::text
+	);
+
+	insert into public.qorpera_code_requests(
+		environment_id, owner, name, profile_id, kind, input, by_kind, by_user_id, by_agent_id
+	)
+	values (
+		v_env, 'company', 'shop', v_profile, 'github_sync',
+		jsonb_build_object('op', 'push', 'githubRepo', 'acme/shop', 'remoteBranch', 'feat/ro', 'localRef', 'refs/heads/main', 'allowDefaultBranch', false),
+		'agent', v_owner, v_alice
+	)
+	returning id into v_req_id;
+	set local role service_role;
+	v_claim := public.qorpera_code_requests_claim('exec-1170', repeat('5', 64), 5, array['github_sync']);
+	reset role;
+	v_token := (v_claim -> 'requests' -> 0 ->> 'token')::uuid;
+	set local session authorization qorpera_secret_broker;
+	begin
+		perform public.qorpera_authorize_coding_repository_credential(
+			v_broker, repeat('c', 64), v_req_id, v_token, 'exec-1170',
+			jsonb_build_object('host', 'github.com', 'owner', 'acme', 'name', 'shop', 'baseBranch', 'feat/ro')
+		);
+		perform pg_temp.base_assert(false, 'Broker must refuse push credential for read-only agent');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.base_assert(v_errcode = '42501', 'Expected 42501 for read-only push credential, got ' || v_errcode);
+	end;
+	reset session authorization;
+	set local role service_role;
+	perform public.qorpera_code_request_finish(
+		'exec-1170', repeat('5', 64), v_req_id, v_token,
+		jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'failed', 'code', 'AUTH_REFUSED')
+	);
+	reset role;
+
+	insert into public.qorpera_code_requests(
+		environment_id, owner, name, profile_id, kind, input, by_kind, by_user_id, by_agent_id
+	)
+	values (
+		v_env, 'company', 'shop', v_profile, 'github_sync',
+		jsonb_build_object('op', 'sync', 'githubRepo', 'evil/other', 'remoteBranch', 'main'),
+		'agent', v_owner, v_alice
+	)
+	returning id into v_req_id;
+	set local role service_role;
+	v_claim := public.qorpera_code_requests_claim('exec-1170', repeat('5', 64), 5, array['github_sync']);
+	reset role;
+	v_token := (v_claim -> 'requests' -> 0 ->> 'token')::uuid;
+	set local session authorization qorpera_secret_broker;
+	begin
+		perform public.qorpera_authorize_coding_repository_credential(
+			v_broker, repeat('c', 64), v_req_id, v_token, 'exec-1170',
+			jsonb_build_object('host', 'github.com', 'owner', 'evil', 'name', 'other', 'baseBranch', 'main')
+		);
+		perform pg_temp.base_assert(false, 'Broker must refuse credential for unbound GitHub repo');
+	exception when others then
+		get stacked diagnostics v_errcode = returned_sqlstate;
+		perform pg_temp.base_assert(v_errcode = '42501', 'Expected 42501 for unbound repo credential, got ' || v_errcode);
+	end;
+	reset session authorization;
+	set local role service_role;
+	perform public.qorpera_code_request_finish(
+		'exec-1170', repeat('5', 64), v_req_id, v_token,
+		jsonb_build_object('schema', 'qorpera.code-request-outcome/v1', 'state', 'failed', 'code', 'REPO_REFUSED')
+	);
+	reset role;
+
+	insert into public.qorpera_cloud_secret_operation_grants(
+		profile_id, environment_id, secret_id, staff_agent_id,
+		connector_id, operation_id, operation_version, tool_name, issued_by_user_id
+	)
+	values
 		(v_profile, v_env, v_secret, v_alice, 'github', 'create_issue', 1, 'github_create_issue', v_owner);
 
 	perform pg_temp.base_assert(
@@ -377,6 +627,11 @@ begin
 		and public.qorpera_backfill_connector_operation_grants('github', 'create_issue', 'create_pull_request', 1) = 1,
 		'Grant backfill must propagate new GitHub PR operations to granted agents'
 	);
+
+	select last_change, last_main
+	into v_before_n, v_before_main
+	from public.qorpera_code_repositories
+	where environment_id = v_env and owner = 'company' and name = 'shop';
 
 	v_res := public.qorpera_folder_code_github_sync(
 		pg_temp.c3_alice(),
@@ -446,21 +701,110 @@ begin
 			'result', 'pulled',
 			'githubRepo', 'Acme/Shop',
 			'remoteBranch', 'main',
-			'mainBefore', v_sha_1,
-			'mainAfter', v_sha_4,
-			'remoteSha', v_sha_4,
+			'mainBefore', coalesce(v_before_main, v_sha_1),
+			'mainAfter', v_sha_2,
+			'remoteSha', v_sha_2,
 			'mode', 'fast-forward',
-			'commitsPulled', 3
+			'commitsPulled', 2
 		)
 	);
 	reset role;
-	perform pg_temp.base_assert(v_fin ->> 'state' = 'recorded', 'Pull finish must record: ' || v_fin::text);
 	perform pg_temp.base_assert(
-		(select last_main = v_sha_4 and main_sha = v_sha_4
+		v_fin ->> 'state' = 'recorded' and (v_fin ->> 'change')::integer = v_before_n + 1,
+		'Contiguous pull finish must append numbered change row: ' || v_fin::text
+	);
+	perform pg_temp.base_assert(
+		(select kind = 'pull' and state = 'landed' and how = 'fast-forward'
+			and main_before = coalesce(v_before_main, v_sha_1) and main_after = v_sha_2
+			and checks_state = 'not_run'
+		 from public.qorpera_code_changes
+		 where environment_id = v_env and owner = 'company' and name = 'shop' and n = v_before_n + 1),
+		'Pulled change row must record kind=pull, state=landed, how=fast-forward, and SHAs'
+	);
+	perform pg_temp.base_assert(
+		(select last_change = v_before_n + 1 and last_main = v_sha_2 and main_sha = v_sha_2
 		 from public.qorpera_code_repositories
 		 where environment_id = v_env and owner = 'company' and name = 'shop'),
-		'Pulled finish must advance repository last_main and main_sha'
+		'Pulled finish must advance repository last_change, last_main, and main_sha'
 	);
+
+	v_res := public.qorpera_folder_code_github_sync(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'gh-pull-gap',
+			'op', 'pull',
+			'owner', 'company',
+			'name', 'shop',
+			'github', 'Acme/Shop',
+			'remoteBranch', 'main'
+		)
+	);
+	v_req_id := (v_res ->> 'requestId')::uuid;
+	set local role service_role;
+	v_claim := public.qorpera_code_requests_claim('exec-1170', repeat('5', 64), 5, array['github_sync']);
+	v_token := (v_claim -> 'requests' -> 0 ->> 'token')::uuid;
+	v_fin := public.qorpera_code_request_finish(
+		'exec-1170', repeat('5', 64), v_req_id, v_token,
+		jsonb_build_object(
+			'schema', 'qorpera.code-request-outcome/v1',
+			'state', 'done',
+			'result', 'pulled',
+			'githubRepo', 'Acme/Shop',
+			'remoteBranch', 'main',
+			'mainBefore', v_sha_3,
+			'mainAfter', v_sha_4,
+			'remoteSha', v_sha_4,
+			'mode', 'merged',
+			'commitsPulled', 1
+		)
+	);
+	reset role;
+	v_pull_n := (v_fin ->> 'change')::integer;
+	perform pg_temp.base_assert(
+		v_pull_n = v_before_n + 3
+		and (select kind = 'found' and main_before = v_sha_2 and main_after = v_sha_3
+			 from public.qorpera_code_changes
+			 where environment_id = v_env and owner = 'company' and name = 'shop' and n = v_before_n + 2)
+		and (select kind = 'pull' and how = 'merged' and main_before = v_sha_3 and main_after = v_sha_4
+			 from public.qorpera_code_changes
+			 where environment_id = v_env and owner = 'company' and name = 'shop' and n = v_pull_n),
+		'Pull with a gap must insert a found filler first and then the pull row: ' || v_fin::text
+	);
+
+	v_undo_res := public.qorpera_folder_request_code_undo_v2(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'undo-pulled-change',
+			'owner', 'company',
+			'name', 'shop',
+			'change', v_pull_n,
+			'reason', 'Revert pulled commit'
+		)
+	);
+	perform pg_temp.base_assert(
+		v_undo_res ->> 'state' = 'queued',
+		'Pulled change must be undoable via qorpera_folder_request_code_undo_v2: ' || v_undo_res::text
+	);
+	delete from public.qorpera_code_requests where id = (v_undo_res ->> 'requestId')::uuid;
+
+	insert into public.qorpera_coding_repository_grants(environment_id, staff_agent_id, repository, enabled)
+	values (v_env, v_alice, jsonb_build_object('host', 'github.com', 'owner', 'acme', 'name', 'extra', 'baseBranch', 'main'), true);
+	v_res := public.qorpera_folder_code_github_sync(
+		pg_temp.c3_alice(),
+		jsonb_build_object(
+			'operationKey', 'gh-sync-granted-repo',
+			'op', 'sync',
+			'owner', 'company',
+			'name', 'shop',
+			'github', 'acme/extra',
+			'remoteBranch', 'main'
+		)
+	);
+	perform pg_temp.base_assert(
+		v_res ->> 'state' = 'queued',
+		'Explicit enabled GitHub coding repository grant must authorize sync: ' || v_res::text
+	);
+	delete from public.qorpera_code_requests where id = (v_res ->> 'requestId')::uuid;
 
 	v_res := public.qorpera_folder_code_github_sync(
 		pg_temp.c3_alice(),
@@ -483,7 +827,19 @@ begin
 
 	set local role service_role;
 	v_claim := public.qorpera_code_requests_claim('exec-1170', repeat('5', 64), 5, array['github_sync']);
+	reset role;
 	v_token := (v_claim -> 'requests' -> 0 ->> 'token')::uuid;
+	set local session authorization qorpera_secret_broker;
+	v_auth := public.qorpera_authorize_coding_repository_credential(
+		v_broker, repeat('c', 64), v_req_id, v_token, 'exec-1170',
+		jsonb_build_object('host', 'github.com', 'owner', 'acme', 'name', 'shop', 'baseBranch', 'main')
+	);
+	perform pg_temp.base_assert(
+		v_auth ->> 'connectorId' = 'github',
+		'Agent with create_pull_request grant must be authorized by broker for create_pr'
+	);
+	reset session authorization;
+	set local role service_role;
 	v_fin := public.qorpera_code_request_finish(
 		'exec-1170', repeat('5', 64), v_req_id, v_token,
 		jsonb_build_object(

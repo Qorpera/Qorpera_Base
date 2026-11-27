@@ -1359,8 +1359,6 @@ export class CodeHostRequests {
 		return this.#said(request, outcome, finished);
 	}
 
-	/** An import this executor did not ask for: it has no import runner, or one runs already. It is put back (`busy`)
-	 * for a claim that asks for it. */
 	async #githubSyncing(request: CodeGitHubSyncRequest, signal: AbortSignal): Promise<Ended> {
 		const runner = this.#githubSync;
 		if (!runner) {
@@ -1382,6 +1380,8 @@ export class CodeHostRequests {
 		return this.#said(request, outcome, await this.#finish(request, outcome, signal, 2));
 	}
 
+	/** An import this executor did not ask for: it has no import runner, or one runs already. It is put back (`busy`)
+	 * for a claim that asks for it. */
 	async #putBack(request: CodeImportRequest, signal: AbortSignal): Promise<Ended> {
 		this.#report({
 			event: "code-request-error",

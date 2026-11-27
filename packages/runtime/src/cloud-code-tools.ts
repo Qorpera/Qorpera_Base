@@ -998,6 +998,10 @@ function githubSyncRefused(
 			return "No matching surface session was found for sessionId in this company.";
 		case "no_github_connection":
 			return "No active company GitHub connection is available to this agent. Ask an owner or admin to connect GitHub under Settings -> Company connections.";
+		case "no_github_write_grant":
+			return "This agent does not have GitHub pull-request write permission on the company connection. Ask an owner or admin to grant GitHub pull request access.";
+		case "repo_not_authorized":
+			return `Target GitHub repository ${request.github} is not linked to ${request.owner}/${request.name} or granted to this agent.`;
 		case "busy":
 			return `Another repository update is already running on ${request.owner}/${request.name}. Call again with a new operationKey when it finishes.`;
 		case "no_executor":
@@ -1787,6 +1791,7 @@ export function cloudCodeTools(options: {
 			result: ended.result ?? "ok",
 			owner: request.owner,
 			name: request.name,
+			...(ended.change === null ? {} : { change: ended.change }),
 			...((ended.data ?? {}) as Record<string, JsonValue>),
 		});
 		context.observation?.update({ outputBytes: Buffer.byteLength(text) });

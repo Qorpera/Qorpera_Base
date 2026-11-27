@@ -116,7 +116,15 @@ const CODE_LIFECYCLE_REASONS = [
 	"sessions_active",
 	"surface_backed",
 ] as const;
-const CODE_GITHUB_SYNC_REASONS = ["archived", "no_session", "no_github_connection", "busy", "no_executor"] as const;
+const CODE_GITHUB_SYNC_REASONS = [
+	"archived",
+	"no_session",
+	"no_github_connection",
+	"no_github_write_grant",
+	"repo_not_authorized",
+	"busy",
+	"no_executor",
+] as const;
 const CODE_PICTURE_REASONS = ["missing", "not_a_file", "too_large", "not_a_picture", "not_shared"] as const;
 const CODE_REQUEST_KINDS_V2 = ["undo", "download", "restore", "query", "lifecycle", "github_sync"] as const;
 const CODE_REQUEST_STATES = ["queued", "running", "done", "refused", "failed"] as const;

@@ -298,6 +298,7 @@ declare
 	v_pr_number integer;
 	v_pr_state text;
 	v_head_branch text;
+	v_head_repo text;
 	v_base_branch text;
 	v_head_sha text;
 	v_pr_title text;
@@ -313,6 +314,10 @@ declare
 	v_check_name text;
 	v_conclusion text;
 	v_check_status text;
+	v_effective_status text;
+	v_prev_status text;
+	v_same_sha boolean;
+	v_check_time text;
 	v_pr_numbers text[];
 	v_push_ref text;
 	v_push_branch text;
@@ -373,6 +378,7 @@ begin
 			else left(coalesce(nullif(btrim(v_pr ->> 'state'), ''), 'open'), 40)
 		end;
 		v_head_branch := nullif(left(btrim(coalesce(v_pr #>> '{head,ref}', '')), 200), '');
+		v_head_repo := lower(btrim(coalesce(v_pr #>> '{head,repo,full_name}', '')));
 		v_base_branch := nullif(left(btrim(coalesce(v_pr #>> '{base,ref}', '')), 200), '');
 		v_head_sha := case
 			when coalesce(v_pr #>> '{head,sha}', '') ~ '^[0-9a-f]{40}$' then v_pr #>> '{head,sha}'
@@ -400,6 +406,14 @@ begin
 					)
 					or (
 						v_head_branch is not null
+						and v_head_repo = v_repo
+						and (
+							s.external_pr is null
+							or (
+								lower(coalesce(s.external_pr ->> 'repository', '')) = v_repo
+								and (s.external_pr ->> 'number') = v_pr_number::text
+							)
+						)
 						and s.track_branch is not null
 						and lower(s.track_branch) = lower(v_head_branch)
 						and sf.source_kind = 'code_repo'
@@ -534,9 +548,12 @@ begin
 			return 'ignored';
 		end if;
 
+		v_check_time := to_char(v_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"');
+
 		for v_session in
 			select s.*
 			from public.qorpera_surface_sessions s
+			join public.qorpera_surfaces sf on sf.id = s.surface_id
 			where s.profile_id = v_hook.profile_id
 				and (
 					(
@@ -550,22 +567,37 @@ begin
 					or (
 						v_head_sha is not null
 						and s.branch_head_sha = v_head_sha
+						and sf.source_kind = 'code_repo'
+						and lower(coalesce(sf.repository_key, '')) = v_repo
 					)
 				)
 			order by s.id asc
 			for update of s
 		loop
+			v_same_sha := v_head_sha is not null and (
+				(v_session.external_pr is not null and v_session.external_pr ->> 'headSha' = v_head_sha)
+				or (v_session.external_pr is null and v_session.branch_head_sha = v_head_sha)
+			);
+			v_prev_status := coalesce(
+				v_session.external_pr ->> 'checksStatus',
+				v_session.checks_summary ->> 'status'
+			);
+			v_effective_status := case
+				when v_same_sha and v_prev_status = 'failed' and v_check_status <> 'failed' then 'failed'
+				else v_check_status
+			end;
+
 			update public.qorpera_surface_sessions
 			set
-				checks_summary = jsonb_build_object(
-					'status', v_check_status,
+				checks_summary = coalesce(v_session.checks_summary, '{}'::jsonb) || jsonb_build_object(
+					'status', v_effective_status,
 					'summary', format('%s: %s', v_check_name, coalesce(nullif(v_conclusion, ''), v_check_status)),
-					'updatedAt', to_char(v_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+					'updatedAt', v_check_time
 				),
 				external_pr = case
 					when external_pr is not null then external_pr || jsonb_build_object(
-						'checksStatus', v_check_status,
-						'updatedAt', to_char(v_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+						'checksStatus', v_effective_status,
+						'updatedAt', v_check_time
 					)
 					else external_pr
 				end,
@@ -627,6 +659,10 @@ begin
 				external_pr = case
 					when external_pr is not null and v_push_after is not null then external_pr || jsonb_build_object(
 						'headSha', v_push_after,
+						'checksStatus', case
+							when external_pr ->> 'headSha' is distinct from v_push_after then 'pending'
+							else coalesce(external_pr ->> 'checksStatus', 'pending')
+						end,
 						'updatedAt', to_char(v_now at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 					)
 					else external_pr
@@ -674,6 +710,11 @@ create trigger qorpera_surface_tracks_from_github
 	after update of status on public.qorpera_event_deliveries
 	for each row when (new.status = 'verified' and old.status is distinct from 'verified')
 	execute function public.qorpera_surface_tracks_from_github_delivery();
+
+alter table public.qorpera_code_changes
+	drop constraint qorpera_code_changes_kind_check,
+	add constraint qorpera_code_changes_kind_check
+		check (kind in ('landing', 'undo', 'restore', 'found', 'import', 'pull'));
 
 alter table public.qorpera_code_requests
 	drop constraint qorpera_code_requests_kind_check,
@@ -789,11 +830,53 @@ select pg_temp.gh_sync_patch(
 		where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
 		v_stored := p_outcome;
 	elsif v_request.kind = 'github_sync' and v_result = 'pulled' then
-		update public.qorpera_code_repositories
-		set
-			last_main = coalesce(p_outcome ->> 'mainAfter', last_main),
-			main_sha = coalesce(p_outcome ->> 'mainAfter', main_sha)
-		where environment_id = v_repository.environment_id and owner = v_repository.owner and name = v_repository.name;
+		if p_outcome ->> 'mode' <> 'unchanged'
+			and (p_outcome ->> 'mainBefore') is distinct from (p_outcome ->> 'mainAfter') then
+			if v_repository.last_main is not null
+				and v_repository.last_main is distinct from (p_outcome ->> 'mainBefore') then
+				perform public.qorpera_code_change_found(
+					v_repository.environment_id,
+					v_repository.owner,
+					v_repository.name,
+					v_repository.last_main,
+					p_outcome ->> 'mainBefore'
+				);
+			end if;
+			v_n := public.qorpera_code_change_append(
+				v_repository.environment_id,
+				v_repository.owner,
+				v_repository.name,
+				jsonb_build_object(
+					'kind', 'pull',
+					'state', 'landed',
+					'how', p_outcome ->> 'mode',
+					'main_before', p_outcome ->> 'mainBefore',
+					'main_after', p_outcome ->> 'mainAfter',
+					'head_sha', p_outcome ->> 'remoteSha',
+					'request_id', v_request.id,
+					'staff_agent_id', v_request.by_agent_id,
+					'owner_user_id', v_request.by_user_id,
+					'checks_state', 'not_run',
+					'title', left(format(
+						'Pulled %s from GitHub (%s)',
+						p_outcome ->> 'remoteBranch',
+						p_outcome ->> 'githubRepo'
+					), 380),
+					'summary', format(
+						'Pulled %s commit(s) from %s (%s) via %s.',
+						p_outcome ->> 'commitsPulled',
+						p_outcome ->> 'githubRepo',
+						p_outcome ->> 'remoteBranch',
+						p_outcome ->> 'mode'
+					)
+				)
+			);
+			update public.qorpera_code_repositories
+			set main_sha = p_outcome ->> 'mainAfter'
+			where environment_id = v_repository.environment_id
+				and owner = v_repository.owner
+				and name = v_repository.name;
+		end if;
 		v_stored := p_outcome;
 	elsif v_request.kind = 'github_sync' and v_result = 'pr_created' then
 		if coalesce(v_request.input ->> 'sessionId', '') ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
@@ -937,6 +1020,21 @@ begin
 		where s.id = v_session_id and s.profile_id = v_run.profile_id
 	) then
 		v_result := jsonb_build_object('schema', 'qorpera.code-github-sync/v1', 'state', 'refused', 'reason', 'no_session');
+	elsif not (
+		(
+			v_repo.imported_from ->> 'kind' = 'github'
+			and lower(coalesce(v_repo.imported_from ->> 'repository', '')) = lower(v_github)
+		)
+		or exists (
+			select 1 from public.qorpera_coding_repository_grants as repo_grant
+			where repo_grant.environment_id = v_run.environment_id
+				and repo_grant.staff_agent_id = v_run.staff_agent_id
+				and repo_grant.enabled
+				and repo_grant.repository ->> 'host' = 'github.com'
+				and lower((repo_grant.repository ->> 'owner') || '/' || (repo_grant.repository ->> 'name')) = lower(v_github)
+		)
+	) then
+		v_result := jsonb_build_object('schema', 'qorpera.code-github-sync/v1', 'state', 'refused', 'reason', 'repo_not_authorized');
 	elsif not exists (
 		select 1
 		from public.qorpera_cloud_secrets as secret
@@ -946,23 +1044,40 @@ begin
 			and secret.connector_id = 'github'
 			and secret.secret_name = 'primary'
 			and secret.status = 'active'
-			and exists (
-				select 1 from public.qorpera_cloud_secret_operation_grants as grant_row
-				where grant_row.secret_id = secret.id
-					and grant_row.profile_id = secret.profile_id
-					and grant_row.environment_id = secret.environment_id
-					and grant_row.staff_agent_id = v_run.staff_agent_id
-					and grant_row.status = 'active'
-					and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
-					and exists (
-						select 1 from public.qorpera_profile_members as issuer
-						where issuer.profile_id = grant_row.profile_id
-							and issuer.user_id = grant_row.issued_by_user_id
-							and issuer.role in ('owner', 'admin')
-					)
-			)
 	) then
 		v_result := jsonb_build_object('schema', 'qorpera.code-github-sync/v1', 'state', 'refused', 'reason', 'no_github_connection');
+	elsif not exists (
+		select 1
+		from public.qorpera_cloud_secrets as secret
+		join public.qorpera_cloud_secret_operation_grants as grant_row
+			on grant_row.secret_id = secret.id
+			and grant_row.profile_id = secret.profile_id
+			and grant_row.environment_id = secret.environment_id
+		where secret.profile_id = v_run.profile_id
+			and secret.environment_id = v_run.environment_id
+			and secret.owner_kind = 'company'
+			and secret.connector_id = 'github'
+			and secret.secret_name = 'primary'
+			and secret.status = 'active'
+			and grant_row.staff_agent_id = v_run.staff_agent_id
+			and grant_row.status = 'active'
+			and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
+			and (
+				(v_op in ('push', 'create_pr') and grant_row.operation_id = 'create_pull_request')
+				or (v_op in ('sync', 'pull') and grant_row.operation_id in ('read_file', 'get_pull_request', 'list_pull_requests', 'list_branches', 'create_pull_request'))
+			)
+			and exists (
+				select 1 from public.qorpera_profile_members as issuer
+				where issuer.profile_id = grant_row.profile_id
+					and issuer.user_id = grant_row.issued_by_user_id
+					and issuer.role in ('owner', 'admin')
+			)
+	) then
+		v_result := jsonb_build_object(
+			'schema', 'qorpera.code-github-sync/v1',
+			'state', 'refused',
+			'reason', case when v_op in ('push', 'create_pr') then 'no_github_write_grant' else 'no_github_connection' end
+		);
 	elsif v_op = 'pull' and exists (
 		select 1 from public.qorpera_code_requests req
 		where req.environment_id = v_repo.environment_id
@@ -1044,9 +1159,11 @@ language plpgsql security definer set search_path = '' as $$
 declare
 	v_authority public.qorpera_cloud_secret_broker_authorities%rowtype;
 	v_request public.qorpera_code_requests%rowtype;
+	v_repo public.qorpera_code_repositories%rowtype;
 	v_secret public.qorpera_cloud_secrets%rowtype;
 	v_version public.qorpera_cloud_secret_versions%rowtype;
 	v_expected_repo text;
+	v_op text;
 begin
 	if session_user <> 'qorpera_secret_broker' then
 		raise exception 'cloud secret broker authority is required' using errcode = '42501';
@@ -1077,6 +1194,11 @@ begin
 		or v_request.lease_token is distinct from p_lease_token
 		or v_request.lease_until <= clock_timestamp() then
 		raise exception 'coding session lease is unavailable' using errcode = '42501';
+	end if;
+
+	v_op := coalesce(v_request.input ->> 'op', '');
+	if v_op not in ('sync', 'pull', 'push', 'create_pr') then
+		raise exception 'coding repository credential operation is unavailable' using errcode = '42501';
 	end if;
 
 	v_expected_repo := lower(coalesce(v_request.input ->> 'githubRepo', ''));
@@ -1119,6 +1241,41 @@ begin
 		raise exception 'coding repository grant is unavailable' using errcode = '42501';
 	end if;
 
+	select repo.* into v_repo
+	from public.qorpera_code_repositories as repo
+	where repo.environment_id = v_request.environment_id
+		and repo.owner = v_request.owner
+		and repo.name = v_request.name;
+	if v_repo.environment_id is null or not (
+		(
+			v_repo.imported_from ->> 'kind' = 'github'
+			and lower(coalesce(v_repo.imported_from ->> 'repository', '')) = v_expected_repo
+		)
+		or (
+			v_request.by_kind = 'agent'
+			and exists (
+				select 1 from public.qorpera_coding_repository_grants as repo_grant
+				where repo_grant.environment_id = v_request.environment_id
+					and repo_grant.staff_agent_id = v_request.by_agent_id
+					and repo_grant.enabled
+					and repo_grant.repository ->> 'host' = 'github.com'
+					and lower((repo_grant.repository ->> 'owner') || '/' || (repo_grant.repository ->> 'name')) = v_expected_repo
+			)
+		)
+		or (
+			v_request.by_kind <> 'agent'
+			and exists (
+				select 1 from public.qorpera_surfaces as sf
+				where sf.profile_id = v_request.profile_id
+					and sf.source_kind = 'code_repo'
+					and sf.status = 'active'
+					and lower(coalesce(sf.repository_key, '')) = v_expected_repo
+			)
+		)
+	) then
+		raise exception 'coding repository is not bound to this GitHub target' using errcode = '42501';
+	end if;
+
 	select secret.* into v_secret
 	from public.qorpera_cloud_secrets as secret
 	where secret.profile_id = v_request.profile_id
@@ -1138,6 +1295,10 @@ begin
 					and grant_row.staff_agent_id = v_request.by_agent_id
 					and grant_row.status = 'active'
 					and (grant_row.expires_at is null or grant_row.expires_at > clock_timestamp())
+					and (
+						(v_op in ('push', 'create_pr') and grant_row.operation_id = 'create_pull_request')
+						or (v_op in ('sync', 'pull') and grant_row.operation_id in ('read_file', 'get_pull_request', 'list_pull_requests', 'list_branches', 'create_pull_request'))
+					)
 					and exists (
 						select 1 from public.qorpera_profile_members as issuer
 						where issuer.profile_id = grant_row.profile_id

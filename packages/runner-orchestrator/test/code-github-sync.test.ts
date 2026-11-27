@@ -468,7 +468,7 @@ describe("CodeGitHubSync", () => {
 		});
 	});
 
-	it("creates GitHub pull requests and surfaces 422 refusals", async () => {
+	it("creates GitHub pull requests, recovers idempotently on 422 already-exists, and surfaces other 422 refusals", async () => {
 		const f = await setupFixture();
 		f.fetchMock
 			.mockResolvedValueOnce(
@@ -484,6 +484,32 @@ describe("CodeGitHubSync", () => {
 						updated_at: "2026-11-27T14:00:00Z",
 					},
 					{ status: 201 },
+				),
+			)
+			.mockResolvedValueOnce(
+				Response.json(
+					{
+						message: "Validation Failed",
+						errors: [{ message: "A pull request already exists for acme:feat/billing." }],
+					},
+					{ status: 422 },
+				),
+			)
+			.mockResolvedValueOnce(
+				Response.json(
+					[
+						{
+							number: 23,
+							html_url: "https://github.com/acme/shop/pull/23",
+							state: "open",
+							title: "Ship billing",
+							draft: true,
+							head: { ref: "feat/billing", sha: "a".repeat(40) },
+							base: { ref: "main" },
+							updated_at: "2026-11-27T14:00:00Z",
+						},
+					],
+					{ status: 200 },
 				),
 			)
 			.mockResolvedValueOnce(
@@ -520,6 +546,9 @@ describe("CodeGitHubSync", () => {
 			updatedAt: "2026-11-27T14:00:00Z",
 			sessionId: "93800000-0000-4000-8000-000000000009",
 		});
+
+		const retried = await f.syncer.run(req, new AbortController().signal);
+		expect(retried).toEqual(created);
 
 		const refused = await f.syncer.run(
 			{ ...req, headBranch: "feat/empty", sessionId: undefined },

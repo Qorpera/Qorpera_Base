@@ -474,6 +474,43 @@ function extractGitHubErrorMessage(body: string): string | null {
 	return null;
 }
 
+function parseGitHubPullRequest(
+	parsed: unknown,
+	defaults: { readonly headBranch: string; readonly baseBranch: string; readonly title: string },
+): {
+	readonly number: number;
+	readonly url: string;
+	readonly prState: string;
+	readonly headBranch: string;
+	readonly baseBranch: string;
+	readonly title: string;
+	readonly headSha: string | null;
+	readonly draft: boolean;
+	readonly updatedAt: string;
+} {
+	if (!isRecord(parsed)) throw new Error("GITHUB_SYNC_RESPONSE_INVALID");
+	const number = typeof parsed.number === "number" && Number.isSafeInteger(parsed.number) ? parsed.number : 0;
+	const htmlUrl = typeof parsed.html_url === "string" ? parsed.html_url : "";
+	const prState = typeof parsed.state === "string" ? parsed.state : "open";
+	const headObj = isRecord(parsed.head) ? parsed.head : {};
+	const baseObj = isRecord(parsed.base) ? parsed.base : {};
+	const headSha = typeof headObj.sha === "string" && SHA.test(headObj.sha) ? headObj.sha : null;
+	const updatedAt =
+		typeof parsed.updated_at === "string" && parsed.updated_at ? parsed.updated_at : new Date().toISOString();
+	if (number < 1 || !htmlUrl.startsWith("https://")) throw new Error("GITHUB_SYNC_RESPONSE_INVALID");
+	return {
+		number,
+		url: htmlUrl,
+		prState,
+		headBranch: typeof headObj.ref === "string" && headObj.ref ? headObj.ref : defaults.headBranch,
+		baseBranch: typeof baseObj.ref === "string" && baseObj.ref ? baseObj.ref : defaults.baseBranch,
+		title: typeof parsed.title === "string" && parsed.title ? parsed.title.slice(0, 256) : defaults.title,
+		headSha,
+		draft: parsed.draft === true,
+		updatedAt: updatedAt.slice(0, 64),
+	};
+}
+
 export class CodeGitHubSync {
 	readonly #hosts: Pick<CodeHostJobs, "run">;
 	readonly #credentials: CodingRepositoryCredentials;
@@ -1148,15 +1185,18 @@ export class CodeGitHubSync {
 					throw new GitHubSyncRefusal("GITHUB_SYNC_AUTH_REFUSED", [], ["GitHub token is unavailable."]);
 				}
 				const url = `${GITHUB_API_ORIGIN}/repos/${encodeURIComponent(request.githubOwner)}/${encodeURIComponent(request.githubName)}/pulls`;
+				const headers = {
+					authorization: `Bearer ${token}`,
+					accept: "application/vnd.github+json",
+					"x-github-api-version": GITHUB_API_VERSION,
+					"user-agent": "qorpera-github-sync",
+				};
 				const response = await this.#fetch(url, {
 					method: "POST",
 					redirect: "error",
 					signal,
 					headers: {
-						authorization: `Bearer ${token}`,
-						accept: "application/vnd.github+json",
-						"x-github-api-version": GITHUB_API_VERSION,
-						"user-agent": "qorpera-github-sync",
+						...headers,
 						"content-type": "application/json",
 					},
 					body: JSON.stringify({
@@ -1170,6 +1210,22 @@ export class CodeGitHubSync {
 				const text = await readBoundedResponseText(response, MAX_PR_RESPONSE_BYTES);
 				if (response.status === 422) {
 					const detail = extractGitHubErrorMessage(text) ?? "GitHub rejected pull request creation.";
+					if (/already exists/i.test(detail) || /already exists/i.test(text)) {
+						const lookupUrl = `${url}?state=open&head=${encodeURIComponent(`${request.githubOwner}:${headBranch}`)}&base=${encodeURIComponent(baseBranch)}&per_page=1`;
+						const existingResponse = await this.#fetch(lookupUrl, {
+							method: "GET",
+							redirect: "error",
+							signal,
+							headers,
+						});
+						if (existingResponse.status >= 200 && existingResponse.status < 300) {
+							const existingText = await readBoundedResponseText(existingResponse, MAX_PR_RESPONSE_BYTES);
+							const existingParsed = JSON.parse(existingText) as unknown;
+							if (Array.isArray(existingParsed) && existingParsed.length > 0) {
+								return parseGitHubPullRequest(existingParsed[0], { headBranch, baseBranch, title });
+							}
+						}
+					}
 					throw new GitHubSyncRefusal("GITHUB_SYNC_PR_REFUSED", [], [detail]);
 				}
 				if (response.status === 401 || response.status === 403) {
@@ -1187,29 +1243,7 @@ export class CodeGitHubSync {
 					throw new Error(`GITHUB_SYNC_HTTP_${response.status}`);
 				}
 				const parsed = JSON.parse(text) as unknown;
-				if (!isRecord(parsed)) throw new Error("GITHUB_SYNC_RESPONSE_INVALID");
-				const number = typeof parsed.number === "number" && Number.isSafeInteger(parsed.number) ? parsed.number : 0;
-				const htmlUrl = typeof parsed.html_url === "string" ? parsed.html_url : "";
-				const prState = typeof parsed.state === "string" ? parsed.state : "open";
-				const headObj = isRecord(parsed.head) ? parsed.head : {};
-				const baseObj = isRecord(parsed.base) ? parsed.base : {};
-				const headSha = typeof headObj.sha === "string" && SHA.test(headObj.sha) ? headObj.sha : null;
-				const updatedAt =
-					typeof parsed.updated_at === "string" && parsed.updated_at
-						? parsed.updated_at
-						: new Date().toISOString();
-				if (number < 1 || !htmlUrl.startsWith("https://")) throw new Error("GITHUB_SYNC_RESPONSE_INVALID");
-				return {
-					number,
-					url: htmlUrl,
-					prState,
-					headBranch: typeof headObj.ref === "string" && headObj.ref ? headObj.ref : headBranch,
-					baseBranch: typeof baseObj.ref === "string" && baseObj.ref ? baseObj.ref : baseBranch,
-					title: typeof parsed.title === "string" && parsed.title ? parsed.title.slice(0, 256) : title,
-					headSha,
-					draft: parsed.draft === true,
-					updatedAt: updatedAt.slice(0, 64),
-				};
+				return parseGitHubPullRequest(parsed, { headBranch, baseBranch, title });
 			},
 			signal,
 		);
