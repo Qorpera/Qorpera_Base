@@ -761,6 +761,8 @@ describe("app-auto-redeploy", () => {
 							vcpuLimit: 1,
 							runtimeEnvConfig: { PUBLIC_BILLING_MODE: "live" },
 							linkedDatabaseName: "billing",
+							hasRuntimeDevSecrets: false,
+							hasRuntimeProdSecrets: true,
 						};
 					}
 					if (method === "qorpera_web_code_deployment_register") {
@@ -854,10 +856,12 @@ describe("app-auto-redeploy", () => {
 			);
 			expect(ctx).not.toBeNull();
 			expect(ctx!.allowRuntimeSecretInjection).toBe(true);
+			expect(ctx!.allowDatabaseUrlInjection).toBe(true);
 			expect(ctx!.hooks.runtimeEnvManagedByReload).toBe(true);
 
 			const config = parseAppDeployConfig(ctx!.rawConfig, {
 				allowRuntimeSecretInjection: ctx!.allowRuntimeSecretInjection === true,
+				allowDatabaseUrlInjection: ctx!.allowDatabaseUrlInjection === true,
 			});
 			const res = await runPostLandAppAutoRedeploy({
 				config,
@@ -890,6 +894,128 @@ describe("app-auto-redeploy", () => {
 					DATABASE_URL: dbUrl,
 				});
 			}
+
+			expect(() =>
+				parseAppDeployConfig(
+					{
+						site: "billing-app",
+						buildCommand: "npm run build",
+						reloadCommand: "reload",
+						healthUrl: "http://127.0.0.1:3000/health",
+						injectRuntimeSecrets: true,
+					},
+					{ allowRuntimeSecretInjection: false, allowDatabaseUrlInjection: true },
+				),
+			).toThrow(/runtime secret injection/);
+			expect(() =>
+				parseAppDeployConfig(
+					{
+						site: "billing-app",
+						buildCommand: "npm run build",
+						reloadCommand: "reload",
+						healthUrl: "http://127.0.0.1:3000/health",
+						injectDatabaseUrl: true,
+					},
+					{ allowRuntimeSecretInjection: true, allowDatabaseUrlInjection: false },
+				),
+			).toThrow(/database URL injection/);
+
+			const implicitDeployConfig = JSON.stringify({
+				autoRedeploy: true,
+				site: "billing-app",
+				paths: ["src/**"],
+				buildCommand: "npm run build",
+				reloadCommand: "reload",
+				healthUrl: "http://127.0.0.1:3000/health",
+				healthAttempts: 1,
+				healthIntervalMs: 0,
+			});
+			appHostBodies.length = 0;
+			const implicitAutoRedeploy = createNativeEdgeAutoRedeploy({
+				control,
+				codeHostJobs: {
+					run: async (_c, _e, _s, fn) => await fn({} as never, {} as never),
+				},
+				nativeEdge: {
+					routerInternalUrl: "http://127.0.0.1:8094",
+					controlToken: "edge-tok",
+					appHostInternalUrl: "http://127.0.0.1:8096",
+					appHostControlToken: "app-tok",
+					companyDataUrl: "http://127.0.0.1:8091",
+					companyDataPublicUrl: "https://data.qorpera.com",
+					companyDataDirectLoginToken: "direct-tok",
+					companyDataFetchImpl: async () => ({
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrl,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_billing",
+							schema: "public",
+							user: "billing_rw",
+						}),
+					}),
+					broker: {
+						origin: "https://broker.internal",
+						executorToken: "exec-tok",
+						executorOwner: "node-1",
+						machineIdSha256: machineSha,
+						fetchImpl: async () =>
+							new Response(
+								JSON.stringify({
+									schema: "qorpera.app-secrets/v1",
+									siteId,
+									slug: "billing-app",
+									scope: "runtime",
+									targetEnv: "prod",
+									secrets: { STRIPE_KEY: stripeSecret },
+								}),
+								{ status: 200, headers: { "content-type": "application/json" } },
+							),
+					},
+					buildAppImage: async () => ({ ociImageRef: newImage, builtMs: 12 }),
+					appHostFetchImpl: async (_url, init) => {
+						appHostSeq += 1;
+						appHostBodies.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+						return {
+							status: 200,
+							body: JSON.stringify({ upstream_addr: `127.0.0.1:${46540 + appHostSeq}` }),
+						};
+					},
+				},
+				owner: "node-1",
+				machineIdSha256: machineSha,
+				readDeployConfig: async () => ({ rawConfig: implicitDeployConfig, paths: ["src/server.ts"] }),
+				exportSource: async () => ({ sourceDir: root }),
+			});
+			const implicitCtx = await implicitAutoRedeploy(
+				claim,
+				{ state: "fast-forward", mainBefore: SHA_BEFORE, mainSha: SHA_AFTER, filesChanged: 1, change: 10 },
+				new AbortController().signal,
+			);
+			expect(implicitCtx).not.toBeNull();
+			const implicitRes = await runPostLandAppAutoRedeploy({
+				config: parseAppDeployConfig(implicitCtx!.rawConfig),
+				event: {
+					kind: "landed",
+					repo: "acme/billing",
+					change: "10",
+					mainBefore: SHA_BEFORE,
+					mainAfter: SHA_AFTER,
+					paths: implicitCtx!.paths ?? [],
+				},
+				hooks: {
+					...implicitCtx!.hooks,
+					probeHealth: async () => ({ ok: true, status: 200 }),
+				},
+				signal: new AbortController().signal,
+			});
+			expect(implicitRes.status).toBe("deployed");
+			expect(appHostBodies[0]?.env).toMatchObject({
+				PUBLIC_BILLING_MODE: "live",
+				STRIPE_KEY: stripeSecret,
+				DATABASE_URL: dbUrl,
+			});
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}

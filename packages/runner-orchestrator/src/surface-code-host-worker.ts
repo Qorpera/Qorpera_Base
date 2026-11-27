@@ -45,6 +45,7 @@ import {
 	buildNativeAppEnvSpec,
 	type NativeEdgeHostingConfig,
 	resolveAppRuntimeEnv,
+	revokeCompanyDataDirectLogin,
 	stopHostedAppDeployment,
 	triggerBlueGreenAppDeploy,
 } from "./native-webapp-deploy.ts";
@@ -1246,6 +1247,14 @@ export class SurfaceCodeHostWorker {
 				if (signal.aborted) return;
 				if (!entry || typeof entry !== "object") continue;
 				const deploymentId = (entry as { deploymentId?: unknown }).deploymentId;
+				const environmentId =
+					typeof (entry as { environmentId?: unknown }).environmentId === "string"
+						? (entry as { environmentId: string }).environmentId
+						: null;
+				const linkedDatabaseName =
+					typeof (entry as { linkedDatabaseName?: unknown }).linkedDatabaseName === "string"
+						? (entry as { linkedDatabaseName: string }).linkedDatabaseName
+						: null;
 				const upstreamAddr =
 					typeof (entry as { upstreamAddr?: unknown }).upstreamAddr === "string"
 						? (entry as { upstreamAddr: string }).upstreamAddr
@@ -1279,6 +1288,22 @@ export class SurfaceCodeHostWorker {
 						},
 						signal,
 					);
+					if (
+						environmentId &&
+						linkedDatabaseName &&
+						this.#nativeEdge?.companyDataUrl &&
+						this.#nativeEdge?.companyDataDirectLoginToken
+					) {
+						await revokeCompanyDataDirectLogin({
+							companyDataUrl: this.#nativeEdge.companyDataUrl,
+							directLoginToken: this.#nativeEdge.companyDataDirectLoginToken,
+							environmentId,
+							database: linkedDatabaseName,
+							principal: deploymentId,
+							fetchImpl: this.#nativeEdge.companyDataFetchImpl,
+							signal: AbortSignal.timeout(5_000),
+						}).catch(() => undefined);
+					}
 				} catch (error) {
 					if (signal.aborted) return;
 					this.#emit({

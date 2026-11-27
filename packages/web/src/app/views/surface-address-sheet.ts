@@ -1285,14 +1285,14 @@ export class SurfaceAddress {
 					: shown.kind === "runtime"
 						? this.#runtimePage()
 						: shown.kind === "add"
-						? this.#addPage(shown.from)
-						: shown.kind === "domain"
-							? securing(shown.domain)
-								? this.#securingPage(shown.domain)
-								: verified(shown.domain)
-									? this.#managePage(shown.domain)
-									: this.#handPage(shown.domain)
-							: this.#mainPage()),
+							? this.#addPage(shown.from)
+							: shown.kind === "domain"
+								? securing(shown.domain)
+									? this.#securingPage(shown.domain)
+									: verified(shown.domain)
+										? this.#managePage(shown.domain)
+										: this.#handPage(shown.domain)
+								: this.#mainPage()),
 		);
 		replace(this.#sheet, page);
 		this.#sheet.hidden = false;
@@ -1717,25 +1717,23 @@ export class SurfaceAddress {
 		this.#problem = undefined;
 		this.#paint();
 		this.#setup.changed();
-		void binding
-			.saveConfig({ runtimeEnvConfig: envObj, linkedDatabaseName })
-			.then(
-				(updated) => {
-					this.#savingRuntime = false;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					if (updated) {
-						this.#runtimeConfig = updated;
-						this.#syncRuntimeFields(updated);
-					}
-					this.#changed();
-				},
-				(error: unknown) => {
-					this.#savingRuntime = false;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
-					this.#changed();
-				},
-			);
+		void binding.saveConfig({ runtimeEnvConfig: envObj, linkedDatabaseName }).then(
+			(updated) => {
+				this.#savingRuntime = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (updated) {
+					this.#runtimeConfig = updated;
+					this.#syncRuntimeFields(updated);
+				}
+				this.#changed();
+			},
+			(error: unknown) => {
+				this.#savingRuntime = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+				this.#changed();
+			},
+		);
 	}
 
 	#grantRuntimeSecret(): void {
@@ -1751,21 +1749,19 @@ export class SurfaceAddress {
 		this.#problem = undefined;
 		this.#paint();
 		this.#setup.changed();
-		void binding
-			.grantSecret({ secretId, siteId: current.siteId, scope, targetEnv })
-			.then(
-				async () => {
-					this.#grantingSecret = false;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					await this.#loadRuntime(binding);
-				},
-				(error: unknown) => {
-					this.#grantingSecret = false;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
-					this.#changed();
-				},
-			);
+		void binding.grantSecret({ secretId, siteId: current.siteId, scope, targetEnv }).then(
+			async () => {
+				this.#grantingSecret = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				await this.#loadRuntime(binding);
+			},
+			(error: unknown) => {
+				this.#grantingSecret = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+				this.#changed();
+			},
+		);
 	}
 
 	#revokeRuntimeGrant(grantId: string): void {
@@ -1777,21 +1773,19 @@ export class SurfaceAddress {
 		this.#problem = undefined;
 		this.#paint();
 		this.#setup.changed();
-		void binding
-			.revokeGrant(grantId)
-			.then(
-				async () => {
-					this.#revokingGrantId = null;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					await this.#loadRuntime(binding);
-				},
-				(error: unknown) => {
-					this.#revokingGrantId = null;
-					if (this.#setup.signal.aborted || target !== this.#target) return;
-					this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
-					this.#changed();
-				},
-			);
+		void binding.revokeGrant(grantId).then(
+			async () => {
+				this.#revokingGrantId = null;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				await this.#loadRuntime(binding);
+			},
+			(error: unknown) => {
+				this.#revokingGrantId = null;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				this.#problem = addressRefusal(error, phrase("That didn't work. Try again."));
+				this.#changed();
+			},
+		);
 	}
 
 	#runtimePage(): (HTMLElement | null)[] {
@@ -1831,7 +1825,7 @@ export class SurfaceAddress {
 								type: "text",
 								class: "surface-address-input",
 								value: row.key,
-								placeholder: "API_BASE_URL",
+								placeholder: t("e.g. API_BASE_URL"),
 								"aria-label": t("Variable name"),
 								disabled: !canEdit || this.#savingRuntime,
 								"data-key": `runtime-env-key-${row.id}`,
@@ -1843,7 +1837,7 @@ export class SurfaceAddress {
 								type: "text",
 								class: "surface-address-input",
 								value: row.value,
-								placeholder: "value",
+								placeholder: t("Value"),
 								"aria-label": t("Variable value"),
 								disabled: !canEdit || this.#savingRuntime,
 								"data-key": `runtime-env-val-${row.id}`,

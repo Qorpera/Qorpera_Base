@@ -11,7 +11,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { readCodeChecks } from "../src/code-checks.ts";
 import { codeSiteCollectAnswer, codeSiteReported } from "../src/code-site.ts";
 import { type CodeSiteUploadFile, CodeSiteUploads } from "../src/code-site-uploads.ts";
-import { CompanyMachineSecretsManager } from "../src/company-machine-secrets.ts";
+import { CompanyMachineSecretsManager, maskAppLogText } from "../src/company-machine-secrets.ts";
 import {
 	buildNativeAppEnvSpec,
 	deployCodeSiteToNativeEdge,
@@ -20,6 +20,7 @@ import {
 	parseNativeCodeSiteSpec,
 	provisionCompanyDataDirectLogin,
 	resolveAppRuntimeEnv,
+	revokeCompanyDataDirectLogin,
 	stopHostedAppDeployment,
 	triggerBlueGreenAppDeploy,
 } from "../src/native-webapp-deploy.ts";
@@ -832,16 +833,22 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 		});
 	});
 
-	it("provisions scoped Postgres direct-login credentials and validates inputs and responses", async () => {
-		const calls: Array<{ url: string; body?: string; auth?: string }> = [];
+	it("provisions and revokes scoped Postgres direct-login credentials per principal", async () => {
+		const calls: Array<{ url: string; method: string; body?: string; auth?: string }> = [];
 		const conn = "postgresql://qorpera_app_1:s3cr3tpass@10.99.0.10:5432/co_shop?sslmode=require";
 		const result = await provisionCompanyDataDirectLogin({
 			companyDataUrl: "http://127.0.0.1:8088/",
 			directLoginToken: "direct-admin-tok",
 			environmentId: ENVIRONMENT,
 			database: "shop",
+			principal: DEPLOYMENT_ID,
 			fetchImpl: async (url, init) => {
-				calls.push({ url, ...(init.body !== undefined ? { body: init.body } : {}), auth: init.headers.authorization });
+				calls.push({
+					url,
+					method: init.method,
+					...(init.body !== undefined ? { body: init.body } : {}),
+					auth: init.headers.authorization,
+				});
 				return {
 					status: 200,
 					body: JSON.stringify({
@@ -859,10 +866,34 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 		expect(calls).toEqual([
 			{
 				url: `http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login`,
+				method: "POST",
 				auth: "Bearer direct-admin-tok",
-				body: JSON.stringify({ database: "shop", access: "read-write", connectionLimit: 4 }),
+				body: JSON.stringify({
+					database: "shop",
+					access: "read-write",
+					connectionLimit: 4,
+					principal: DEPLOYMENT_ID,
+				}),
 			},
 		]);
+
+		const revoked = await revokeCompanyDataDirectLogin({
+			companyDataUrl: "http://127.0.0.1:8088/",
+			directLoginToken: "direct-admin-tok",
+			environmentId: ENVIRONMENT,
+			database: "shop",
+			principal: DEPLOYMENT_ID,
+			fetchImpl: async (url, init) => {
+				calls.push({ url, method: init.method, auth: init.headers.authorization });
+				return { status: 200, body: JSON.stringify({ revoked: true }) };
+			},
+		});
+		expect(revoked).toBe(true);
+		expect(calls[1]).toEqual({
+			url: `http://127.0.0.1:8088/v1/admin/company-data/${ENVIRONMENT}/direct-login/shop?principal=${DEPLOYMENT_ID}`,
+			method: "DELETE",
+			auth: "Bearer direct-admin-tok",
+		});
 
 		await expect(
 			provisionCompanyDataDirectLogin({
@@ -903,7 +934,7 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 		).rejects.toThrow("COMPANY_DATA_DIRECT_LOGIN_INVALID_RESPONSE");
 	});
 
-	it("resolves broker runtime secrets and linked DATABASE_URL into runtimeEnv without mutating baseEnvSpec and masks values", async () => {
+	it("resolves broker secrets and per-deployment DATABASE_URL with read-only dev previews", async () => {
 		const baseEnvSpec = Object.freeze({
 			PORT: "3000",
 			NODE_ENV: "production",
@@ -911,7 +942,9 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 			PUBLIC_ORIGIN: "https://portal.example.com",
 		});
 		const secretVal = "sk-live-secret-token-778899";
-		const dbUrl = "postgresql://app_user:db-pass-998877@10.99.0.10:5432/co_shop?sslmode=require";
+		const dbUrlProd = "postgresql://app_prod:db-pass-998877@10.99.0.10:5432/co_shop?sslmode=require";
+		const dbUrlDev = "postgresql://app_dev:db-pass-112233@10.99.0.10:5432/co_shop?sslmode=require";
+		const directPayloads: Array<Record<string, unknown>> = [];
 
 		const resolved = await resolveAppRuntimeEnv({
 			baseEnvSpec,
@@ -926,17 +959,20 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 				controlToken: "edge-tok",
 				companyDataUrl: "http://127.0.0.1:8088",
 				companyDataDirectLoginToken: "direct-tok",
-				companyDataFetchImpl: async () => ({
-					status: 200,
-					body: JSON.stringify({
-						connectionString: dbUrl,
-						host: "10.99.0.10",
-						port: 5432,
-						database: "co_shop",
-						schema: "public",
-						user: "app_user",
-					}),
-				}),
+				companyDataFetchImpl: async (_url, init) => {
+					directPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlProd,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_prod",
+						}),
+					};
+				},
 				broker: {
 					origin: "https://broker.internal",
 					executorToken: "exec-tok",
@@ -952,8 +988,7 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 								targetEnv: "prod",
 								secrets: {
 									STRIPE_API_KEY: secretVal,
-									PORT: "1234",
-									QORPERA_REPOSITORY: "evil/override",
+									PORT: "99999999",
 								},
 							}),
 							{ status: 200, headers: { "content-type": "application/json" } },
@@ -970,12 +1005,56 @@ describe("hosted app runtime env, broker secret resolution, direct-login DB prov
 			QORPERA_REPOSITORY: "company/portal",
 			PUBLIC_ORIGIN: "https://portal.example.com",
 			STRIPE_API_KEY: secretVal,
-			DATABASE_URL: dbUrl,
+			DATABASE_URL: dbUrlProd,
+		});
+		expect(directPayloads[0]).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: DEPLOYMENT_ID,
 		});
 		expect(resolved.secretNames).toEqual(["DATABASE_URL", "STRIPE_API_KEY"]);
-		const masked = resolved.mask.mask(`failed connecting ${dbUrl} with ${secretVal}`);
+		const masked = maskAppLogText(resolved.mask, `failed connecting ${dbUrlProd} with ${secretVal}`);
 		expect(masked).not.toContain(secretVal);
-		expect(masked).not.toContain(dbUrl);
+		expect(masked).not.toContain(dbUrlProd);
+
+		const previewDepId = "66666666-6666-4666-8666-666666666666";
+		const resolvedDev = await resolveAppRuntimeEnv({
+			baseEnvSpec,
+			siteId: SITE_ID,
+			environmentId: ENVIRONMENT,
+			deploymentId: previewDepId,
+			targetEnv: "dev",
+			hasRuntimeSecrets: false,
+			linkedDatabaseName: "shop",
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8094",
+				controlToken: "edge-tok",
+				companyDataUrl: "http://127.0.0.1:8088",
+				companyDataDirectLoginToken: "direct-tok",
+				companyDataFetchImpl: async (_url, init) => {
+					directPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+					return {
+						status: 200,
+						body: JSON.stringify({
+							connectionString: dbUrlDev,
+							host: "10.99.0.10",
+							port: 5432,
+							database: "co_shop",
+							schema: "public",
+							user: "app_dev",
+						}),
+					};
+				},
+			},
+		});
+		expect(resolvedDev.runtimeEnv.DATABASE_URL).toBe(dbUrlDev);
+		expect(directPayloads[1]).toEqual({
+			database: "shop",
+			access: "read-only",
+			connectionLimit: 2,
+			principal: previewDepId,
+		});
 
 		await expect(
 			resolveAppRuntimeEnv({

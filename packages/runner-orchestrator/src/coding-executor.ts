@@ -491,6 +491,7 @@ export interface CodingAutoRedeployContext {
 	readonly siteId: string;
 	readonly paths?: readonly string[];
 	readonly allowRuntimeSecretInjection?: boolean;
+	readonly allowDatabaseUrlInjection?: boolean;
 	readonly secretsManager?: CompanyMachineSecretsManager;
 	readonly hooks: AppAutoRedeployHooks;
 }
@@ -1453,6 +1454,7 @@ export class CloudCodingExecutor {
 								if (redeploy) {
 									const config = parseAppDeployConfig(JSON.parse(redeploy.rawConfig), {
 										allowRuntimeSecretInjection: redeploy.allowRuntimeSecretInjection === true,
+										allowDatabaseUrlInjection: redeploy.allowDatabaseUrlInjection === true,
 									});
 									await runPostLandAppAutoRedeploy({
 										config,

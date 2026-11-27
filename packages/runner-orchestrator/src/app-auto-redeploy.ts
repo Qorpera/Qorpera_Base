@@ -164,7 +164,10 @@ function parseHealthUrl(raw: unknown): string {
 
 export function parseAppDeployConfig(
 	raw: string | unknown,
-	options?: { readonly allowRuntimeSecretInjection?: boolean },
+	options?: {
+		readonly allowRuntimeSecretInjection?: boolean;
+		readonly allowDatabaseUrlInjection?: boolean;
+	},
 ): AppAutoRedeployConfig {
 	let decoded: unknown = raw;
 	if (typeof raw === "string") {
@@ -253,8 +256,11 @@ export function parseAppDeployConfig(
 	if (typeof injectDatabaseUrl !== "boolean") {
 		throw new RangeError("deploy.json injectDatabaseUrl must be boolean");
 	}
-	if ((injectRuntimeSecrets || injectDatabaseUrl) && !options?.allowRuntimeSecretInjection) {
+	if (injectRuntimeSecrets && !options?.allowRuntimeSecretInjection) {
 		throw new RangeError("deploy.json runtime secret injection is not yet supported by app-host");
+	}
+	if (injectDatabaseUrl && !options?.allowDatabaseUrlInjection) {
+		throw new RangeError("deploy.json database URL injection is not yet supported by app-host");
 	}
 	return Object.freeze({
 		schema: APP_DEPLOY_CONFIG_SCHEMA,
@@ -621,12 +627,13 @@ export function createNativeEdgeAutoRedeploy(
 		);
 		if (!configResult) return null;
 
-		const canInjectRuntimeSecrets = Boolean(
-			options.nativeEdge.broker ||
-				(options.nativeEdge.companyDataUrl && options.nativeEdge.companyDataDirectLoginToken),
+		const canInjectRuntimeSecrets = Boolean(options.nativeEdge.broker);
+		const canInjectDatabaseUrl = Boolean(
+			options.nativeEdge.companyDataUrl && options.nativeEdge.companyDataDirectLoginToken,
 		);
 		const parsedConfig = parseAppDeployConfig(JSON.parse(configResult.rawConfig), {
 			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
+			allowDatabaseUrlInjection: canInjectDatabaseUrl,
 		});
 		const match = shouldAutoRedeployOnCodeChange(parsedConfig, {
 			kind: "landed",
@@ -700,6 +707,21 @@ export function createNativeEdgeAutoRedeploy(
 			typeof lookup.linkedDatabaseName === "string" && lookup.linkedDatabaseName.length > 0
 				? lookup.linkedDatabaseName
 				: null;
+		const hasGrantedSecrets =
+			parsedConfig.targetEnv === "prod"
+				? lookup.hasRuntimeProdSecrets === true
+				: lookup.hasRuntimeDevSecrets === true;
+		const shouldInjectSecrets = parsedConfig.injectRuntimeSecrets || hasGrantedSecrets;
+		const shouldInjectDatabaseUrl = parsedConfig.injectDatabaseUrl || linkedDatabaseName !== null;
+		if (shouldInjectSecrets && !canInjectRuntimeSecrets) {
+			throw new Error("APP_SECRETS_BROKER_UNAVAILABLE");
+		}
+		if (parsedConfig.injectDatabaseUrl && !linkedDatabaseName) {
+			throw new Error("APP_LINKED_DATABASE_NOT_CONFIGURED");
+		}
+		if (shouldInjectDatabaseUrl && !canInjectDatabaseUrl) {
+			throw new Error("COMPANY_DATA_DIRECT_LOGIN_UNAVAILABLE");
+		}
 
 		const releaseImages = new Map<string, string>([[currentDeploymentId, currentImageRef]]);
 		let startedNewOnAppHost = false;
@@ -714,17 +736,14 @@ export function createNativeEdgeAutoRedeploy(
 			runtimeEnvConfig,
 		});
 		const resolveDeployEnv = async (deploymentId: string, hookSignal: AbortSignal) => {
-			if (parsedConfig.injectDatabaseUrl && !linkedDatabaseName) {
-				throw new Error("APP_LINKED_DATABASE_NOT_CONFIGURED");
-			}
 			return await resolveAppRuntimeEnv({
 				baseEnvSpec: envSpec,
 				siteId,
 				environmentId: claim.environmentId,
 				deploymentId,
 				targetEnv: parsedConfig.targetEnv,
-				hasRuntimeSecrets: parsedConfig.injectRuntimeSecrets,
-				linkedDatabaseName: parsedConfig.injectDatabaseUrl ? linkedDatabaseName : null,
+				hasRuntimeSecrets: shouldInjectSecrets,
+				linkedDatabaseName: shouldInjectDatabaseUrl ? linkedDatabaseName : null,
 				nativeEdge: options.nativeEdge,
 				signal: hookSignal,
 			});
@@ -766,6 +785,7 @@ export function createNativeEdgeAutoRedeploy(
 			siteId,
 			paths: configResult.paths,
 			allowRuntimeSecretInjection: canInjectRuntimeSecrets,
+			allowDatabaseUrlInjection: canInjectDatabaseUrl,
 			hooks: {
 				runtimeEnvManagedByReload: true,
 				currentReleaseId: async () => currentDeploymentId,

@@ -2815,18 +2815,24 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		const jobId = randomUUID();
 		const leaseToken = randomUUID();
 		const depId = randomUUID();
+		const previewDepId = randomUUID();
+		const previewId = randomUUID();
 		const verId = randomUUID();
+		const previewVerId = randomUUID();
 		const imageRef = `127.0.0.1:5000/qorpera-apps/secrets@sha256:${"5".repeat(64)}`;
 		const stripeSecret = "sk-live-surface-secret-554433";
 		const dbUrl = "postgresql://shop_rw:pg-secret-221100@10.99.0.10:5432/co_shop?sslmode=require";
+		const dbUrlRo = "postgresql://shop_ro:pg-ro-secret-665544@10.99.0.10:5432/co_shop?sslmode=require";
 		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
 		const appHostPayloads: Array<Record<string, unknown>> = [];
+		const directLoginCalls: Array<{ method: string; url: string; body?: Record<string, unknown> }> = [];
 		let failWithSecret = false;
+		let claimMode: "publish" | "preview" = "publish";
 
 		const makeWorker = () =>
 			new SurfaceCodeHostWorker({
 				exportSource: async (_job, input) => ({ sourceDir: input.tree }),
-				staleSweepIntervalMs: 60_000,
+				staleSweepIntervalMs: 0,
 				nativeEdge: {
 					routerInternalUrl: "http://127.0.0.1:8088",
 					controlToken: "router-secret",
@@ -2835,17 +2841,25 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					companyDataUrl: "http://127.0.0.1:8091",
 					companyDataPublicUrl: "https://data.qorpera.com",
 					companyDataDirectLoginToken: "direct-login-tok",
-					companyDataFetchImpl: async () => ({
-						status: 200,
-						body: JSON.stringify({
-							connectionString: dbUrl,
-							host: "10.99.0.10",
-							port: 5432,
-							database: "co_shop",
-							schema: "public",
-							user: "shop_rw",
-						}),
-					}),
+					companyDataFetchImpl: async (url, init) => {
+						const parsedBody = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+						directLoginCalls.push({ method: init.method, url, ...(parsedBody ? { body: parsedBody } : {}) });
+						if (init.method === "DELETE") {
+							return { status: 200, body: JSON.stringify({ revoked: true }) };
+						}
+						const isRo = parsedBody?.access === "read-only";
+						return {
+							status: 200,
+							body: JSON.stringify({
+								connectionString: isRo ? dbUrlRo : dbUrl,
+								host: "10.99.0.10",
+								port: 5432,
+								database: "co_shop",
+								schema: "public",
+								user: isRo ? "shop_ro" : "shop_rw",
+							}),
+						};
+					},
 					broker: {
 						origin: "https://broker.internal",
 						executorToken: "exec-tok",
@@ -2866,11 +2880,11 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					},
 					buildAppImage: async () => ({ ociImageRef: imageRef, builtMs: 8 }),
 					appHostFetchImpl: async (_url, init) => {
-						appHostPayloads.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+						if (init.body) appHostPayloads.push(JSON.parse(init.body) as Record<string, unknown>);
 						if (failWithSecret) {
 							throw new Error(`container failed with ${stripeSecret} and ${dbUrl}`);
 						}
-						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:48001" }) };
+						return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:48001", stopped: true }) };
 					},
 				},
 				control: {
@@ -2879,26 +2893,45 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 						if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
 							return {
 								sessions: [],
-								previews: [],
+								previews:
+									claimMode === "preview"
+										? [
+												{
+													previewId,
+													surfaceId,
+													profileId,
+													environmentId,
+													repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													shortHostId: "ab12cd34",
+													baseSha: serverMainSha,
+													selectedChangeIds: [],
+													changes: [],
+													leaseToken,
+												},
+											]
+										: [],
 								merges: [],
-								publishes: [
-									{
-										jobId,
-										surfaceId,
-										profileId,
-										environmentId,
-										sourceKind: "code_repo",
-										liveHeadSha: serverMainSha,
-										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
-										siteId,
-										siteSlug: "thetaband",
-										leaseToken,
-										payload: {
-											liveHeadSha: serverMainSha,
-											repositoryKey: `${f.repository.owner}/${f.repository.name}`,
-										},
-									},
-								],
+								publishes:
+									claimMode === "publish"
+										? [
+												{
+													jobId,
+													surfaceId,
+													profileId,
+													environmentId,
+													sourceKind: "code_repo",
+													liveHeadSha: serverMainSha,
+													repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													siteId,
+													siteSlug: "thetaband",
+													leaseToken,
+													payload: {
+														liveHeadSha: serverMainSha,
+														repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+													},
+												},
+											]
+										: [],
 								cleanups: [],
 								automations: [],
 							};
@@ -2919,12 +2952,27 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 							return {
 								siteId,
 								slug: "thetaband",
-								versionId: verId,
-								deploymentId: depId,
+								versionId: claimMode === "preview" ? previewVerId : verId,
+								deploymentId: claimMode === "preview" ? previewDepId : depId,
 								versionNumber: 1,
 								kind: "server",
 								state: args.p_promote_live === true ? "live" : "ready",
 							};
+						}
+						if (method === "qorpera_surface_stale_app_deployments_due" && claimMode === "preview") {
+							return [
+								{
+									deploymentId: previewDepId,
+									siteId,
+									profileId,
+									environmentId,
+									linkedDatabaseName: "shop",
+									upstreamAddr: "127.0.0.1:48001",
+								},
+							];
+						}
+						if (method === "qorpera_surface_app_deployment_mark_stopped") {
+							return { claimed: true, stopped: args.p_claim_only !== true, deploymentId: args.p_deployment_id };
 						}
 						return { ok: true };
 					},
@@ -2959,7 +3007,38 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 			STRIPE_KEY: stripeSecret,
 			DATABASE_URL: dbUrl,
 		});
+		expect(directLoginCalls[0]?.body).toEqual({
+			database: "shop",
+			access: "read-write",
+			connectionLimit: 4,
+			principal: depId,
+		});
 
+		claimMode = "preview";
+		appHostPayloads.length = 0;
+		const previewWorker = makeWorker();
+		const previewResult = await previewWorker.pass(new AbortController().signal);
+		expect(previewResult).toEqual({ previews: 1, merges: 0, publishes: 0, cleanups: 0, failed: 0 });
+		expect(directLoginCalls[1]?.body).toEqual({
+			database: "shop",
+			access: "read-only",
+			connectionLimit: 2,
+			principal: previewDepId,
+		});
+		expect(appHostPayloads[0]?.env).toMatchObject({
+			PUBLIC_API_BASE: "https://api.example.com",
+			DATABASE_URL: dbUrlRo,
+		});
+		expect((appHostPayloads[0]?.env as Record<string, unknown>).STRIPE_KEY).toBeUndefined();
+		expect(
+			directLoginCalls.some(
+				(c) =>
+					c.method === "DELETE" &&
+					c.url.endsWith(`/v1/admin/company-data/${environmentId}/direct-login/shop?principal=${previewDepId}`),
+			),
+		).toBe(true);
+
+		claimMode = "publish";
 		failWithSecret = true;
 		rpcCalls.length = 0;
 		const workerFail = makeWorker();

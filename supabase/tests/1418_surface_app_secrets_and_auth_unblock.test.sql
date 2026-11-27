@@ -47,6 +47,7 @@ declare
 	v_dom_verified_2 uuid;
 	v_cfg jsonb;
 	v_svc_cfg jsonb;
+	v_snapshot jsonb;
 	v_grant jsonb;
 	v_grant_id uuid;
 	v_auth jsonb;
@@ -63,7 +64,9 @@ begin
 		and not has_function_privilege('authenticated', 'public.qorpera_surface_site_runtime_config(uuid)', 'EXECUTE')
 		and not has_function_privilege('anon', 'public.qorpera_surface_site_runtime_config(uuid)', 'EXECUTE')
 		and not has_function_privilege('authenticated', 'public.qorpera_site_credential_inputs_blocked(uuid,text,boolean)', 'EXECUTE')
-		and not has_function_privilege('anon', 'public.qorpera_site_credential_inputs_blocked(uuid,text,boolean)', 'EXECUTE'),
+		and not has_function_privilege('anon', 'public.qorpera_site_credential_inputs_blocked(uuid,text,boolean)', 'EXECUTE')
+		and not has_function_privilege('authenticated', 'public.qorpera_site_has_runtime_secrets(uuid,uuid,text)', 'EXECUTE')
+		and not has_function_privilege('anon', 'public.qorpera_site_has_runtime_secrets(uuid,uuid,text)', 'EXECUTE'),
 		'function privileges match security posture'
 	);
 
@@ -76,8 +79,8 @@ begin
 	insert into auth.users(id, email) values
 		(v_member, 'member-1418@example.test'),
 		(v_outsider, 'outsider-1418@example.test');
-	insert into public.qorpera_profile_members(profile_id, user_id, role, display_name)
-	values (v_company, v_member, 'contributor', 'Contributor');
+	insert into public.qorpera_profile_members(profile_id, user_id, email, role, display_name)
+	values (v_company, v_member, 'member-1418@example.test', 'contributor', 'Contributor');
 
 	perform pg_temp.as_service();
 	perform public.qorpera_configure_coding_executor(v_env_id, 'exec-1418', true, array['codex']);
@@ -162,13 +165,36 @@ begin
 	where id = v_dom_pending;
 	v_dom_verified_1 := v_dom_pending;
 
+	begin
+		perform pg_temp.sasa_as(v_owner);
+		set local role authenticated;
+		perform public.qorpera_set_company_site_public(v_site_static.id, true);
+		reset role;
+		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS while verified domain is not primary';
+	exception when others then
+		reset role;
+		perform pg_temp.sasa_assert(sqlerrm = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'non-primary verified domain must still refuse credential inputs: ' || sqlerrm);
+	end;
+
 	perform pg_temp.sasa_as(v_owner);
 	set local role authenticated;
+	perform public.qorpera_set_primary_site_domain(v_dom_verified_1);
 	perform public.qorpera_set_company_site_public(v_site_static.id, true);
 	reset role;
 	perform pg_temp.sasa_assert(
 		(select is_public from public.qorpera_company_sites where id = v_site_static.id),
-		'static site with verified custom domain can publish credential inputs publicly'
+		'static site with verified primary custom domain can publish credential inputs publicly'
+	);
+
+	v_snapshot := pg_temp.sasa_service('select public.qorpera_web_edge_snapshot()');
+	perform pg_temp.sasa_assert(
+		exists (
+			select 1
+			from jsonb_array_elements(v_snapshot -> 'sites') as s
+			where (s ->> 'id')::uuid = v_site_static.id
+				and (s #>> '{live_deployment,has_credential_inputs}')::boolean = true
+		),
+		'qorpera_web_edge_snapshot exposes has_credential_inputs on live_deployment'
 	);
 
 	perform pg_temp.sasa_service(format(
@@ -181,10 +207,10 @@ begin
 		set local role authenticated;
 		perform public.qorpera_remove_company_site_domain(v_dom_verified_1);
 		reset role;
-		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS when removing last verified domain of public credential site';
+		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS when removing primary verified domain of public credential site';
 	exception when others then
 		reset role;
-		perform pg_temp.sasa_assert(sqlerrm = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'removing last verified domain must refuse: ' || sqlerrm);
+		perform pg_temp.sasa_assert(sqlerrm = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'removing primary verified domain must refuse: ' || sqlerrm);
 	end;
 
 	perform pg_temp.sasa_as(v_owner);
@@ -195,8 +221,20 @@ begin
 	set status = 'dns_verified', verified_at = clock_timestamp()
 	where id = v_dom_verified_2;
 
+	begin
+		perform pg_temp.sasa_as(v_owner);
+		set local role authenticated;
+		perform public.qorpera_remove_company_site_domain(v_dom_verified_1);
+		reset role;
+		raise exception 'expected SITE_CONTAINS_CREDENTIAL_INPUTS when removing primary domain while second domain is non-primary';
+	exception when others then
+		reset role;
+		perform pg_temp.sasa_assert(sqlerrm = 'SITE_CONTAINS_CREDENTIAL_INPUTS', 'removing primary domain with only non-primary backup must refuse: ' || sqlerrm);
+	end;
+
 	perform pg_temp.sasa_as(v_owner);
 	set local role authenticated;
+	perform public.qorpera_set_primary_site_domain(v_dom_verified_2);
 	perform public.qorpera_remove_company_site_domain(v_dom_verified_1);
 	perform public.qorpera_set_company_site_public(v_site_static.id, false);
 	perform public.qorpera_remove_company_site_domain(v_dom_verified_2);

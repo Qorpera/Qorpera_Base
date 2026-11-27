@@ -27,7 +27,10 @@ afterEach(() => {
 function mount(
 	world: Partial<HostingWorld> = {},
 	manage = true,
-	hooks: Pick<SurfaceAddressSetup, "beforePublic" | "publicChanged" | "slugChanged" | "codeSource" | "runtimeConfig"> = {},
+	hooks: Pick<
+		SurfaceAddressSetup,
+		"beforePublic" | "publicChanged" | "slugChanged" | "codeSource" | "runtimeConfig"
+	> = {},
 	liveUrl = LIVE_URL,
 ) {
 	const container = h("div", { class: "surface-canvas" });
@@ -1288,33 +1291,42 @@ describe("editing the platform subdomain", () => {
 		};
 
 		const load = vi.fn(async () => ({ ...runtimeState, grants: [...runtimeState.grants] }));
-		const saveConfig = vi.fn(async (input: { runtimeEnvConfig: Readonly<Record<string, string>>; linkedDatabaseName: string | null }) => {
-			runtimeState = {
-				...runtimeState,
-				runtimeEnvConfig: { ...input.runtimeEnvConfig },
-				linkedDatabaseName: input.linkedDatabaseName,
-			};
-			return { ...runtimeState, grants: [...runtimeState.grants] };
-		});
-		const grantSecret = vi.fn(async (input: { secretId: string; siteId: string; scope: "runtime" | "build" | "test"; targetEnv: "dev" | "prod" }) => {
-			runtimeState = {
-				...runtimeState,
-				grants: [
-					...runtimeState.grants,
-					{
-						grantId,
-						secretId: input.secretId,
-						siteId: input.siteId,
-						name: "STRIPE_SECRET_KEY",
-						scope: input.scope,
-						targetEnv: input.targetEnv,
-						version: 1,
-						issuedByUserId: userId,
-						createdAt: "2026-11-27T12:00:00Z",
-					},
-				],
-			};
-		});
+		const saveConfig = vi.fn(
+			async (input: { runtimeEnvConfig: Readonly<Record<string, string>>; linkedDatabaseName: string | null }) => {
+				runtimeState = {
+					...runtimeState,
+					runtimeEnvConfig: { ...input.runtimeEnvConfig },
+					linkedDatabaseName: input.linkedDatabaseName,
+				};
+				return { ...runtimeState, grants: [...runtimeState.grants] };
+			},
+		);
+		const grantSecret = vi.fn(
+			async (input: {
+				secretId: string;
+				siteId: string;
+				scope: "runtime" | "build" | "test";
+				targetEnv: "dev" | "prod";
+			}) => {
+				runtimeState = {
+					...runtimeState,
+					grants: [
+						...runtimeState.grants,
+						{
+							grantId,
+							secretId: input.secretId,
+							siteId: input.siteId,
+							name: "STRIPE_SECRET_KEY",
+							scope: input.scope,
+							targetEnv: input.targetEnv,
+							version: 1,
+							issuedByUserId: userId,
+							createdAt: "2026-11-27T12:00:00Z",
+						},
+					],
+				};
+			},
+		);
 		const revokeGrant = vi.fn(async (id: string) => {
 			runtimeState = {
 				...runtimeState,
@@ -1348,7 +1360,9 @@ describe("editing the platform subdomain", () => {
 		sheet()
 			.querySelector("form")!
 			.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
-		expect(problem()).toBe("Enter an uppercase variable name like API_BASE_URL (not PORT, NODE_ENV, or DATABASE_URL).");
+		expect(problem()).toBe(
+			"Enter an uppercase variable name like API_BASE_URL (not PORT, NODE_ENV, or DATABASE_URL).",
+		);
 		expect(saveConfig).not.toHaveBeenCalled();
 
 		keyInputs[1]!.value = "API_BASE_URL";

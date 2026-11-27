@@ -5074,7 +5074,15 @@ export class Gateway {
 		return true;
 	}
 
-	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4 } = {}) {
+	#directLoginRoleName(database, n, principal = null) {
+		if (principal === null || principal === undefined) return `${database}_s${n}`;
+		if (typeof principal !== "string" || !/^[A-Za-z0-9:._-]{1,128}$/.test(principal)) {
+			refuse(400, "principal is invalid");
+		}
+		return `${database}_s${n}_d${sha256(principal).slice(0, 16)}`;
+	}
+
+	async provisionDirectLogin(environmentId, name, { access = "read-write", connectionLimit = 4, principal = null } = {}) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name) || name === "qorpera" || /^(pg_|qorpera_)/.test(name))
 			refuse(400, "Name a database");
 		if (access !== "read-only" && access !== "read-write") refuse(400, "access is read-only or read-write");
@@ -5083,7 +5091,7 @@ export class Gateway {
 		const database = companyDatabase(environmentId);
 		const n = await this.#folder(database, name);
 		if (n === null) refuse(409, `The database ${name} has no applied step yet`);
-		const roleName = `${database}_s${n}`;
+		const roleName = this.#directLoginRoleName(database, n, principal);
 		const ownerRole = quoted(`${database}_o${n}`);
 		const role = quoted(roleName);
 		const schema = quoted(name);
@@ -5146,7 +5154,7 @@ export class Gateway {
 		}
 	}
 
-	async revokeDirectLogin(environmentId, name) {
+	async revokeDirectLogin(environmentId, name, { principal = null } = {}) {
 		if (typeof name !== "string" || !DATABASE_NAME.test(name)) refuse(400, "Name a database");
 		const database = companyDatabase(environmentId);
 		if (!(await this.#companyExists(database))) return { revoked: false, user: null };
@@ -5158,8 +5166,8 @@ export class Gateway {
 			throw error;
 		}
 		if (n === null) return { revoked: false, user: null };
-		const roleName = `${database}_s${n}`;
-		const role = quoted(roleName);
+		const targetRole = principal !== null && principal !== undefined ? this.#directLoginRoleName(database, n, principal) : null;
+		const lockKey = targetRole ?? `${database}_s${n}`;
 		let client;
 		try {
 			client = await this.#pool(database, "qorpera_data_admin").connect();
@@ -5174,21 +5182,33 @@ export class Gateway {
 		client.on("error", onClientError);
 		try {
 			await client.query("begin; set local lock_timeout = 5000");
-			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [roleName]);
-			const has = await client.query("select 1 from pg_catalog.pg_roles where rolname = $1", [roleName]);
-			if (has.rowCount === 0) {
+			await client.query("select pg_catalog.pg_advisory_xact_lock(hashtext('qorpera_data.direct'), hashtext($1))", [lockKey]);
+			const matched = targetRole
+				? (await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = $1", [targetRole])).rows.map(
+						(row) => row.name,
+					)
+				: (
+						await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [
+							`^${database}_s${n}(_d[0-9a-f]{16})?$`,
+						])
+					).rows.map((row) => row.name);
+			if (matched.length === 0) {
 				await client.query("rollback");
 				return { revoked: false, user: null };
 			}
-			await client.query(`alter role ${role} nologin`);
-			await client.query(`revoke all on database ${quoted(database)} from ${role}`);
+			const roleList = matched.map(quoted).join(", ");
+			for (const r of matched) await client.query(`alter role ${quoted(r)} nologin`);
+			await client.query(`revoke all on database ${quoted(database)} from ${roleList}`);
 			await this.#pool("postgres", "qorpera_data_watch")
-				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = $2", [database, roleName])
+				.query("select pg_catalog.pg_terminate_backend(pid) from pg_catalog.pg_stat_activity where datname = $1 and usename = any($2::text[])", [
+					database,
+					matched,
+				])
 				.catch(() => undefined);
-			await client.query(`drop owned by ${role}`);
-			await client.query(`drop role if exists ${role}`);
+			await client.query(`drop owned by ${roleList}`);
+			for (const r of matched) await client.query(`drop role if exists ${quoted(r)}`);
 			await client.query("commit");
-			return { revoked: true, user: roleName };
+			return { revoked: true, user: targetRole ?? `${database}_s${n}`, revokedUsers: matched };
 		} catch (error) {
 			await client.query("rollback").catch((rbError) => {
 				lost ??= rbError;
@@ -6326,7 +6346,10 @@ export class Gateway {
 			n = found.rows[0].n;
 			const roles = ["o", "w", "r", "s"].map((kind) => `${database}_${kind}${n}`);
 			const existing = (
-				await client.query("select rolname::text as name from pg_catalog.pg_roles where rolname = any($1::text[]) order by rolname", [roles])
+				await client.query(
+					"select rolname::text as name from pg_catalog.pg_roles where rolname = any($1::text[]) or rolname ~ $2 order by rolname",
+					[roles, `^${database}_s${n}_d[0-9a-f]{16}$`],
+				)
 			).rows.map((row) => row.name);
 			if (existing.length > 0) {
 				const roleList = existing.map(quoted).join(", ");
@@ -6417,7 +6440,7 @@ export class Gateway {
 				}
 				const roles = (
 					await admin.query("select rolname::text as name from pg_catalog.pg_roles where rolname ~ $1 order by rolname", [
-						`^${database}_([owrs][0-9]+|t[owr]_[0-9a-f]{16})$`,
+						`^${database}_([owrs][0-9]+|s[0-9]+_d[0-9a-f]{16}|t[owr]_[0-9a-f]{16})$`,
 					])
 				).rows.map((row) => row.name);
 				const rolesDropped = [];
@@ -6563,24 +6586,31 @@ export class Gateway {
 				if (pathDb !== null) refuse(404, "Not a call the data gateway answers");
 				const body = await this.#readJsonBody(read);
 				for (const key of Object.keys(body)) {
-					if (!["database", "access", "connectionLimit"].includes(key)) refuse(400, `Unknown argument: ${key}`);
+					if (!["database", "access", "connectionLimit", "principal"].includes(key)) refuse(400, `Unknown argument: ${key}`);
 				}
 				return this.provisionDirectLogin(environmentId, body.database, {
 					...(body.access !== undefined ? { access: body.access } : {}),
 					...(body.connectionLimit !== undefined ? { connectionLimit: body.connectionLimit } : {}),
+					...(body.principal !== undefined ? { principal: body.principal } : {}),
 				});
 			}
 			if (method === "DELETE") {
 				const body = await this.#readOptionalJsonBody(headers, read);
 				for (const key of Object.keys(body)) {
-					if (key !== "database") refuse(400, `Unknown argument: ${key}`);
+					if (!["database", "principal"].includes(key)) refuse(400, `Unknown argument: ${key}`);
 				}
 				const queryDb = searchParams.has("database") ? searchParams.get("database") : null;
 				const bodyDb = body.database ?? null;
 				const given = [pathDb, queryDb, bodyDb].filter((value) => value !== null);
 				if (given.length === 0) refuse(400, "Name a database");
 				if (new Set(given).size > 1) refuse(400, "Conflicting database parameters");
-				return this.revokeDirectLogin(environmentId, given[0]);
+				const queryPrincipal = searchParams.has("principal") ? searchParams.get("principal") : null;
+				const bodyPrincipal = body.principal ?? null;
+				if (queryPrincipal !== null && bodyPrincipal !== null && queryPrincipal !== bodyPrincipal) {
+					refuse(400, "Conflicting principal parameters");
+				}
+				const principal = queryPrincipal ?? bodyPrincipal;
+				return this.revokeDirectLogin(environmentId, given[0], principal !== null ? { principal } : {});
 			}
 			refuse(405, "Use POST or DELETE");
 		}

@@ -13,6 +13,8 @@ do $$ begin
 		or to_regprocedure('public.qorpera_web_sync_live_deployment()') is null
 		or to_regprocedure('public.qorpera_code_site_for_auto_redeploy(text,text,uuid,text,text,integer)') is null
 		or to_regprocedure('public.qorpera_code_site_auto_redeploy_switch(text,text,uuid,uuid,uuid,text,text)') is null
+		or to_regprocedure('public.qorpera_web_edge_snapshot()') is null
+		or to_regprocedure('public.qorpera_surface_stale_app_deployments_due(integer)') is null
 		or to_regprocedure('public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)') is null then
 		raise exception '20260930936000 requires surface app host server hosting (20260930935000)';
 	end if;
@@ -48,11 +50,47 @@ as $$
 			select 1
 			from public.qorpera_company_site_domains as dom
 			where dom.site_id = p_site_id
+				and dom.is_primary
 				and dom.status in ('dns_verified', 'tls_active')
 		)
 $$;
 
 revoke all on function public.qorpera_site_credential_inputs_blocked(uuid, text, boolean)
+	from public, anon, authenticated, service_role, qorpera_secret_broker;
+
+create function public.qorpera_site_has_runtime_secrets(
+	p_profile_id uuid,
+	p_site_id uuid,
+	p_target_env text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+	select exists (
+		select 1
+		from public.qorpera_app_secret_grants as app_grant
+		join public.qorpera_cloud_secrets as secret on secret.id = app_grant.secret_id
+		join public.qorpera_profile_members as issuer
+			on issuer.profile_id = app_grant.profile_id
+			and issuer.user_id = app_grant.issued_by_user_id
+			and issuer.role in ('owner', 'admin')
+		where app_grant.profile_id = p_profile_id
+			and app_grant.site_id = p_site_id
+			and app_grant.status = 'active'
+			and app_grant.scope = 'runtime'
+			and app_grant.target_env = p_target_env
+			and secret.profile_id = app_grant.profile_id
+			and secret.owner_kind = 'company'
+			and secret.connector_id = 'environment'
+			and secret.status = 'active'
+			and public.qorpera_coding_environment_name_allowed(secret.secret_name)
+	)
+$$;
+
+revoke all on function public.qorpera_site_has_runtime_secrets(uuid, uuid, text)
 	from public, anon, authenticated, service_role, qorpera_secret_broker;
 
 create temp table sasa_before as
@@ -66,6 +104,8 @@ where p.pronamespace = 'public'::regnamespace
 		'public.qorpera_web_sync_live_deployment()'::regprocedure,
 		'public.qorpera_code_site_for_auto_redeploy(text,text,uuid,text,text,integer)'::regprocedure,
 		'public.qorpera_code_site_auto_redeploy_switch(text,text,uuid,uuid,uuid,text,text)'::regprocedure,
+		'public.qorpera_web_edge_snapshot()'::regprocedure,
+		'public.qorpera_surface_stale_app_deployments_due(integer)'::regprocedure,
 		'public.qorpera_surface_site_deployment_register(uuid,text,text,jsonb,integer,bigint,boolean,boolean,text,text,text,text,integer,text,integer,integer,numeric,text,jsonb,boolean)'::regprocedure
 	]);
 
@@ -164,7 +204,8 @@ select pg_temp.sasa_patch('public.qorpera_remove_company_site_domain(uuid)', arr
 	if not found then
 		raise exception 'Only founders and admins manage site domains' using errcode = '42501';
 	end if;
-	if v_dom.status in ('dns_verified', 'tls_active')
+	if v_dom.is_primary
+		and v_dom.status in ('dns_verified', 'tls_active')
 		and v_site.id is not null
 		and v_site.is_public
 		and v_site.live_deployment_id is not null then
@@ -176,6 +217,7 @@ select pg_temp.sasa_patch('public.qorpera_remove_company_site_domain(uuid)', arr
 				from public.qorpera_company_site_domains as other
 				where other.site_id = v_site.id
 					and other.id <> v_dom.id
+					and other.is_primary
 					and other.status in ('dns_verified', 'tls_active')
 			) then
 			raise exception 'SITE_CONTAINS_CREDENTIAL_INPUTS' using errcode = '22023';
@@ -189,8 +231,41 @@ select pg_temp.sasa_patch('public.qorpera_code_site_for_auto_redeploy(text,text,
 	);$old$,
 	$new$		'vcpuLimit', coalesce((v_site_spec ->> 'vcpuLimit')::numeric, v_dep.vcpu_limit, 1.00),
 		'runtimeEnvConfig', v_site.runtime_env_config,
-		'linkedDatabaseName', v_site.linked_database_name
+		'linkedDatabaseName', v_site.linked_database_name,
+		'hasRuntimeDevSecrets', public.qorpera_site_has_runtime_secrets(v_site.profile_id, v_site.id, 'dev'),
+		'hasRuntimeProdSecrets', public.qorpera_site_has_runtime_secrets(v_site.profile_id, v_site.id, 'prod')
 	);$new$
+]);
+
+select pg_temp.sasa_patch('public.qorpera_web_edge_snapshot()', array[
+	$old$						'env_spec', coalesce(dep.env_spec, '{}'::jsonb)
+					)
+					from public.qorpera_company_site_deployments as dep
+					where dep.id = site.live_deployment_id$old$,
+	$new$						'env_spec', coalesce(dep.env_spec, '{}'::jsonb),
+						'has_credential_inputs', coalesce(dep.has_credential_inputs, false)
+					)
+					from public.qorpera_company_site_deployments as dep
+					where dep.id = site.live_deployment_id$new$
+]);
+
+select pg_temp.sasa_patch('public.qorpera_surface_stale_app_deployments_due(integer)', array[
+	$old$					'profileId', row.profile_id,
+					'upstreamAddr', row.upstream_addr
+				)
+				order by row.sort_at asc, row.id asc
+			)
+			from (
+				select dep.id, dep.site_id, dep.profile_id, dep.upstream_addr,$old$,
+	$new$					'profileId', row.profile_id,
+					'environmentId', row.environment_id,
+					'linkedDatabaseName', row.linked_database_name,
+					'upstreamAddr', row.upstream_addr
+				)
+				order by row.sort_at asc, row.id asc
+			)
+			from (
+				select dep.id, dep.site_id, dep.profile_id, site.environment_id, site.linked_database_name, dep.upstream_addr,$new$
 ]);
 
 create function public.qorpera_get_surface_app_runtime_config(p_surface_id uuid)
@@ -437,24 +512,8 @@ begin
 		return jsonb_build_object('schema', 'qorpera.surface-site-runtime-config/v1', 'found', false);
 	end if;
 
-	select
-		coalesce(bool_or(app_grant.target_env = 'dev'), false),
-		coalesce(bool_or(app_grant.target_env = 'prod'), false)
-	into v_has_dev_secrets, v_has_prod_secrets
-	from public.qorpera_app_secret_grants as app_grant
-	join public.qorpera_cloud_secrets as secret on secret.id = app_grant.secret_id
-	join public.qorpera_profile_members as issuer
-		on issuer.profile_id = app_grant.profile_id
-		and issuer.user_id = app_grant.issued_by_user_id
-		and issuer.role in ('owner', 'admin')
-	where app_grant.profile_id = v_site.profile_id
-		and app_grant.site_id = v_site.id
-		and app_grant.status = 'active'
-		and app_grant.scope = 'runtime'
-		and secret.connector_id = 'environment'
-		and secret.owner_kind = 'company'
-		and secret.status = 'active'
-		and public.qorpera_coding_environment_name_allowed(secret.secret_name);
+	v_has_dev_secrets := public.qorpera_site_has_runtime_secrets(v_site.profile_id, v_site.id, 'dev');
+	v_has_prod_secrets := public.qorpera_site_has_runtime_secrets(v_site.profile_id, v_site.id, 'prod');
 
 	return jsonb_build_object(
 		'schema', 'qorpera.surface-site-runtime-config/v1',
@@ -489,6 +548,10 @@ begin
 		end if;
 		execute format(
 			'grant execute on function public.qorpera_site_credential_inputs_blocked(uuid, text, boolean) to %I',
+			v_owner
+		);
+		execute format(
+			'grant execute on function public.qorpera_site_has_runtime_secrets(uuid, uuid, text) to %I',
 			v_owner
 		);
 	end loop;

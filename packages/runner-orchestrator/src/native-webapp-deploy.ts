@@ -295,11 +295,14 @@ export function buildNativeAppEnvSpec(options: {
 	return merged;
 }
 
+const DIRECT_LOGIN_PRINCIPAL_PATTERN = /^[A-Za-z0-9:._-]{1,128}$/;
+
 export async function provisionCompanyDataDirectLogin(options: {
 	readonly companyDataUrl: string;
 	readonly directLoginToken: string;
 	readonly environmentId: string;
 	readonly database: string;
+	readonly principal?: string;
 	readonly access?: "read-write" | "read-only";
 	readonly connectionLimit?: number;
 	readonly fetchImpl?: AppHostFetch;
@@ -323,21 +326,28 @@ export async function provisionCompanyDataDirectLogin(options: {
 	) {
 		throw new Error("COMPANY_DATA_DIRECT_LOGIN_DATABASE_INVALID");
 	}
+	if (options.principal !== undefined && !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.principal)) {
+		throw new Error("COMPANY_DATA_DIRECT_LOGIN_PRINCIPAL_INVALID");
+	}
 	const base = options.companyDataUrl.replace(/\/+$/, "");
 	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
-	const res = await fetchImpl(`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login`, {
-		method: "POST",
-		headers: {
-			authorization: `Bearer ${options.directLoginToken}`,
-			"content-type": "application/json",
+	const res = await fetchImpl(
+		`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login`,
+		{
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${options.directLoginToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				database: options.database,
+				access: options.access ?? "read-write",
+				connectionLimit: options.connectionLimit ?? 4,
+				...(options.principal !== undefined ? { principal: options.principal } : {}),
+			}),
+			signal: options.signal,
 		},
-		body: JSON.stringify({
-			database: options.database,
-			access: options.access ?? "read-write",
-			connectionLimit: options.connectionLimit ?? 4,
-		}),
-		signal: options.signal,
-	});
+	);
 	if (res.status !== 200) {
 		throw new Error(`COMPANY_DATA_DIRECT_LOGIN_FAILED_${res.status}`);
 	}
@@ -364,6 +374,43 @@ export async function provisionCompanyDataDirectLogin(options: {
 	};
 }
 
+export async function revokeCompanyDataDirectLogin(options: {
+	readonly companyDataUrl: string;
+	readonly directLoginToken: string;
+	readonly environmentId: string;
+	readonly database: string;
+	readonly principal?: string;
+	readonly fetchImpl?: AppHostFetch;
+	readonly signal?: AbortSignal;
+}): Promise<boolean> {
+	if (
+		!isUuid(options.environmentId) ||
+		!LINKED_DATABASE_NAME_PATTERN.test(options.database) ||
+		options.database === "qorpera" ||
+		options.database.startsWith("pg_") ||
+		options.database.startsWith("qorpera_")
+	) {
+		return false;
+	}
+	if (options.principal !== undefined && !DIRECT_LOGIN_PRINCIPAL_PATTERN.test(options.principal)) {
+		return false;
+	}
+	const base = options.companyDataUrl.replace(/\/+$/, "");
+	const query = options.principal !== undefined ? `?principal=${encodeURIComponent(options.principal)}` : "";
+	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
+	const res = await fetchImpl(
+		`${base}/v1/admin/company-data/${encodeURIComponent(options.environmentId)}/direct-login/${encodeURIComponent(options.database)}${query}`,
+		{
+			method: "DELETE",
+			headers: {
+				authorization: `Bearer ${options.directLoginToken}`,
+			},
+			signal: options.signal,
+		},
+	);
+	return res.status === 200;
+}
+
 export async function resolveAppRuntimeEnv(options: {
 	readonly baseEnvSpec: Readonly<Record<string, string>>;
 	readonly siteId: string;
@@ -381,6 +428,7 @@ export async function resolveAppRuntimeEnv(options: {
 }> {
 	const runtimeEnv: Record<string, string> = { ...options.baseEnvSpec };
 	const sensitive: Record<string, string> = {};
+	const signal = options.signal ?? new AbortController().signal;
 
 	if (options.hasRuntimeSecrets) {
 		const broker = options.nativeEdge.broker;
@@ -397,7 +445,7 @@ export async function resolveAppRuntimeEnv(options: {
 			targetEnv: options.targetEnv,
 			deploymentId: options.deploymentId,
 			...(broker.fetchImpl ? { fetchImpl: broker.fetchImpl } : {}),
-			...(options.signal ? { signal: options.signal } : {}),
+			signal,
 		});
 		for (const [name, value] of Object.entries(bundle.secrets)) {
 			if (!appSecretEnvNameAllowed(name) || name === "PORT" || name === "NODE_ENV") {
@@ -414,15 +462,17 @@ export async function resolveAppRuntimeEnv(options: {
 		if (!companyDataUrl || !directLoginToken) {
 			throw new Error("COMPANY_DATA_DIRECT_LOGIN_UNAVAILABLE");
 		}
+		const isProd = options.targetEnv === "prod";
 		const direct = await provisionCompanyDataDirectLogin({
 			companyDataUrl,
 			directLoginToken,
 			environmentId: options.environmentId,
 			database: options.linkedDatabaseName,
-			access: "read-write",
-			connectionLimit: 4,
+			principal: options.deploymentId,
+			access: isProd ? "read-write" : "read-only",
+			connectionLimit: isProd ? 4 : 2,
 			...(options.nativeEdge.companyDataFetchImpl ? { fetchImpl: options.nativeEdge.companyDataFetchImpl } : {}),
-			...(options.signal ? { signal: options.signal } : {}),
+			signal,
 		});
 		runtimeEnv.DATABASE_URL = direct.connectionString;
 		sensitive.DATABASE_URL = direct.connectionString;

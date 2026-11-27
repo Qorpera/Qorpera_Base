@@ -850,6 +850,57 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 		assert.equal(revoked.revoked, true);
 		const afterRevoke = new pg.Client({ connectionString: roCreds.connectionString });
 		await assert.rejects(() => afterRevoke.connect());
+
+		const liveCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-write",
+			connectionLimit: 2,
+			principal: "dep-live-1",
+		});
+		const previewCreds = await gateway.provisionDirectLogin(envId, "shop", {
+			access: "read-only",
+			connectionLimit: 2,
+			principal: "dep-preview-2",
+		});
+		assert.notEqual(liveCreds.user, previewCreds.user);
+		assert.match(liveCreds.user, /^c_[0-9a-f]{32}_s[0-9]+_d[0-9a-f]{16}$/);
+
+		const liveClient = new pg.Client({ connectionString: liveCreds.connectionString });
+		await liveClient.connect();
+		try {
+			const inserted = await liveClient.query("insert into items (title) values ('Sencha') returning title");
+			assert.equal(inserted.rows[0].title, "Sencha");
+		} finally {
+			await liveClient.end();
+		}
+
+		const previewClient = new pg.Client({ connectionString: previewCreds.connectionString });
+		await previewClient.connect();
+		try {
+			const count = await previewClient.query("select count(*)::int as n from items");
+			assert.ok(count.rows[0].n >= 4);
+			await assert.rejects(() => previewClient.query("insert into items (title) values ('BlockedPreview')"), /permission denied/);
+		} finally {
+			await previewClient.end();
+		}
+
+		const revokedPreview = await gateway.revokeDirectLogin(envId, "shop", { principal: "dep-preview-2" });
+		assert.equal(revokedPreview.revoked, true);
+		const deadPreview = new pg.Client({ connectionString: previewCreds.connectionString });
+		await assert.rejects(() => deadPreview.connect());
+
+		const liveStillWorks = new pg.Client({ connectionString: liveCreds.connectionString });
+		await liveStillWorks.connect();
+		try {
+			const check = await liveStillWorks.query("select count(*)::int as n from items");
+			assert.ok(check.rows[0].n >= 4);
+		} finally {
+			await liveStillWorks.end();
+		}
+
+		const revokedAll = await gateway.revokeDirectLogin(envId, "shop");
+		assert.equal(revokedAll.revoked, true);
+		const deadLive = new pg.Client({ connectionString: liveCreds.connectionString });
+		await assert.rejects(() => deadLive.connect());
 	});
 
 	it("handles trigger re-registration, auto-reconnects LISTEN after PG backend disconnect, serializes concurrent direct login provisioning, resists X-Forwarded-For spoofing, and fails closed on malformed public TOML", async () => {

@@ -700,7 +700,8 @@ export const SURFACES: Record<string, string> = {
 	"Grant secret": "Tildel hemmelighed",
 	"Granting…": "Tildeler…",
 	"Revoke secret": "Tilbagekald hemmelighed",
-	"Changes apply on the next preview or publish.": "Ændringer træder i kraft ved næste forhåndsvisning eller udgivelse.",
+	"Changes apply on the next preview or publish.":
+		"Ændringer træder i kraft ved næste forhåndsvisning eller udgivelse.",
 	"Publish or preview this app once before configuring runtime settings.":
 		"Udgiv eller forhåndsvis denne app én gang, før du konfigurerer kørselsindstillinger.",
 	"Loading runtime settings…": "Indlæser kørselsindstillinger…",
@@ -710,12 +711,11 @@ export const SURFACES: Record<string, string> = {
 	"Use a lowercase database name like shop (not qorpera or pg_*).":
 		"Brug et databasenavn med små bogstaver som shop (ikke qorpera eller pg_*).",
 	"Duplicate environment variable name: {name}.": "Duplikeret miljøvariabelnavn: {name}.",
+	"e.g. API_BASE_URL": "f.eks. API_BASE_URL",
 	"Secret to grant": "Hemmelighed at tildele",
 	"Secret scope": "Hemmelighedsområde",
 	"Target environment": "Målmiljø",
 	Runtime: "Kørsel",
 	Build: "Byg",
-	Test: "Test",
 	Production: "Produktion",
-	Preview: "Forhåndsvisning",
 };
