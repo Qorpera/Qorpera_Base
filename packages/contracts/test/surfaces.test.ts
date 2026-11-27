@@ -15,8 +15,13 @@ import {
 	parsePointToChangeTarget,
 	parseStudioPatchOps,
 	parseSurfaceAppRuntimeConfig,
+	parseSurfaceCombineTracksResult,
+	parseSurfacePreviewCompositionState,
 	parseSurfacePreviewFrameState,
 	parseSurfaceSession,
+	parseSurfaceSessionArtifact,
+	parseSurfaceSessionChecksSummary,
+	parseSurfaceSessionProgressStep,
 	parseSurfaceSummary,
 	parseSurfaceWorkspace,
 	STUDIO_BINARY_MAX_BYTES,
@@ -877,5 +882,147 @@ describe("surfaces contracts", () => {
 				availableSecrets: [],
 			}),
 		).toThrow("runtimeConfig.linkedDatabaseName");
+	});
+
+	it("parses app workbench track artifacts, progress steps, checks summary, preview scope, and combine results", () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const sessionB = randomUUID();
+		const artifactId = randomUUID();
+		const changeId = randomUUID();
+		const jobId = randomUUID();
+		const now = "2026-11-27T14:00:00Z";
+
+		const artifact = parseSurfaceSessionArtifact({
+			id: artifactId,
+			sessionId,
+			surfaceId,
+			kind: "mockup",
+			artifactKey: "billing-v1",
+			title: "Billing mockup",
+			summary: "First visual pass",
+			contentFormat: "html",
+			contentText: "<main>Hello</main>",
+			imageRef: null,
+			changeId,
+			revision: 2,
+			createdByKind: "agent",
+			createdByUserId: null,
+			createdAt: now,
+			updatedAt: now,
+		});
+		expect(artifact.artifactKey).toBe("billing-v1");
+		expect(artifact.revision).toBe(2);
+
+		expect(() =>
+			parseSurfaceSessionArtifact({
+				...artifact,
+				artifactKey: "BAD KEY!",
+			}),
+		).toThrow("artifact.artifactKey");
+
+		const step = parseSurfaceSessionProgressStep({
+			id: "step-1",
+			label: "Build mockup",
+			status: "done",
+			detail: "Verified desktop layout",
+		});
+		expect(step.status).toBe("done");
+
+		const checks = parseSurfaceSessionChecksSummary({
+			status: "passed",
+			summary: "All 12 tests passed",
+			commands: [{ name: "vitest", status: "passed", durationMs: 950 }],
+			updatedAt: now,
+		});
+		expect(checks.commands?.[0]?.durationMs).toBe(950);
+
+		const session = parseSurfaceSession({
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Billing overhaul",
+			prompt: "Redesign billing",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			trackBranch: "qorpera/coding/billing-overhaul",
+			checksSummary: checks,
+			progressSteps: [step],
+			currentActivity: "Checking responsive states",
+			externalPr: {
+				provider: "github",
+				repository: "qorpera/qorpera_base",
+				number: 42,
+				url: "https://github.com/qorpera/qorpera_base/pull/42",
+				state: "open",
+				headBranch: "qorpera/coding/billing-overhaul",
+				baseBranch: "master",
+				title: "Billing overhaul",
+				updatedAt: now,
+			},
+			artifacts: [artifact],
+			hasActiveChat: true,
+			question: null,
+			changes: [],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		});
+		expect(session.trackBranch).toBe("qorpera/coding/billing-overhaul");
+		expect(session.artifacts).toHaveLength(1);
+		expect(session.progressSteps).toHaveLength(1);
+		expect(session.checksSummary?.status).toBe("passed");
+		expect(session.externalPr?.number).toBe(42);
+
+		const previewState = parseSurfacePreviewCompositionState({
+			surfaceId,
+			mode: "single",
+			selectedSessionId: sessionId,
+			previewScope: "track",
+			primary: {
+				previewId: null,
+				status: "live_baseline",
+				doorActionUrl: null,
+				memberPass: null,
+				activeRoute: "/billing",
+				toggledChangeIds: [changeId],
+				conflictReport: null,
+				errorDetail: null,
+			},
+			compareFrames: [],
+		});
+		expect(previewState.selectedSessionId).toBe(sessionId);
+		expect(previewState.previewScope).toBe("track");
+
+		const combinePreview = parseSurfaceCombineTracksResult({
+			mode: "preview",
+			sessionIds: [sessionId, sessionB],
+			previewState: {
+				...previewState,
+				selectedSessionId: null,
+				previewScope: "explicit",
+			},
+		});
+		expect(combinePreview.mode).toBe("preview");
+		if (combinePreview.mode === "preview") {
+			expect(combinePreview.previewState.previewScope).toBe("explicit");
+		}
+
+		const combineLand = parseSurfaceCombineTracksResult({
+			mode: "land",
+			sessionIds: [sessionId, sessionB],
+			changeIds: [changeId],
+			jobId,
+		});
+		expect(combineLand).toEqual({
+			mode: "land",
+			sessionIds: [sessionId, sessionB],
+			changeIds: [changeId],
+			jobId,
+		});
 	});
 });

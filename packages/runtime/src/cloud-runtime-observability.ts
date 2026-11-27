@@ -126,6 +126,8 @@ export const CLOUD_RUNTIME_TOOL_OPERATIONS = [
 	"stage_surface_artifact",
 	"compose_surface_layout",
 	"coding_record_change",
+	"coding_publish_artifact",
+	"coding_report_progress",
 	"coding_view_attachment",
 	"propose_surface",
 	"start_surface_session",

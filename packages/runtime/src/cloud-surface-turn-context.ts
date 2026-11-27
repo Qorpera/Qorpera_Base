@@ -563,6 +563,9 @@ export interface SurfaceTurnBriefInput {
 	readonly openChanges?: readonly SurfaceTurnOpenChange[] | null;
 	readonly resolvedChanges?: readonly SurfaceTurnResolvedChange[] | null;
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly publishArtifact?: CloudSurfaceToolsPort["publishArtifact"];
+	readonly reportProgress?: CloudSurfaceToolsPort["reportProgress"];
+	readonly surfaceKind?: string;
 	readonly memberImages?: readonly SurfaceMemberImage[] | null;
 	readonly viewAttachment?: SurfaceAttachmentReader;
 }
@@ -586,9 +589,10 @@ export interface SurfaceCodingNarratePort {
 
 export interface SurfaceCodingTurnBinding extends SurfaceTurnBriefInput {
 	readonly recordChange?: CloudSurfaceToolsPort["recordChange"];
+	readonly publishArtifact?: CloudSurfaceToolsPort["publishArtifact"];
+	readonly reportProgress?: CloudSurfaceToolsPort["reportProgress"];
 	readonly stageSurfacePatch?: SurfacePatchToolPort["stageSurfacePatch"];
 	readonly stageSurfaceOpsAction?: SurfaceOpsActionToolPort["stageSurfaceOpsAction"];
-	readonly surfaceKind?: string;
 	readonly surfaceIcon?: string | null;
 	readonly surfaceIsGlobal?: boolean | null;
 	readonly surfaceArchetype?: SurfaceArchetype | null;
@@ -657,6 +661,20 @@ export function buildSurfaceTurnBrief(binding: SurfaceTurnBriefInput): string {
 				'For multi-file codebases, verify changes pre-flight with `coding_run_command` (`runChecks: true` when `.qorpera/checks.json` exists; opt into `"surfaceGate": "stage"` to enforce checks automatically on `coding_finish`, or leave default `"none"` for instant Preview staging). ' +
 				"Keep each staged change atomic, self-contained, and conflict-minimizing — touch only the files required for your deliverable and avoid unnecessary edits to unrelated shared files.",
 	];
+
+	const isAppWorkbenchTrack =
+		!isFolderOnly &&
+		!binding.isInternalReconciliation &&
+		(binding.surfaceKind === "web_app" || binding.surfaceKind === "mobile_app" || binding.surfaceKind === "desktop_app");
+	if (isAppWorkbenchTrack) {
+		sections.push(
+			"## App Workbench Collaboration\n" +
+				"This session is an isolated update track on its own branch; changes stay isolated to this track and never blend into other tracks unless the member explicitly combines them.\n" +
+				"- Call `coding_publish_artifact` (`kind`: `mockup`, `plan`, `report`, `checklist`, or `diff_summary`; `contentFormat`: `html`, `markdown`, `json`, or `image_ref`) whenever sharing visual design mockups, architecture or rollout plans, audits, or checklists inline in the thread. Reuse the same `artifactKey` to publish a revised version cleanly.\n" +
+				"- Call `coding_report_progress` during multi-step work to keep the member's live status line (`currentActivity`), step checklist (`progressSteps`), and verification summary (`checksSummary`) current.\n" +
+				"- For pure discussion, design review, or planning turns where no code should change yet, publish your mockup, plan, or report artifact and call `coding_finish` with the current `baseSha` (no code change will be staged).",
+		);
+	}
 
 	const interfacesSection = buildCompanyInterfacesSection(binding.companyInterfaces, {
 		currentSlug: binding.surfaceSlug,

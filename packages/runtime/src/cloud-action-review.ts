@@ -526,6 +526,8 @@ export function cloudActionEffect(
 		case "steer_surface_session":
 		case "manage_surface_automation":
 		case "coding_record_change":
+		case "coding_publish_artifact":
+		case "coding_report_progress":
 		case "stage_surface_patch":
 		case "stage_surface_ops_action":
 		case "compose_surface_layout":

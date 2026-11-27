@@ -12,16 +12,23 @@ import {
 	parseClosedRecord,
 	parseInteger,
 	parseRecord,
+	parseSha256Hex,
 	parseStudioPatchOps,
 	parseSurfaceLayoutText,
+	parseSurfaceSessionArtifact,
+	parseSurfaceSessionChecksSummary,
+	parseSurfaceSessionProgressStep,
 	parseSurfaceSlug,
 	parseUuid,
 	resolveStudioFolderPath,
 	type StudioPatchOp,
 	SURFACE_ARCHETYPES,
 	SURFACE_AUTOMATION_STATUSES,
+	SURFACE_CHECKS_STATUSES,
 	SURFACE_FIGURES,
 	SURFACE_GROUPS,
+	SURFACE_IMAGE_MAX_TOTAL_BYTES,
+	SURFACE_IMAGE_MEDIA_TYPES,
 	SURFACE_KINDS,
 	SURFACE_LAYOUT_PATH,
 	SURFACE_MAX_CHANGE_SUMMARY_CHARS,
@@ -33,7 +40,12 @@ import {
 	SURFACE_MAX_SUPERSEDE_KEY_CHARS,
 	SURFACE_MAX_TITLE_CHARS,
 	SURFACE_PREVIEW_MODES,
+	SURFACE_PROGRESS_STEP_STATUSES,
 	SURFACE_PUBLISH_STATUSES,
+	SURFACE_SESSION_ARTIFACT_FORMATS,
+	SURFACE_SESSION_ARTIFACT_KEY_PATTERN,
+	SURFACE_SESSION_ARTIFACT_KINDS,
+	SURFACE_SESSION_ARTIFACT_MAX_BYTES,
 	SURFACE_SESSION_STATES,
 	SURFACE_SOURCE_KINDS,
 	SURFACE_STATUSES,
@@ -41,9 +53,15 @@ import {
 	type SurfaceAutomationStatus,
 	type SurfaceChangeDiffStats,
 	type SurfaceGroup,
+	type SurfaceImageRef,
 	type SurfaceKind,
 	type SurfacePreviewMode,
 	type SurfacePublishStatus,
+	type SurfaceSessionArtifact,
+	type SurfaceSessionArtifactFormat,
+	type SurfaceSessionArtifactKind,
+	type SurfaceSessionChecksSummary,
+	type SurfaceSessionProgressStep,
 	type SurfaceSessionState,
 	type SurfaceSourceKind,
 	type SurfaceStatus,
@@ -167,6 +185,31 @@ export interface CodingRecordChangeRequest {
 	readonly supersedeKey?: string | null;
 }
 
+export interface CodingPublishArtifactRequest {
+	readonly kind: SurfaceSessionArtifactKind;
+	readonly artifactKey: string;
+	readonly title: string;
+	readonly summary?: string | null;
+	readonly contentFormat: SurfaceSessionArtifactFormat;
+	readonly contentText?: string | null;
+	readonly imageRef?: SurfaceImageRef | null;
+	readonly changeId?: string | null;
+}
+
+export interface CodingReportProgressRequest {
+	readonly currentActivity?: string | null;
+	readonly progressSteps?: readonly SurfaceSessionProgressStep[];
+	readonly checksSummary?: SurfaceSessionChecksSummary | null;
+}
+
+export interface CodingReportProgressResult {
+	readonly sessionId: string;
+	readonly currentActivity: string | null;
+	readonly progressSteps: readonly SurfaceSessionProgressStep[];
+	readonly checksSummary: SurfaceSessionChecksSummary | null;
+	readonly updatedAt: string;
+}
+
 export interface ProposeSurfaceRequest {
 	readonly slug: string;
 	readonly title: string;
@@ -262,6 +305,16 @@ export interface CloudSurfaceToolsPort {
 		request: CodingRecordChangeRequest,
 		context: CloudToolContext,
 	): Promise<SurfaceChangeStagedResult>;
+	publishArtifact?(
+		sessionId: string,
+		request: CodingPublishArtifactRequest,
+		context: CloudToolContext,
+	): Promise<SurfaceSessionArtifact>;
+	reportProgress?(
+		sessionId: string,
+		request: CodingReportProgressRequest,
+		context: CloudToolContext,
+	): Promise<CodingReportProgressResult>;
 	proposeSurface(
 		companyId: string,
 		request: ProposeSurfaceRequest,
@@ -286,6 +339,8 @@ export type SurfaceControlPlaneRpc =
 	| "qorpera_native_surface_start_session"
 	| "qorpera_native_surface_steer_session"
 	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_upsert_artifact"
+	| "qorpera_native_surface_report_progress"
 	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_renew_lease"
 	| "qorpera_native_surface_complete_turn"
@@ -716,6 +771,62 @@ export function createControlPlaneSurfaceToolsPort(
 				context.signal,
 			);
 			return parseRecordChangeResult(response, "recordChange");
+		},
+
+		async publishArtifact(sessionId, request, context) {
+			const response = await rpc(
+				"qorpera_native_surface_upsert_artifact",
+				{
+					p_profile_id: context.companyId,
+					p_session_id: sessionId,
+					p_lease_token: options.leaseToken ?? null,
+					p_kind: request.kind,
+					p_artifact_key: request.artifactKey,
+					p_title: request.title,
+					p_summary: request.summary ?? null,
+					p_content_format: request.contentFormat,
+					p_content_text: request.contentText ?? null,
+					p_image_ref: request.imageRef ?? null,
+					p_change_id: request.changeId ?? null,
+				},
+				context.signal,
+			);
+			return parseSurfaceSessionArtifact(response, "publishArtifact");
+		},
+
+		async reportProgress(sessionId, request, context) {
+			const response = await rpc(
+				"qorpera_native_surface_report_progress",
+				{
+					p_profile_id: context.companyId,
+					p_session_id: sessionId,
+					p_lease_token: options.leaseToken ?? null,
+					p_current_activity:
+						request.currentActivity === undefined
+							? null
+							: request.currentActivity === null
+								? ""
+								: request.currentActivity,
+					p_progress_steps: request.progressSteps === undefined ? null : [...request.progressSteps],
+					p_checks_summary: request.checksSummary ?? null,
+				},
+				context.signal,
+			);
+			const row = parseRecord(response, "reportProgress");
+			const rawSteps = row.progressSteps ?? [];
+			if (!Array.isArray(rawSteps)) throw new Error("reportProgress.progressSteps must be an array");
+			return {
+				sessionId: parseUuid(row.sessionId, "reportProgress.sessionId"),
+				currentActivity: parseOptionalWireText(row.currentActivity, "reportProgress.currentActivity", 240),
+				progressSteps: rawSteps.map((item, index) =>
+					parseSurfaceSessionProgressStep(item, `reportProgress.progressSteps[${index}]`),
+				),
+				checksSummary:
+					row.checksSummary === null || row.checksSummary === undefined
+						? null
+						: parseSurfaceSessionChecksSummary(row.checksSummary, "reportProgress.checksSummary"),
+				updatedAt: parseBoundedText(row.updatedAt, "reportProgress.updatedAt", 64),
+			};
 		},
 
 		async proposeSurface(companyId, request, context) {
@@ -2328,6 +2439,354 @@ export function createStageSurfaceOpsActionTool(
 					finishSession: parsed.finishSession,
 					staged: true,
 					...(result.updated === true ? { updated: true } : {}),
+				}),
+			};
+		},
+	};
+}
+
+export function createCodingPublishArtifactTool(
+	sessionId: string,
+	port: { publishArtifact: NonNullable<CloudSurfaceToolsPort["publishArtifact"]> },
+): CloudNativeTool {
+	return {
+		name: "coding_publish_artifact",
+		source: "worker",
+		description:
+			"Publish or revise a structured visual or written artifact (mockup, plan, report, checklist, or diff summary) directly inside this update track's thread so the member can review, discuss, and iterate on designs and plans alongside code changes. Reusing the same artifactKey updates the artifact in place and increments its revision.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			required: ["kind", "artifactKey", "title", "contentFormat"],
+			properties: {
+				kind: {
+					type: "string",
+					enum: [...SURFACE_SESSION_ARTIFACT_KINDS],
+					description: "Category of artifact shown in the track thread and side inspector.",
+				},
+				artifactKey: {
+					type: "string",
+					maxLength: 80,
+					description: "Stable lower-case key (e.g. 'checkout-mockup', 'migration-plan') within this track.",
+				},
+				title: {
+					type: "string",
+					minLength: 1,
+					maxLength: 160,
+					description: "Plain member-facing title for the artifact card.",
+				},
+				summary: {
+					type: "string",
+					maxLength: 2000,
+					description: "Optional concise summary shown on the inline card.",
+				},
+				contentFormat: {
+					type: "string",
+					enum: [...SURFACE_SESSION_ARTIFACT_FORMATS],
+					description: "Payload format: markdown, html (sandboxed preview), json, or image_ref.",
+				},
+				contentText: {
+					type: "string",
+					description: "Artifact body for markdown, html, or json formats (up to 256 KiB).",
+				},
+				imageRef: {
+					type: "object",
+					additionalProperties: false,
+					required: ["sha256", "bytes", "mediaType"],
+					properties: {
+						sha256: { type: "string" },
+						bytes: { type: "integer", minimum: 1, maximum: SURFACE_IMAGE_MAX_TOTAL_BYTES },
+						mediaType: { type: "string", enum: [...SURFACE_IMAGE_MEDIA_TYPES] },
+					},
+					description: "Image reference when contentFormat is image_ref.",
+				},
+				changeId: {
+					type: "string",
+					description: "Optional UUID of a staged change in this track linked to the artifact.",
+				},
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(
+					value,
+					"coding_publish_artifact",
+					["kind", "artifactKey", "title", "contentFormat"],
+					["summary", "contentText", "imageRef", "changeId"],
+				);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			const kind = parseEnumArg(raw.kind, SURFACE_SESSION_ARTIFACT_KINDS, "kind");
+			if (typeof raw.artifactKey !== "string") {
+				throw new CloudToolArgumentRefusal("artifactKey must be a non-empty string");
+			}
+			const artifactKey = raw.artifactKey.trim().toLowerCase();
+			if (!SURFACE_SESSION_ARTIFACT_KEY_PATTERN.test(artifactKey)) {
+				throw new CloudToolArgumentRefusal(
+					"artifactKey must be 1..80 lower-case letters, digits, dots, colons, underscores, or hyphens",
+				);
+			}
+			let title: string;
+			try {
+				title = parseBoundedText(raw.title, "title", 160).trim();
+			} catch {
+				throw new CloudToolArgumentRefusal("title must be 1..160 characters");
+			}
+			const summary = parseOptionalBounded(raw.summary, "summary", 2000);
+			const contentFormat = parseEnumArg(raw.contentFormat, SURFACE_SESSION_ARTIFACT_FORMATS, "contentFormat");
+			let contentText: string | null = null;
+			let imageRef: SurfaceImageRef | null = null;
+			if (contentFormat === "image_ref") {
+				if (raw.contentText !== undefined && raw.contentText !== null) {
+					throw new CloudToolArgumentRefusal("contentText must be omitted when contentFormat is image_ref");
+				}
+				let imageRecord: Record<string, unknown>;
+				try {
+					imageRecord = parseClosedRecord(raw.imageRef, "imageRef", ["sha256", "bytes", "mediaType"]);
+					imageRef = {
+						sha256: parseSha256Hex(imageRecord.sha256, "imageRef.sha256"),
+						bytes: parseInteger(imageRecord.bytes, "imageRef.bytes", 1, SURFACE_IMAGE_MAX_TOTAL_BYTES),
+						mediaType: parseEnumArg(imageRecord.mediaType, SURFACE_IMAGE_MEDIA_TYPES, "imageRef.mediaType"),
+					};
+				} catch (error) {
+					throw new CloudToolArgumentRefusal(
+						error instanceof CloudToolArgumentRefusal
+							? error.message
+							: "imageRef must be a valid { sha256, bytes, mediaType } object",
+					);
+				}
+			} else {
+				if (raw.imageRef !== undefined && raw.imageRef !== null) {
+					throw new CloudToolArgumentRefusal("imageRef is only allowed when contentFormat is image_ref");
+				}
+				if (typeof raw.contentText !== "string" || raw.contentText.trim().length === 0) {
+					throw new CloudToolArgumentRefusal("contentText must be a non-empty string");
+				}
+				if (Buffer.byteLength(raw.contentText, "utf8") > SURFACE_SESSION_ARTIFACT_MAX_BYTES) {
+					throw new CloudToolArgumentRefusal(`contentText exceeds ${SURFACE_SESSION_ARTIFACT_MAX_BYTES} bytes`);
+				}
+				contentText = raw.contentText;
+			}
+			let changeId: string | null = null;
+			if (raw.changeId !== undefined && raw.changeId !== null) {
+				if (!isUuid(raw.changeId)) {
+					throw new CloudToolArgumentRefusal("changeId must be a valid UUID");
+				}
+				changeId = raw.changeId;
+			}
+			return {
+				kind,
+				artifactKey,
+				title,
+				...(summary !== null ? { summary } : {}),
+				contentFormat,
+				...(contentText !== null ? { contentText } : {}),
+				...(imageRef !== null ? { imageRef } : {}),
+				...(changeId !== null ? { changeId } : {}),
+			} as unknown as JsonValue;
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as CodingPublishArtifactRequest;
+			let artifact: SurfaceSessionArtifact;
+			try {
+				artifact = await port.publishArtifact(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-artifact-published/v1",
+					sessionId,
+					artifactId: artifact.id,
+					artifactKey: artifact.artifactKey,
+					kind: artifact.kind,
+					title: artifact.title,
+					revision: artifact.revision,
+				}),
+			};
+		},
+	};
+}
+
+export function createCodingReportProgressTool(
+	sessionId: string,
+	port: { reportProgress: NonNullable<CloudSurfaceToolsPort["reportProgress"]> },
+): CloudNativeTool {
+	return {
+		name: "coding_report_progress",
+		source: "worker",
+		description:
+			"Update the live status line, step checklist, and check/test summary shown in this app update track so the member can follow work in real time.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				currentActivity: {
+					type: ["string", "null"],
+					maxLength: 240,
+					description: "Short plain-language description of what you are doing right now, or null to clear.",
+				},
+				progressSteps: {
+					type: "array",
+					maxItems: 16,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						required: ["id", "label", "status"],
+						properties: {
+							id: { type: "string", minLength: 1, maxLength: 48 },
+							label: { type: "string", minLength: 1, maxLength: 160 },
+							status: { type: "string", enum: [...SURFACE_PROGRESS_STEP_STATUSES] },
+							detail: { type: ["string", "null"], maxLength: 300 },
+						},
+					},
+					description: "Ordered checklist of up to 16 steps for this update track.",
+				},
+				checksSummary: {
+					type: "object",
+					additionalProperties: false,
+					required: ["status"],
+					properties: {
+						status: { type: "string", enum: [...SURFACE_CHECKS_STATUSES] },
+						summary: { type: ["string", "null"], maxLength: 500 },
+						updatedAt: { type: ["string", "null"], maxLength: 64 },
+						commands: {
+							type: "array",
+							maxItems: 16,
+							items: {
+								type: "object",
+								additionalProperties: false,
+								required: ["name", "status"],
+								properties: {
+									name: { type: "string", minLength: 1, maxLength: 120 },
+									status: { type: "string", enum: [...SURFACE_CHECKS_STATUSES] },
+									durationMs: { type: ["integer", "null"], minimum: 0, maximum: 999_999_999 },
+								},
+							},
+						},
+					},
+					description: "Latest build, lint, or test verification summary for this track.",
+				},
+			},
+		},
+		parseArguments(value: JsonValue): JsonValue {
+			let raw: Record<string, unknown>;
+			try {
+				raw = parseClosedRecord(
+					value,
+					"coding_report_progress",
+					[],
+					["currentActivity", "progressSteps", "checksSummary"],
+				);
+			} catch (error) {
+				throw new CloudToolArgumentRefusal(error instanceof Error ? error.message : "Invalid arguments");
+			}
+			const hasActivity = raw.currentActivity !== undefined;
+			const hasSteps = raw.progressSteps !== undefined;
+			const hasChecks = raw.checksSummary !== undefined;
+			if (!hasActivity && !hasSteps && !hasChecks) {
+				throw new CloudToolArgumentRefusal(
+					"Provide at least one of currentActivity, progressSteps, or checksSummary",
+				);
+			}
+			let currentActivity: string | null | undefined;
+			if (hasActivity) {
+				if (raw.currentActivity === null) {
+					currentActivity = null;
+				} else if (typeof raw.currentActivity === "string") {
+					const trimmed = raw.currentActivity.trim();
+					if (trimmed.length > 240) {
+						throw new CloudToolArgumentRefusal("currentActivity must be at most 240 characters");
+					}
+					currentActivity = trimmed.length > 0 ? trimmed : null;
+				} else {
+					throw new CloudToolArgumentRefusal("currentActivity must be a string or null");
+				}
+			}
+			let progressSteps: SurfaceSessionProgressStep[] | undefined;
+			if (hasSteps) {
+				if (!Array.isArray(raw.progressSteps) || raw.progressSteps.length > 16) {
+					throw new CloudToolArgumentRefusal("progressSteps must be an array of at most 16 steps");
+				}
+				progressSteps = raw.progressSteps.map((item, index) => {
+					try {
+						const closed = parseClosedRecord(
+							item,
+							`progressSteps[${index}]`,
+							["id", "label", "status"],
+							["detail"],
+						);
+						return parseSurfaceSessionProgressStep(closed, `progressSteps[${index}]`);
+					} catch (error) {
+						throw new CloudToolArgumentRefusal(
+							error instanceof Error ? error.message : `progressSteps[${index}] is invalid`,
+						);
+					}
+				});
+				if (Buffer.byteLength(JSON.stringify(progressSteps), "utf8") > 8192) {
+					throw new CloudToolArgumentRefusal("progressSteps exceeds 8192 bytes");
+				}
+			}
+			let checksSummary: SurfaceSessionChecksSummary | undefined;
+			if (hasChecks) {
+				if (raw.checksSummary === null) {
+					throw new CloudToolArgumentRefusal("checksSummary must be an object");
+				}
+				try {
+					const closed = parseClosedRecord(
+						raw.checksSummary,
+						"checksSummary",
+						["status"],
+						["summary", "commands", "updatedAt"],
+					);
+					if (closed.commands !== undefined && closed.commands !== null) {
+						if (!Array.isArray(closed.commands) || closed.commands.length > 16) {
+							throw new CloudToolArgumentRefusal("checksSummary.commands must be an array of at most 16 items");
+						}
+						for (let index = 0; index < closed.commands.length; index += 1) {
+							parseClosedRecord(
+								closed.commands[index],
+								`checksSummary.commands[${index}]`,
+								["name", "status"],
+								["durationMs"],
+							);
+						}
+					}
+					checksSummary = parseSurfaceSessionChecksSummary(closed, "checksSummary");
+				} catch (error) {
+					throw new CloudToolArgumentRefusal(
+						error instanceof Error ? error.message : "checksSummary is invalid",
+					);
+				}
+				if (Buffer.byteLength(JSON.stringify(checksSummary), "utf8") > 8192) {
+					throw new CloudToolArgumentRefusal("checksSummary exceeds 8192 bytes");
+				}
+			}
+			return {
+				...(hasActivity ? { currentActivity: currentActivity ?? null } : {}),
+				...(progressSteps !== undefined ? { progressSteps } : {}),
+				...(checksSummary !== undefined ? { checksSummary } : {}),
+			} as unknown as JsonValue;
+		},
+		async execute(argumentsValue: JsonValue, context: CloudToolContext) {
+			const parsed = argumentsValue as unknown as CodingReportProgressRequest;
+			let result: CodingReportProgressResult;
+			try {
+				result = await port.reportProgress(sessionId, parsed, context);
+			} catch (error) {
+				relayControlRefusal(error);
+			}
+			return {
+				kind: "text",
+				value: cloudToolJsonText({
+					schema: "qorpera.surface-progress-reported/v1",
+					sessionId: result.sessionId,
+					currentActivity: result.currentActivity,
+					stepCount: result.progressSteps.length,
+					checksStatus: result.checksSummary?.status ?? null,
 				}),
 			};
 		},

@@ -173,6 +173,8 @@ export type CloudCompanyPathRpc =
 	| "qorpera_native_surface_steer_session"
 	| "qorpera_native_surface_manage_automation"
 	| "qorpera_native_surface_record_change"
+	| "qorpera_native_surface_upsert_artifact"
+	| "qorpera_native_surface_report_progress"
 	| "qorpera_native_surface_read_session_turn"
 	| "qorpera_native_surface_session_images"
 	| "qorpera_native_list_company_interfaces"

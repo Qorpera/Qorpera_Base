@@ -106,7 +106,11 @@ import {
 import { CODING_ATTACHMENT_VIEW_SCHEMA, createCodingViewAttachmentTool } from "./cloud-surface-images.ts";
 import { STUDIO_INSPECT_SURFACE_SCHEMA } from "./cloud-surface-inspect-tool.ts";
 import { STUDIO_MAKE_PICTURE_SCHEMA } from "./cloud-surface-picture-tool.ts";
-import { createCodingRecordChangeTool } from "./cloud-surface-tools.ts";
+import {
+	createCodingPublishArtifactTool,
+	createCodingRecordChangeTool,
+	createCodingReportProgressTool,
+} from "./cloud-surface-tools.ts";
 import {
 	buildCompanyInterfacesSection,
 	buildSurfaceTurnBrief,
@@ -1336,6 +1340,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 				return {
 					surfaceTools,
 					recordChangeTool: [] as CloudNativeTool[],
+					workbenchTools: [] as CloudNativeTool[],
 					viewAttachmentTool: [] as CloudNativeTool[],
 					pictureTool: [] as CloudNativeTool[],
 					searchTool: [] as CloudNativeTool[],
@@ -1425,6 +1430,22 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 						),
 					]
 				: [];
+			const workbenchTools: CloudNativeTool[] = [
+				...(surfaceSession && !surfaceSession.isInternalReconciliation && surfaceSession.publishArtifact
+					? [
+							createCodingPublishArtifactTool(surfaceSession.sessionId, {
+								publishArtifact: surfaceSession.publishArtifact,
+							}),
+						]
+					: []),
+				...(surfaceSession && !surfaceSession.isInternalReconciliation && surfaceSession.reportProgress
+					? [
+							createCodingReportProgressTool(surfaceSession.sessionId, {
+								reportProgress: surfaceSession.reportProgress,
+							}),
+						]
+					: []),
+			];
 			const attachments = surfaceSession?.memberImages ?? [];
 			const viewAttachmentTool =
 				surfaceSession?.viewAttachment && attachments.length > 0
@@ -1454,6 +1475,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			return {
 				surfaceTools: [] as readonly CloudNativeTool[],
 				recordChangeTool,
+				workbenchTools,
 				viewAttachmentTool,
 				pictureTool,
 				searchTool,
@@ -1496,12 +1518,13 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 					async (turnSignal) => {
 						const operations = new CloudNativeToolOperations(run, codingControlPlane);
 						const guarded = makeGuardedGateway();
-						const { surfaceTools, recordChangeTool, viewAttachmentTool, pictureTool, searchTool } =
+						const { surfaceTools, recordChangeTool, workbenchTools, viewAttachmentTool, pictureTool, searchTool } =
 							buildPlatformTools(operations, guarded);
 						const tools: CloudNativeTool[] = preparedSurface
 							? [...surfaceTools, finish, ...(surfaceSession?.isInternalReconciliation ? [] : [ask])]
 							: [
 									...recordChangeTool,
+									...workbenchTools,
 									...viewAttachmentTool,
 									...pictureTool,
 									...searchTool,
@@ -1791,10 +1814,8 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 			beginExecution,
 			tools: (identity, operations) => {
 				const guarded = makeGuardedGateway();
-				const { surfaceTools, recordChangeTool, viewAttachmentTool, pictureTool, searchTool } = buildPlatformTools(
-					operations,
-					guarded,
-				);
+				const { surfaceTools, recordChangeTool, workbenchTools, viewAttachmentTool, pictureTool, searchTool } =
+					buildPlatformTools(operations, guarded);
 				const sessionTools: CloudNativeTool[] = preparedSurface
 					? [
 							...cloudCodingCommandTools({ scope, identity, operations, gateway: guarded }),
@@ -1811,6 +1832,7 @@ export class CloudNativeCodingRuntime implements CloudNativeCodingDriver {
 								...(repositoryArea ? { repositoryArea } : {}),
 							}),
 							...recordChangeTool,
+							...workbenchTools,
 							...viewAttachmentTool,
 							...pictureTool,
 							...searchTool,

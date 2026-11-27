@@ -2473,6 +2473,8 @@ export class CloudNativeCompanyRuntime implements NativeCloudExecutionDriver {
 			...(voiceName ? { voiceName } : {}),
 			...(imageModel ? { imageModel } : {}),
 			recordChange: surfaceTools.recordChange,
+			publishArtifact: surfaceTools.publishArtifact,
+			reportProgress: surfaceTools.reportProgress,
 			stageSurfacePatch: surfaceTools.stageSurfacePatch,
 			stageSurfaceOpsAction: surfaceTools.stageSurfaceOpsAction,
 			...(narratePort ? { narrateExplainer: narratePort, stageBytes: narratePort.stageBytes } : {}),

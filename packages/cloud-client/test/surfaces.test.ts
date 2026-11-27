@@ -435,4 +435,96 @@ describe("cloud-client surface change option groups", () => {
 		expect(discarded.state).toBe("discarded");
 		expect(discarded.openChangeCount).toBe(0);
 	});
+
+	it("calls isolated track preview, ship, combine, and non-destructive turn cancel RPCs", async () => {
+		const sessionB = "13740000-0000-4000-8000-000000000009";
+		const jobId = "13740000-0000-4000-8000-000000000010";
+		const previewPayload = {
+			surfaceId,
+			mode: "single",
+			selectedSessionId: sessionId,
+			previewScope: "track",
+			primary: {
+				previewId: null,
+				status: "live_baseline",
+				doorActionUrl: null,
+				memberPass: null,
+				activeRoute: "/billing",
+				toggledChangeIds: [changeA],
+				conflictReport: null,
+				errorDetail: null,
+			},
+			compareFrames: [],
+		};
+		const sessionPayload = {
+			id: sessionId,
+			surfaceId,
+			workerId: null,
+			title: "Billing track",
+			prompt: "Update billing",
+			state: "ready",
+			originKind: "member",
+			originLabel: null,
+			explorationId: null,
+			explorationVariantLabel: null,
+			trackBranch: "qorpera/coding/billing",
+			checksSummary: { status: "passed", summary: "ok" },
+			progressSteps: [{ id: "s1", label: "Build", status: "done" }],
+			currentActivity: null,
+			externalPr: null,
+			artifacts: [],
+			hasActiveChat: true,
+			question: null,
+			changes: [],
+			messages: [],
+			createdAt: now,
+			updatedAt: now,
+			closedAt: null,
+		};
+		const rpc = vi
+			.fn()
+			.mockResolvedValueOnce({ data: previewPayload, error: null })
+			.mockResolvedValueOnce({ data: sessionPayload, error: null })
+			.mockResolvedValueOnce({
+				data: { mode: "land", sessionIds: [sessionId, sessionB], changeIds: [changeA], jobId },
+				error: null,
+			})
+			.mockResolvedValueOnce({ data: sessionPayload, error: null });
+		const client = new CloudSurfacesClient({ rpc } as unknown as SupabaseClient);
+
+		const preview = await client.selectSurfaceTrackPreview(surfaceId, {
+			sessionId,
+			activeRoute: "/billing",
+		});
+		expect(rpc).toHaveBeenNthCalledWith(1, "qorpera_select_surface_track_preview", {
+			p_surface_id: surfaceId,
+			p_session_id: sessionId,
+			p_combine_session_ids: null,
+			p_active_route: "/billing",
+		});
+		expect(preview.previewScope).toBe("track");
+		expect(preview.selectedSessionId).toBe(sessionId);
+
+		const shipped = await client.shipSurfaceTrack(sessionId, true);
+		expect(rpc).toHaveBeenNthCalledWith(2, "qorpera_ship_surface_track", {
+			p_session_id: sessionId,
+			p_publish: true,
+		});
+		expect(shipped.trackBranch).toBe("qorpera/coding/billing");
+
+		const combined = await client.combineSurfaceTracks(surfaceId, [sessionId, sessionB], true);
+		expect(rpc).toHaveBeenNthCalledWith(3, "qorpera_combine_surface_tracks", {
+			p_surface_id: surfaceId,
+			p_session_ids: [sessionId, sessionB],
+			p_land: true,
+		});
+		expect(combined.mode).toBe("land");
+
+		const stopped = await client.cancelSurfaceSessionTurn(sessionId);
+		expect(rpc).toHaveBeenNthCalledWith(4, "qorpera_cancel_surface_session_turn", {
+			p_session_id: sessionId,
+		});
+		expect(stopped.state).toBe("ready");
+		expect(stopped.hasActiveChat).toBe(true);
+	});
 });
