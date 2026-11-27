@@ -3101,6 +3101,8 @@ export function mountApplication(
 						lastUnpublished = latest.unpublishedChangeCount;
 						if (publishFinished) view.reload();
 					},
+					park: () => view.park(),
+					activate: () => view.activate(),
 					dispose: () => view.dispose(),
 				};
 			}

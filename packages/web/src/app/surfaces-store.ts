@@ -2664,10 +2664,19 @@ export class SurfacesStore {
 		}
 	}
 
+	#openSeq = 0;
+	#openingSlug: string | undefined;
+
 	clearActiveSurface(surfaceId: string): void {
-		if (this.#activeSurfaceId === surfaceId) {
-			this.#activeSurfaceId = undefined;
-			this.#clearPreviewSyncRetry(surfaceId, false);
+		const clearingOpening =
+			this.#openingSlug !== undefined && surfaceBySlug(this.state, this.#openingSlug)?.id === surfaceId;
+		if (this.#activeSurfaceId === surfaceId || clearingOpening) {
+			if (this.#activeSurfaceId === surfaceId) {
+				this.#activeSurfaceId = undefined;
+				this.#clearPreviewSyncRetry(surfaceId, false);
+			}
+			this.#openSeq += 1;
+			this.#openingSlug = undefined;
 		}
 		if (this.state.opsPanelSurfaceId === surfaceId) this.store.set({ opsPanelSurfaceId: undefined });
 	}
@@ -2677,7 +2686,10 @@ export class SurfacesStore {
 	}
 
 	async openSurface(slug: string): Promise<SurfaceWorkspace | undefined> {
-		await this.load();
+		const seq = ++this.#openSeq;
+		this.#openingSlug = slug;
+		if (this.state.source === "loading") await this.load();
+		if (this.#openSeq !== seq) return undefined;
 		const surface = surfaceBySlug(this.state, slug);
 		if (!surface) return undefined;
 		this.#activeSurfaceId = surface.id;

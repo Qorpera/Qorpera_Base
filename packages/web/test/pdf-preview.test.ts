@@ -168,10 +168,96 @@ describe("pdf preview door", () => {
 
 			window.dispatchEvent(ready);
 			expect(post).toHaveBeenCalledTimes(1);
+
+			card.remove();
+			document.body.append(card);
+			const reloadedWindow = { postMessage: vi.fn() } as unknown as Window;
+			Object.defineProperty(frame, "contentWindow", { configurable: true, get: () => reloadedWindow });
+			const reloadedReady = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
+			Object.defineProperty(reloadedReady, "source", { value: reloadedWindow });
+			window.dispatchEvent(reloadedReady);
+			expect(reloadedWindow.postMessage).toHaveBeenCalledTimes(1);
+			expect(reloadedWindow.postMessage).toHaveBeenCalledWith(
+				{ type: PDF_PREVIEW_DATA, bytes, title: "Q3 Report" },
+				location.origin,
+			);
+
+			window.dispatchEvent(reloadedReady);
+			expect(reloadedWindow.postMessage).toHaveBeenCalledTimes(1);
+
 			viewer.dispose();
 			await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:download"));
 		} finally {
 			viewer.dispose();
+			Reflect.deleteProperty(URL, "createObjectURL");
+			Reflect.deleteProperty(URL, "revokeObjectURL");
+		}
+	});
+
+	it("releases replaced PDF frame entries once collected without breaking active frames", async () => {
+		const createObjectURL = vi.fn(() => "blob:download");
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		const refs: { value: unknown; collected: boolean; derefs: number }[] = [];
+		class TrackingWeakRef<T extends object> {
+			readonly #slot: { value: T | undefined; collected: boolean; derefs: number };
+			constructor(target: T) {
+				this.#slot = { value: target, collected: false, derefs: 0 };
+				refs.push(this.#slot);
+			}
+			deref(): T | undefined {
+				this.#slot.derefs += 1;
+				return this.#slot.collected ? undefined : this.#slot.value;
+			}
+		}
+		vi.stubGlobal("WeakRef", TrackingWeakRef);
+		const controller = new AbortController();
+		const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+		const viewer = new SurfacePdfViewer(async () => bytes, controller.signal);
+		try {
+			const ref = {
+				manifestSha256: "c".repeat(64),
+				fileSha256: "d".repeat(64),
+				bytes: 4,
+				mediaType: "application/pdf",
+			};
+			const firstCard = viewer.renderCard({ path: "reports/first.pdf", title: "First", ref, changed: false });
+			document.body.append(firstCard);
+			await vi.waitFor(() => expect(firstCard.querySelector("iframe.studio-pdf-frame")).not.toBeNull());
+			const firstFrame = firstCard.querySelector<HTMLIFrameElement>("iframe.studio-pdf-frame")!;
+			const firstPost = vi.spyOn(firstFrame.contentWindow!, "postMessage").mockImplementation(() => {});
+
+			firstCard.remove();
+			refs[0]!.collected = true;
+			refs[0]!.value = undefined;
+
+			const secondCard = viewer.renderCard({ path: "reports/second.pdf", title: "Second", ref, changed: false });
+			document.body.append(secondCard);
+			await vi.waitFor(() => expect(secondCard.querySelector("iframe.studio-pdf-frame")).not.toBeNull());
+			const derefsAfterMount = refs[0]!.derefs;
+			const secondFrame = secondCard.querySelector<HTMLIFrameElement>("iframe.studio-pdf-frame")!;
+			const secondPost = vi.spyOn(secondFrame.contentWindow!, "postMessage").mockImplementation(() => {});
+
+			const staleReady = new MessageEvent("message", { data: { type: PDF_PREVIEW_READY }, origin: location.origin });
+			Object.defineProperty(staleReady, "source", { value: firstFrame.contentWindow });
+			window.dispatchEvent(staleReady);
+			expect(firstPost).not.toHaveBeenCalled();
+
+			const secondReady = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
+			Object.defineProperty(secondReady, "source", { value: secondFrame.contentWindow });
+			window.dispatchEvent(secondReady);
+			expect(secondPost).toHaveBeenCalledTimes(1);
+			expect(secondPost).toHaveBeenCalledWith({ type: PDF_PREVIEW_DATA, bytes, title: "Second" }, location.origin);
+			expect(refs[0]!.derefs).toBe(derefsAfterMount);
+		} finally {
+			viewer.dispose();
+			vi.unstubAllGlobals();
 			Reflect.deleteProperty(URL, "createObjectURL");
 			Reflect.deleteProperty(URL, "revokeObjectURL");
 		}

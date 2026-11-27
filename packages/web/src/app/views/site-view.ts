@@ -210,6 +210,8 @@ export class SiteView {
 	#pending: { action: string; pass: string; path: string | undefined } | undefined;
 	/** The door was handed a pass: its word that the site's page loaded shows the site. */
 	#awaiting = false;
+	#parked = false;
+	#doorWindow: Window | null = null;
 	/** The day today's pages are watched for, and their watch (undefined while it is not running). */
 	#pagesDay: string | undefined;
 	#pagesWatch: number | undefined;
@@ -249,7 +251,18 @@ export class SiteView {
 				if (data?.type !== SITE_DOOR_READY) return;
 				const pending = this.#pending;
 				this.#pending = undefined;
-				if (!pending) return;
+				if (!pending) {
+					if (this.#doorWindow !== null && door !== this.#doorWindow && !this.#parked) {
+						this.#doorWindow = null;
+						this.#shown = false;
+						this.#awaiting = false;
+						this.#glass.classList.remove("is-shown");
+						this.#glass.classList.add("is-opening");
+						this.#open();
+					}
+					return;
+				}
+				this.#doorWindow = door;
 				this.#awaiting = true;
 				door.postMessage(
 					{
@@ -375,9 +388,30 @@ export class SiteView {
 		}
 	}
 
+	park(): void {
+		if (this.#lifetime.signal.aborted || this.#parked) return;
+		this.#parked = true;
+		this.#opening?.abort();
+		this.#opening = undefined;
+		this.#pending = undefined;
+		this.#awaiting = false;
+		this.#shown = false;
+		this.#doorWindow = null;
+		this.#glass.classList.remove("is-shown", "is-opening");
+		this.#frame.removeAttribute("src");
+	}
+
+	activate(): void {
+		if (this.#lifetime.signal.aborted || !this.#parked) return;
+		this.#parked = false;
+		if (!this.#gone) this.#open();
+	}
+
 	dispose(): void {
 		this.#opening?.abort();
 		this.#pending = undefined;
+		this.#doorWindow = null;
+		this.#parked = false;
 		this.#lifetime.abort();
 	}
 
@@ -388,7 +422,7 @@ export class SiteView {
 	/** Opens the site in the frame with a fresh pass, at `to` (a path of the site) or at its start. */
 	#open(to?: string): void {
 		const site = this.#host.site();
-		if (!site || this.#lifetime.signal.aborted) return;
+		if (!site || this.#lifetime.signal.aborted || this.#parked) return;
 		this.#opening?.abort();
 		const opening = new AbortController();
 		this.#opening = opening;
@@ -432,6 +466,7 @@ export class SiteView {
 		this.#glass.classList.remove("is-covered");
 		this.#pending = { action, pass, path };
 		this.#awaiting = false;
+		this.#doorWindow = null;
 		this.#frame.src = SITE_DOOR_URL;
 	}
 
