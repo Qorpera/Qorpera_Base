@@ -8,11 +8,27 @@ import { runtimeEmbeddedAssetPaths } from "./runtime-assets-plugin.mjs";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const generatedSource = "packages/runtime/src/cloud-runtime-bundle.generated.ts";
-const activation = "supabase/migrations/20260929029099_runtime_bundle_activation_v290.sql";
-const activationVersion = 290;
-const previousActivationVersion = 289;
-const previousActivationSha256 = "4a715fb1dc58f5183b002e2bada3e458f7465922aad35a1e8db537b9203d0d90";
-const activationRequires = Object.freeze([]);
+const activation = "supabase/migrations/20260929029199_runtime_bundle_activation_v291.sql";
+const activationVersion = 291;
+const previousActivationVersion = 290;
+const previousActivationSha256 = "f44cc2244854597a8d8e56c56b2270ceb81a71f3ec62813c689f9338743593af";
+const activationRequires = Object.freeze([
+	[
+		"20260930921000_quiet_approvals_and_file_ops",
+		"#2456 (single-door agent UX: quiet approvals & file ops): bundle 291 pairs with 20260930921000 in qorpera_folder_commit",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_folder_commit(uuid,jsonb,text,jsonb,uuid,uuid)')), ''), '20260930921000') > 0",
+	],
+	[
+		"20260930922000_surface_pull_only_and_cofounder_escalation",
+		"#2456 (single-door agent UX: pull-only Surfaces & Co-Founder escalation): bundle 291 pairs with qorpera_native_surface_steer_session",
+		"to_regprocedure('public.qorpera_native_surface_steer_session(uuid,uuid,text,text,uuid)') is not null",
+	],
+	[
+		"20260930923000_silence_operational_notices_and_worker_failures",
+		"#2456 (single-door agent UX: silent operational notices & worker failures): bundle 291 pairs with 20260930923000 in qorpera_list_staff_execution_activity",
+		"strpos(coalesce(pg_get_functiondef(to_regprocedure('public.qorpera_list_staff_execution_activity(uuid)')), ''), '20260930923000') > 0",
+	],
+]);
 const activationRequiresSql = activationRequires
 	.map(([migration, why, present]) => {
 		const always = `${migration}.sql` < activation.slice(activation.lastIndexOf("/") + 1);
