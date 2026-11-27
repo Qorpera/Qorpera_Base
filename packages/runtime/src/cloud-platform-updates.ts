@@ -501,7 +501,7 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		kind: "behaviour",
 		date: "2026-11-26",
 		title: "Co-Founder Pulse and real-codebase builds",
-		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Legacy third-party Connections are retired: never ask founders to connect GitHub — import public repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
+		text: "Company-wide scheduled agents including Co-Founder Pulse now wake the Co-Founder directly with live senses.surfaces and optional chat reply instead of spawning an Identity surface session. Import existing repositories with manage_code, build the real application instead of static mocks, and check open changes before launching duplicate recovery sessions.",
 	},
 	{
 		id: "fast-edge-surface-previews",
@@ -518,6 +518,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		text: "A company can now have an Analytics interface: a Studio page of its real numbers (orders, site visits, money) that asks each question live when a member opens it, as that member, so nobody sees more than they may read. The page picks its chart colours once, linked to the company's Identity. You can read the platform's own numbers too: data_describe with database qorpera lists its questions and data_query asks them by name. When a founder asks how the business is doing, offer an Analytics interface rather than a report of copied numbers (propose it as a Studio interface on a folder, of kind dashboard), and take real figures from its numbers when you plan.",
 	},
 	{
+		id: "numbers-tabs-on-every-interface",
+		kind: "capability",
+		date: "2026-11-26",
+		title: "A numbers tab on any interface",
+		text: "Any Studio interface, not only Analytics, can now have a numbers tab: a product page can show that product's sales, a plan its targets against what really happened, each asked live when a member opens the page. The agent of that interface builds it the way the Analytics guide says, and can save a new named question in a company database when no question answers yet. When a founder wants to see how one thing is doing, offer a numbers tab on its own page.",
+	},
+	{
 		id: "product-studio-3d-and-visuals",
 		kind: "capability",
 		date: "2026-11-26",
@@ -530,6 +537,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		date: "2026-11-26",
 		title: "Silent coding, quiet approvals and pull-only Surfaces",
 		text: "Members now interact only through your conversation and Surfaces, never directly with coding sessions, raw worker approval cards, or operational banners. Coding sessions run silently under the dispatching agent and escalate only to it; answer or archive blocked sessions yourself, or ask the member cleanly in your thread. Company file moves, deletions, routine/worker updates, and local workspace file edits run without asking unless a specific rule or hard boundary applies; workers report blockers to their parent instead of raising cards. Surface blockers escalate to the Co-Founder, who handles or steers them directly.",
+	},
+	{
+		id: "company-connections-back-in-settings",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Company connections: Gmail, Google Drive, and GitHub",
+		text: "Owners and admins can now connect company Gmail, Google Drive, and GitHub accounts again under Settings → Company connections (including a GitHub personal access token). Every agent gets those tools on its next run, and a connected GitHub account lets manage_code import existing private repositories while Gmail and Google Drive let agents read and bring in existing emails and documents. Keep new code hosted in Qorpera by default without asking for GitHub; suggest Settings → Company connections only when bringing in existing private code, mail, or files.",
 	},
 ]);
 

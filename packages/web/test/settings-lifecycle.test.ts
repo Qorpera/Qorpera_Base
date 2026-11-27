@@ -121,7 +121,7 @@ function selectedTab(root: Element): string | undefined {
 	return root.querySelector('.settings-nav [role="tab"][aria-selected="true"]')?.id.replace("settings-tab-", "");
 }
 const ACCOUNT_TABS = ["general", "leaderboard", "ai-subscriptions"];
-const ALL_TABS = ["general", "company", "leaderboard", "ai-subscriptions"];
+const ALL_TABS = ["general", "company", "leaderboard", "ai-subscriptions", "company-connections"];
 
 /** Read-only folder data for the real browser embedded in Settings. */
 function storageFixture() {
@@ -450,6 +450,7 @@ describe("settings session lifecycle", () => {
 	});
 	it.each([
 		["company", "general"],
+		["company-connections", "general"],
 		["my-connections", "ai-subscriptions"],
 	] as const)("opens %s with no company open on %s", async (asked, opened) => {
 		history.replaceState(null, "", "/#/");
@@ -609,6 +610,7 @@ describe("settings session lifecycle", () => {
 			"Company",
 			"Leaderboard",
 			"AI subscriptions",
+			"Company connections",
 		]);
 		for (const tab of f.root.querySelectorAll('.settings-nav [role="tab"]'))
 			expect(tab.querySelector("svg.icon")).not.toBeNull();
@@ -837,7 +839,7 @@ describe("settings session lifecycle", () => {
 		expect(leaderboardCalls()).toHaveLength(1);
 		expect(content.querySelector('.leaderboard-visible [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
 	});
-	it("finds the member's own logins on AI subscriptions", async () => {
+	it("finds AI subscriptions and Company connections by their English and Danish keywords", async () => {
 		const f = await setup();
 		open(f.root);
 		await draw();
@@ -849,13 +851,14 @@ describe("settings session lifecycle", () => {
 				.filter((tab) => !tab.hidden)
 				.map((tab) => tab.id);
 		};
-		expect(shown("connections")).toEqual(["settings-tab-ai-subscriptions"]);
-		// The Danish word finds it too: the labels are English, so the keywords carry it.
-		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions"]);
+		expect(shown("connections")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
+		expect(shown("forbindelser")).toEqual(["settings-tab-ai-subscriptions", "settings-tab-company-connections"]);
+		expect(shown("gmail")).toEqual(["settings-tab-company-connections"]);
+		expect(shown("github")).toEqual(["settings-tab-company-connections"]);
 		expect(shown("chatgpt")).toEqual(["settings-tab-ai-subscriptions"]);
 		expect(shown("claude")).toEqual(["settings-tab-ai-subscriptions"]);
 	});
-	it("stays on the company page when a service sign-in comes back", async () => {
+	it("opens Settings on Company connections when a service sign-in comes back on the company home", async () => {
 		sessionStorage.setItem(
 			"qorpera.connector-sign-in.v1",
 			JSON.stringify({
@@ -867,12 +870,46 @@ describe("settings session lifecycle", () => {
 				startedAt: Date.now(),
 			}),
 		);
+		const fixtureState = fixture();
+		vi.mocked(fixtureState.api.listStaff).mockResolvedValue([{ ...staff, templateId: "co-founder" }]);
+		vi.mocked(fixtureState.api.listSessions).mockResolvedValue([
+			{ ...session, staffAgentId: staff.id, executionScope: { roomId: id(99), agentThread: true } },
+		]);
 		history.replaceState(null, "", `/#/c/${profileA.profileId}?connector=github&connection=failed&reason=declined`);
+		const f = await setup(fixtureState);
+		await draw();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(f.root.querySelector(".settings-overlay")).not.toBeNull();
+		expect(selectedTab(f.root)).toBe("company-connections");
+		expect(f.root.querySelector("#settings-content h1")?.textContent).toBe("Company connections");
+		expect(f.root.querySelector('.service-card[data-connector="github"]')?.textContent).toContain(
+			"GitHub was not connected. The sign-in was cancelled before access was granted.",
+		);
+	});
+	it("opens Settings on Company connections when a service sign-in comes back on a chat route", async () => {
+		sessionStorage.setItem(
+			"qorpera.connector-sign-in.v1",
+			JSON.stringify({
+				ticketId: id(62),
+				connectorId: "gmail",
+				companyId: profileA.profileId,
+				serviceOrigin: "https://broker.fixture.invalid",
+				browserProof: "b".repeat(43),
+				startedAt: Date.now(),
+			}),
+		);
+		history.replaceState(
+			null,
+			"",
+			`/#/c/${profileA.profileId}/chat/${session.sessionId}?connector=gmail&connection=failed&reason=declined`,
+		);
 		const f = await setup();
 		await draw();
-		// The return is taken off the address, and Settings, which no longer has Company connections, stays shut.
-		expect(location.hash).toBe(`#/c/${profileA.profileId}`);
-		expect(f.root.querySelector(".settings-overlay")).toBeNull();
+		expect(location.hash).toBe(`#/c/${profileA.profileId}/chat/${session.sessionId}`);
+		expect(selectedTab(f.root)).toBe("company-connections");
+		expect(f.root.querySelector('.service-card[data-connector="gmail"]')?.textContent).toContain(
+			"Gmail was not connected. The sign-in was cancelled before access was granted.",
+		);
 	});
 	it("accepts a company invitation from the Friends window and opens that company", async () => {
 		const fixtureState = fixture();

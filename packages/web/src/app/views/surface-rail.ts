@@ -710,8 +710,6 @@ export class SurfaceRail {
 			}
 			return;
 		}
-		this.#shown = deps;
-		this.#activeSlug = activeSlug;
 		const looks = state.surfaceLooks;
 		const active = state.surfaces.filter((surface) => surface.status === "active");
 		const companyOrder = defaultSurfaceOrder(
@@ -808,6 +806,8 @@ export class SurfaceRail {
 		reconcileChildren(this.el, [loose, ...sections]);
 		this.el.hidden = this.#arranged.loose.length + proposed.length + this.#arranged.sections.length === 0;
 		this.#crew.settle();
+		this.#shown = deps;
+		this.#activeSlug = activeSlug;
 	}
 
 	#click(event: MouseEvent): void {

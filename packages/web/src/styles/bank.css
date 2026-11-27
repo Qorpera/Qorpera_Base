@@ -121,7 +121,7 @@
 .bank-later { display: flex; justify-content: space-between; gap: 12px; margin-top: -24px; padding-top: 11px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 12px; }
 .bank-later strong { color: var(--text); font-weight: 600; }
 
-.bank-put-dialog { width: min(480px, calc(100vw - 32px)); }
+.bank-put-dialog, .bank-connect-dialog { inset: 0; margin: auto; width: min(480px, calc(100vw - 32px)); }
 .bank-put-title { margin-bottom: 14px; font-size: 18px; font-weight: 650; }
 .bank-put-step { display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
 .bank-put-amount { display: flex; flex-direction: column; gap: 6px; color: var(--text-muted); font-size: 12px; font-weight: 600; }

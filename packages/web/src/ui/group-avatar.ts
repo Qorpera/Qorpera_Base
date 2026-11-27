@@ -231,7 +231,11 @@ export function reviveGroupAvatars(root: ParentNode): void {
 		resize?.observe(canvas);
 		scheduleSweep();
 		if (group.ready) {
-			draw(group);
+			try {
+				draw(group);
+			} catch (error) {
+				console.error("group avatar revive failed:", error);
+			}
 			return;
 		}
 		void Promise.all(group.members.map(({ figure }) => prepare(group.artwork, figure)))

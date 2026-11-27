@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
 	describeSurfaceFormats,
 	inferSurfaceKind,
+	SURFACE_ASK_FORMAT,
+	SURFACE_COLORS_FORMAT,
 	SURFACE_REPORT_FORMAT,
 	type SurfaceStudioFacts,
 	starterSurfaceLayout,
@@ -108,12 +110,16 @@ describe("which page an interface gets", () => {
 describe("format notes beside the blocks", () => {
 	it("names the formats of the blocks a layout holds", () => {
 		const product = describeSurfaceFormats(starterSurfaceLayout("product"));
-		expect(product).toHaveLength(2);
+		expect(product).toHaveLength(4);
 		expect(product[0]).toContain("A stage_3d model file (default object.json)");
 		expect(product[1]).toBe(SURFACE_REPORT_FORMAT);
 		const identity = describeSurfaceFormats(starterSurfaceLayout("identity"));
-		expect(identity).toHaveLength(2);
+		expect(identity).toHaveLength(4);
 		expect(identity[0]).toContain("/identity/tokens.css is compiled from it");
-		expect(describeSurfaceFormats(starterSurfaceLayout("custom"))).toEqual([SURFACE_REPORT_FORMAT]);
+		expect(describeSurfaceFormats(starterSurfaceLayout("custom"))).toEqual([
+			SURFACE_REPORT_FORMAT,
+			SURFACE_ASK_FORMAT,
+			SURFACE_COLORS_FORMAT,
+		]);
 	});
 });
