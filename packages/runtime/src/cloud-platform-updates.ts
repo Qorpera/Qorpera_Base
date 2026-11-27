@@ -580,6 +580,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Inbox cleanup: trash, star, unsubscribe and block senders",
 		text: "Agents and Inbox sessions can now manage email like Gmail without permanent deletion. Use find_mail (with view filters and up to 50 results) and manage_mail to move conversations to Trash or restore them, archive, star or unstar, block or unblock senders (auto-trashing future mail and skipping routine wakes), and unsubscribe via one-click POST or mailto; brought-in Google mailboxes sync two-way with Gmail. Connected Gmail accounts also gain list, batch update (trash, archive, star, read/unread, spam), and reversible sender-block filter actions. For web-only newsletter links, open the URL in a company or coding machine browser instead of asking the member.",
 	},
+	{
+		id: "surface-server-and-hybrid-hosting",
+		kind: "capability",
+		date: "2026-11-27",
+		title: "Real server and hybrid hosting for app interfaces",
+		text: "Code-backed app and website interfaces can now run live backend servers and hybrid frontend-plus-backend containers directly through Qorpera's app host instead of static files alone. Declare site.kind as server or hybrid (with port, healthPath, and optional Dockerfile or preview build recipe) in .qorpera/checks.json: every preview runs in an isolated preview container without disturbing the live app, iframe framing headers are adjusted on authenticated preview slots, live publishes start and health-check the new container before promoting traffic, and expired preview containers are cleaned up automatically.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

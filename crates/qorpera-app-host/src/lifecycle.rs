@@ -40,6 +40,8 @@ pub struct DeployRequest {
     pub pids_limit: u32,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub is_preview: bool,
 }
 
 fn default_health_path() -> String {
@@ -270,8 +272,15 @@ impl AppLifecycleManager {
     }
 
     pub async fn deploy_blue_green(&self, req: DeployRequest) -> Result<DeploymentStatus, String> {
-        let site_lock = self.site_deploy_lock(&req.site_id)?;
-        let _site_guard = site_lock.lock().await;
+        let site_lock = if req.is_preview {
+            None
+        } else {
+            Some(self.site_deploy_lock(&req.site_id)?)
+        };
+        let _site_guard = match &site_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
 
         let dep_lock = self.deployment_lock(&req.deployment_id)?;
         let (status, previous_live) = {
@@ -336,7 +345,9 @@ impl AppLifecycleManager {
             }
 
             let now_ms = unix_ms();
-            let previous_live = {
+            let previous_live = if req.is_preview {
+                None
+            } else {
                 let mut live_map = self.live_by_site.lock().map_err(|_| "lock_poisoned".to_string())?;
                 let prev = live_map.insert(req.site_id.clone(), req.deployment_id.clone());
                 if prev.as_deref() == Some(req.deployment_id.as_str()) {

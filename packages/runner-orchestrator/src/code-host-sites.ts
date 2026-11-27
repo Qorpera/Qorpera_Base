@@ -25,7 +25,12 @@ import {
 } from "./code-site.ts";
 import { parseCodingJson } from "./coding-setup.ts";
 import { isNativeServableSitePath, NATIVE_SITE_MAX_FILES, nativeSiteTreeProblem } from "./site-blob-upload.ts";
-import { readSurfacePreviewRecipe, type SurfacePreviewPlan } from "./surface-preview-runner.ts";
+import {
+	readSurfaceAppSpec,
+	readSurfacePreviewRecipe,
+	type SurfaceAppSpec,
+	type SurfacePreviewPlan,
+} from "./surface-preview-runner.ts";
 
 /** A repository's website as the code host reads it (own code storage, step 4, part B; STEP4-RELEASES-PLAN.md 8.2).
  * Once a change's checks passed, the executor's collect writes the web files of the folder the checks file names into
@@ -543,6 +548,22 @@ export async function readSurfaceSiteTree(
 	});
 }
 
+async function hasPackageJsonInCwd(
+	run: Run,
+	tree: string,
+	rootEntries: readonly ParsedGitTreeEntry[],
+	cwd: string,
+): Promise<boolean> {
+	let cwdEntries = rootEntries;
+	if (cwd !== ".") {
+		const cwdTree = await resolveTreeFolder(run, tree, cwd);
+		if (!cwdTree) return false;
+		const cwdTrees = await readObjects(run, "tree", [cwdTree], MAX_LISTING, () => cwd);
+		cwdEntries = parseGitTreeEntries(cwdTrees.get(cwdTree) as Buffer, cwd);
+	}
+	return cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode));
+}
+
 export async function readSurfacePreviewPlan(
 	job: CodeHostJob,
 	value: { repository: CloudCodingRepository; tree: string },
@@ -560,17 +581,20 @@ export async function readSurfacePreviewPlan(
 		}
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
-		const read = readSurfacePreviewRecipe(await readSurfaceChecksText(run, rootEntries));
+		const checksText = await readSurfaceChecksText(run, rootEntries);
+		const appRead = readSurfaceAppSpec(checksText);
+		if (appRead.kind === "invalid") return appRead;
+		if (appRead.kind === "app") {
+			const recipe =
+				appRead.app.recipe && (await hasPackageJsonInCwd(run, tree, rootEntries, appRead.app.recipe.cwd))
+					? appRead.app.recipe
+					: null;
+			return { kind: "app", app: { ...appRead.app, recipe } };
+		}
+		const read = readSurfacePreviewRecipe(checksText);
 		if (read.kind === "none") return { kind: "static" };
 		if (read.kind === "invalid") return read;
-		let cwdEntries = rootEntries;
-		if (read.recipe.cwd !== ".") {
-			const cwdTree = await resolveTreeFolder(run, tree, read.recipe.cwd);
-			if (!cwdTree) return { kind: "static" };
-			const cwdTrees = await readObjects(run, "tree", [cwdTree], MAX_LISTING, () => read.recipe.cwd);
-			cwdEntries = parseGitTreeEntries(cwdTrees.get(cwdTree) as Buffer, read.recipe.cwd);
-		}
-		return cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode))
+		return (await hasPackageJsonInCwd(run, tree, rootEntries, read.recipe.cwd))
 			? { kind: "build", recipe: read.recipe }
 			: { kind: "static" };
 	});
@@ -579,6 +603,12 @@ export async function readSurfacePreviewPlan(
 export type SurfacePreviewPlanAndTree =
 	| { readonly kind: "invalid"; readonly detail: string }
 	| { readonly kind: "build"; readonly recipe: Extract<SurfacePreviewPlan, { readonly kind: "build" }>["recipe"] }
+	| {
+			readonly kind: "app";
+			readonly app: SurfaceAppSpec;
+			readonly files?: CodeSiteTreeFile[];
+			readonly manifestSha256?: string;
+	  }
 	| { readonly kind: "static"; readonly files: CodeSiteTreeFile[]; readonly manifestSha256: string };
 
 // WHY: Reads the preview plan and static site tree in one withJob pass so .qorpera/checks.json and the root git tree are never fetched twice.
@@ -600,23 +630,34 @@ export async function readSurfacePreviewPlanAndTree(
 		const rootTrees = await readObjects(run, "tree", [tree], MAX_LISTING, () => tree);
 		const rootEntries = parseGitTreeEntries(rootTrees.get(tree) as Buffer, tree);
 		const checksText = await readSurfaceChecksText(run, rootEntries);
-		const read = readSurfacePreviewRecipe(checksText);
-		if (read.kind === "invalid") return read;
-		if (read.kind === "recipe") {
-			let cwdEntries = rootEntries;
-			let hasCwd = true;
-			if (read.recipe.cwd !== ".") {
-				const cwdTree = await resolveTreeFolder(run, tree, read.recipe.cwd);
-				if (!cwdTree) {
-					hasCwd = false;
-				} else {
-					const cwdTrees = await readObjects(run, "tree", [cwdTree], MAX_LISTING, () => read.recipe.cwd);
-					cwdEntries = parseGitTreeEntries(cwdTrees.get(cwdTree) as Buffer, read.recipe.cwd);
+		const appRead = readSurfaceAppSpec(checksText);
+		if (appRead.kind === "invalid") return appRead;
+		if (appRead.kind === "app") {
+			const recipe =
+				appRead.app.recipe && (await hasPackageJsonInCwd(run, tree, rootEntries, appRead.app.recipe.cwd))
+					? appRead.app.recipe
+					: null;
+			const app = { ...appRead.app, recipe };
+			if (app.kind === "hybrid" && recipe === null) {
+				try {
+					const siteTree = await readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, app.folder);
+					return { kind: "app", app, ...siteTree };
+				} catch (error) {
+					if (
+						error instanceof CodeSiteTreeInvalid &&
+						(error.problem.code === "SITE_FOLDER_MISSING" || error.problem.code === "SITE_NO_INDEX")
+					) {
+						return { kind: "app", app, files: [] };
+					}
+					throw error;
 				}
 			}
-			if (hasCwd && cwdEntries.some((entry) => entry.name === "package.json" && isRegularBlobMode(entry.mode))) {
-				return { kind: "build", recipe: read.recipe };
-			}
+			return { kind: "app", app };
+		}
+		const read = readSurfacePreviewRecipe(checksText);
+		if (read.kind === "invalid") return read;
+		if (read.kind === "recipe" && (await hasPackageJsonInCwd(run, tree, rootEntries, read.recipe.cwd))) {
+			return { kind: "build", recipe: read.recipe };
 		}
 		const configuredFolder = parseChecksSiteFolder(checksText);
 		const siteTree = await readSurfaceSiteTreeInRun(run, repository, tree, rootEntries, configuredFolder);
@@ -676,34 +717,48 @@ async function extractTarBuffer(tarBytes: Buffer, targetDir: string): Promise<vo
 
 export async function exportCodeSiteSource(
 	job: CodeHostJob,
-	value: { repository: CloudCodingRepository; tree: string; kind?: "static" | "server" | "hybrid" },
+	value: {
+		repository: CloudCodingRepository;
+		tree: string;
+		kind?: "static" | "server" | "hybrid";
+		useTreeDirectly?: boolean;
+	},
 ): Promise<{ sourceDir: string; cleanup: () => Promise<void> }> {
-	const hasKind = typeof value === "object" && value !== null && "kind" in value && value.kind !== undefined;
-	let rawRepo: unknown;
-	let tree: unknown;
-	let kind: unknown;
-	if (hasKind) {
-		const input = closed(value, ["repository", "tree", "kind"]);
-		rawRepo = input.repository;
-		tree = input.tree;
-		kind = input.kind;
-	} else {
-		const input = closed(value, ["repository", "tree"]);
-		rawRepo = input.repository;
-		tree = input.tree;
+	const allowedKeys: string[] = ["repository", "tree"];
+	if (typeof value === "object" && value !== null && "kind" in value && value.kind !== undefined) {
+		allowedKeys.push("kind");
 	}
+	if (
+		typeof value === "object" &&
+		value !== null &&
+		"useTreeDirectly" in value &&
+		value.useTreeDirectly !== undefined
+	) {
+		allowedKeys.push("useTreeDirectly");
+	}
+	const input = closed(value, allowedKeys);
+	const rawRepo = input.repository;
+	const tree = input.tree;
+	const kind = input.kind;
+	const useTreeDirectly = input.useTreeDirectly;
 	const repository = keptRepositoryOf(rawRepo);
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	if (kind !== undefined && kind !== "static" && kind !== "server" && kind !== "hybrid") {
 		throw new Error("INVALID_CODE_HOST_JOB");
 	}
+	if (useTreeDirectly !== undefined && typeof useTreeDirectly !== "boolean") {
+		throw new Error("INVALID_CODE_HOST_JOB");
+	}
 	const tarBytes = await withJob(job, repository, async (run) => {
-		if (!(await run.prepare()).seeded) throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
-		if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
-			throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+		if (job.preparedKeptArea !== run.area) {
+			if (!(await run.prepare(undefined, { readOnly: true })).seeded)
+				throw new CodeHostRefusal("CODE_HOST_NOT_SEEDED", [run.area]);
+			if ((await run.ref(CODE_AREA_IN_QORPERA_REF)) === null) {
+				throw new CodeHostRefusal("CODE_HOST_AREA_FROM_GITHUB", [run.area]);
+			}
 		}
 		let target = tree;
-		if (kind === "hybrid") {
+		if (kind === "hybrid" && useTreeDirectly !== true) {
 			const mainRef = await run.ref(`refs/heads/${repository.baseBranch}`);
 			if (mainRef === null) throw new CodeHostRefusal("CODE_HOST_SITE_TREE_UNKNOWN", [tree]);
 			target = mainRef;

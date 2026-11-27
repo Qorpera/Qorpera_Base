@@ -18,6 +18,7 @@ import {
 	fetchAppLogs,
 	NATIVE_WEB_HOSTING_RPCS,
 	parseNativeCodeSiteSpec,
+	stopHostedAppDeployment,
 	triggerBlueGreenAppDeploy,
 } from "../src/native-webapp-deploy.ts";
 import { parseHeadersFile, parseRedirectsFile, uploadSiteBlobsToEdge } from "../src/site-blob-upload.ts";
@@ -748,5 +749,55 @@ describe.skipIf(!hasRustBinaries)("cross-process E2E: live qorpera-web-router + 
 		} finally {
 			dnsSocket.close();
 		}
+	});
+
+	it("forwards is_preview on triggerBlueGreenAppDeploy and stops hosted deployments cleanly", async () => {
+		const calls: { url: string; method: string; body?: string }[] = [];
+		const deployed = await triggerBlueGreenAppDeploy({
+			appHostInternalUrl: "http://127.0.0.1:8096/",
+			controlToken: "app-token",
+			deploymentId: DEPLOYMENT_ID,
+			siteId: SITE_ID,
+			ociImageRef: IMAGE_REF,
+			healthPath: "/health",
+			idleTimeoutSec: 300,
+			memoryMb: 512,
+			vcpuLimit: 1,
+			env: { PORT: "3000" },
+			isPreview: true,
+			fetchImpl: async (url, init) => {
+				calls.push({ url, method: init.method, ...(init.body !== undefined ? { body: init.body } : {}) });
+				return { status: 200, body: JSON.stringify({ upstream_addr: "127.0.0.1:41901" }) };
+			},
+		});
+		expect(deployed).toEqual({ upstreamAddr: "127.0.0.1:41901" });
+		expect(JSON.parse(calls[0]!.body!)).toMatchObject({
+			deployment_id: DEPLOYMENT_ID,
+			site_id: SITE_ID,
+			is_preview: true,
+		});
+
+		await stopHostedAppDeployment({
+			appHostInternalUrl: "http://127.0.0.1:8096",
+			controlToken: "app-token",
+			deploymentId: DEPLOYMENT_ID,
+			fetchImpl: async (url, init) => {
+				calls.push({ url, method: init.method });
+				return { status: 404, body: '{"error":"not_found"}' };
+			},
+		});
+		expect(calls[1]).toEqual({
+			url: `http://127.0.0.1:8096/_internal/apps/${DEPLOYMENT_ID}/stop`,
+			method: "POST",
+		});
+
+		await expect(
+			stopHostedAppDeployment({
+				appHostInternalUrl: "http://127.0.0.1:8096",
+				controlToken: "app-token",
+				deploymentId: DEPLOYMENT_ID,
+				fetchImpl: async () => ({ status: 500, body: "boom" }),
+			}),
+		).rejects.toThrow("APP_HOST_STOP_FAILED_500");
 	});
 });

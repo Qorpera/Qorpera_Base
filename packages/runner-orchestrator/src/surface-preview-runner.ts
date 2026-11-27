@@ -13,6 +13,24 @@ export interface SurfacePreviewRecipe {
 	readonly timeoutSeconds: number;
 }
 
+export interface SurfaceAppSpec {
+	readonly kind: "server" | "hybrid";
+	readonly port: number;
+	readonly healthPath: string;
+	readonly dockerfile: string | null;
+	readonly idleTimeoutSec: number;
+	readonly memoryMb: number;
+	readonly vcpuLimit: number;
+	readonly spaFallback: string | null;
+	readonly folder: string;
+	readonly recipe: SurfacePreviewRecipe | null;
+}
+
+export type SurfaceAppSpecRead =
+	| { readonly kind: "none" }
+	| { readonly kind: "app"; readonly app: SurfaceAppSpec }
+	| { readonly kind: "invalid"; readonly detail: string };
+
 export type SurfacePreviewRecipeRead =
 	| { readonly kind: "none" }
 	| { readonly kind: "recipe"; readonly recipe: SurfacePreviewRecipe }
@@ -21,6 +39,7 @@ export type SurfacePreviewRecipeRead =
 export type SurfacePreviewPlan =
 	| { readonly kind: "static" }
 	| { readonly kind: "build"; readonly recipe: SurfacePreviewRecipe }
+	| { readonly kind: "app"; readonly app: SurfaceAppSpec }
 	| { readonly kind: "invalid"; readonly detail: string };
 
 export const PREVIEW_BUILD_FAILED = "PREVIEW_BUILD_FAILED";
@@ -181,6 +200,61 @@ function declaresBuild(checksText: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function declaresServerOrHybridSite(checksText: string): boolean {
+	try {
+		const root = parseCodingJson(checksText.startsWith("﻿") ? checksText.slice(1) : checksText, false);
+		if (!root || typeof root !== "object" || Array.isArray(root)) return false;
+		const site = (root as Record<string, unknown>).site;
+		if (!site || typeof site !== "object" || Array.isArray(site)) return false;
+		const kind = (site as Record<string, unknown>).kind;
+		return kind === "server" || kind === "hybrid";
+	} catch {
+		return false;
+	}
+}
+
+export function readSurfaceAppSpec(checksText: string | null): SurfaceAppSpecRead {
+	if (checksText === null) return { kind: "none" };
+	const parsed = parseCodeChecksText(checksText);
+	if (!parsed.ok) {
+		if (!declaresServerOrHybridSite(checksText)) return { kind: "none" };
+		const problems = parsed.problems
+			.slice(0, INVALID_PROBLEMS_SHOWN)
+			.map((problem) => `${problem.at || "/"}: ${problem.message}`)
+			.join("; ");
+		return {
+			kind: "invalid",
+			detail: previewBuildDetail(
+				PREVIEW_BUILD_FAILED,
+				`.qorpera/checks.json declares a server or hybrid site but is not valid, so nothing was deployed: ${problems}`,
+			),
+		};
+	}
+	const site = parsed.site;
+	if (!site || (site.kind !== "server" && site.kind !== "hybrid")) return { kind: "none" };
+	let recipe: SurfacePreviewRecipe | null = null;
+	if (site.kind === "hybrid") {
+		const readRecipe = readSurfacePreviewRecipe(checksText);
+		if (readRecipe.kind === "invalid") return readRecipe;
+		if (readRecipe.kind === "recipe") recipe = readRecipe.recipe;
+	}
+	return {
+		kind: "app",
+		app: {
+			kind: site.kind,
+			port: site.port ?? 3000,
+			healthPath: site.healthPath ?? "/",
+			dockerfile: site.dockerfile ?? null,
+			idleTimeoutSec: site.idleTimeoutSec ?? 900,
+			memoryMb: site.memoryMb ?? 512,
+			vcpuLimit: site.vcpuLimit ?? 1,
+			spaFallback: site.spaFallback ?? null,
+			folder: site.folder,
+			recipe,
+		},
+	};
 }
 
 export function readSurfacePreviewRecipe(checksText: string | null): SurfacePreviewRecipeRead {

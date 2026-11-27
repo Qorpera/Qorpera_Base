@@ -126,7 +126,7 @@ declare
 	v_surface2 uuid;
 begin
 	foreach v_function in array array[
-		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text)',
+		'public.qorpera_surface_request_build(text,uuid,uuid,text,text,jsonb,text,boolean)',
 		'public.qorpera_check_surface_preview_build(uuid,uuid)',
 		'public.qorpera_begin_surface_preview_build(uuid,uuid)',
 		'public.qorpera_complete_surface_preview_build(uuid,uuid,uuid,text,text,text,text,jsonb,integer,bigint,boolean)'

@@ -619,7 +619,11 @@ export async function runCodingExecutorMain(environment: NodeJS.ProcessEnv = pro
 			hosts: codeHostJobs,
 			report: logCodeRecord,
 			...(nativeEdge
-				? { nativeEdge: { routerInternalUrl: nativeEdge.routerInternalUrl, controlToken: nativeEdge.controlToken } }
+				? {
+						nativeEdge,
+						exportSource: exportCodeSiteSource,
+						serialize: serializeRepoBuild,
+					}
 				: {}),
 		})
 		: undefined;

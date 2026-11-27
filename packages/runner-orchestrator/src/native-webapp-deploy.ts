@@ -346,6 +346,7 @@ export async function triggerBlueGreenAppDeploy(options: {
 	readonly memoryMb: number;
 	readonly vcpuLimit: number;
 	readonly env: Record<string, string>;
+	readonly isPreview?: boolean;
 	readonly fetchImpl?: AppHostFetch;
 	readonly signal?: AbortSignal;
 }): Promise<{ upstreamAddr: string }> {
@@ -367,6 +368,7 @@ export async function triggerBlueGreenAppDeploy(options: {
 				memory_mb: options.memoryMb,
 				vcpu_limit: options.vcpuLimit,
 				env: options.env,
+				...(options.isPreview ? { is_preview: true } : {}),
 			}),
 			signal: options.signal,
 		});
@@ -394,6 +396,27 @@ export async function triggerBlueGreenAppDeploy(options: {
 			);
 		}
 		throw error;
+	}
+}
+
+export async function stopHostedAppDeployment(options: {
+	readonly appHostInternalUrl: string;
+	readonly controlToken: string;
+	readonly deploymentId: string;
+	readonly fetchImpl?: AppHostFetch;
+	readonly signal?: AbortSignal;
+}): Promise<void> {
+	const base = options.appHostInternalUrl.replace(/\/+$/, "");
+	const fetchImpl = options.fetchImpl ?? defaultAppHostFetch;
+	const res = await fetchImpl(`${base}/_internal/apps/${encodeURIComponent(options.deploymentId)}/stop`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${options.controlToken}`,
+		},
+		signal: options.signal,
+	});
+	if (res.status !== 200 && res.status !== 404) {
+		throw new Error(`APP_HOST_STOP_FAILED_${res.status}`);
 	}
 }
 

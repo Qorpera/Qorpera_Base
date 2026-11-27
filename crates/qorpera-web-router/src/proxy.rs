@@ -512,6 +512,7 @@ pub async fn proxy_http_or_ws(
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    frame_ancestors: Option<&HeaderValue>,
     ws_limiter: &Arc<WsLimiter>,
     activity: &Arc<ActivityTracker>,
     deployment_id: &str,
@@ -525,6 +526,7 @@ pub async fn proxy_http_or_ws(
             forwarded_host,
             client_ip,
             is_private,
+            frame_ancestors,
             ws_limiter,
             activity,
             deployment_id,
@@ -557,9 +559,10 @@ pub async fn proxy_http_or_ws(
         .map_err(|_| ProxyError::UpstreamFailed("upstream_response_timeout".to_string()))?
         .map_err(classify_client_error)?;
 
-    build_proxied_response(upstream_res, is_private)
+    build_proxied_response(upstream_res, is_private, frame_ancestors)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn proxy_empty_request(
     pool: &PooledProxyClient,
     upstream_addr: &str,
@@ -569,6 +572,7 @@ pub async fn proxy_empty_request(
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    frame_ancestors: Option<&HeaderValue>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let uri: Uri = format!("http://{upstream_addr}{path_and_query}")
         .parse()
@@ -586,7 +590,7 @@ pub async fn proxy_empty_request(
         .map_err(|_| ProxyError::UpstreamFailed("upstream_response_timeout".to_string()))?
         .map_err(classify_client_error)?;
 
-    build_proxied_response(upstream_res, is_private)
+    build_proxied_response(upstream_res, is_private, frame_ancestors)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -596,6 +600,7 @@ async fn proxy_websocket(
     forwarded_host: &str,
     client_ip: &str,
     is_private: bool,
+    frame_ancestors: Option<&HeaderValue>,
     ws_limiter: &Arc<WsLimiter>,
     activity: &Arc<ActivityTracker>,
     deployment_id: &str,
@@ -712,7 +717,7 @@ async fn proxy_websocket(
             .map_err(|e| ProxyError::UpstreamFailed(e.to_string()));
     }
 
-    build_proxied_response(upstream_res, is_private)
+    build_proxied_response(upstream_res, is_private, frame_ancestors)
 }
 
 fn copy_request_headers(
@@ -749,18 +754,75 @@ fn copy_request_headers(
     );
 }
 
+fn rewrite_csp_frame_ancestors(upstream_csp: &str, frame_ancestors_header: &str) -> String {
+    let kept: Vec<&str> = upstream_csp
+        .split(';')
+        .map(str::trim)
+        .filter(|dir| {
+            if dir.is_empty() {
+                return false;
+            }
+            let name = dir.split_whitespace().next().unwrap_or("");
+            !name.eq_ignore_ascii_case("frame-ancestors")
+        })
+        .collect();
+    if kept.is_empty() {
+        frame_ancestors_header.to_string()
+    } else {
+        format!("{}; {frame_ancestors_header}", kept.join("; "))
+    }
+}
+
+fn apply_preview_framing_headers(
+    upstream_headers: &HeaderMap,
+    out: &mut HeaderMap,
+    frame_ancestors: &HeaderValue,
+) {
+    let Ok(fa_str) = frame_ancestors.to_str() else {
+        return;
+    };
+    let mut saw_csp = false;
+    for value in upstream_headers.get_all("content-security-policy") {
+        if let Ok(raw) = value.to_str() {
+            let rewritten = rewrite_csp_frame_ancestors(raw, fa_str);
+            if let Ok(hv) = HeaderValue::from_str(&rewritten) {
+                out.append(HeaderName::from_static("content-security-policy"), hv);
+                saw_csp = true;
+            }
+        }
+    }
+    if !saw_csp {
+        out.insert(
+            HeaderName::from_static("content-security-policy"),
+            frame_ancestors.clone(),
+        );
+    }
+}
+
 fn build_proxied_response(
     upstream_res: Response<Incoming>,
     is_private: bool,
+    frame_ancestors: Option<&HeaderValue>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let status = upstream_res.status();
     let resp_headers = upstream_res.headers().clone();
     let mut builder = Response::builder().status(status);
     if let Some(headers) = builder.headers_mut() {
         for (name, value) in &resp_headers {
+            if frame_ancestors.is_some()
+                && matches!(
+                    name.as_str(),
+                    "x-frame-options" | "content-security-policy"
+                )
+            {
+                continue;
+            }
             if should_forward_response_header(name, is_private) {
                 headers.append(name.clone(), value.clone());
             }
+        }
+        if let Some(csp) = frame_ancestors {
+            apply_preview_framing_headers(&resp_headers, headers, csp);
         }
         headers.insert(
             HeaderName::from_static("strict-transport-security"),
@@ -862,5 +924,30 @@ mod tests {
         let guard = limiter.counts.lock().unwrap();
         assert!(guard.by_deployment.is_empty());
         assert!(guard.by_ip.is_empty());
+    }
+
+    #[test]
+    fn preview_framing_headers_strip_upstream_frame_blocks_and_preserve_other_csp() {
+        let mut upstream = HeaderMap::new();
+        upstream.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        upstream.insert(
+            "content-security-policy",
+            HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'; script-src 'self'"),
+        );
+        let mut out = HeaderMap::new();
+        let allowed = HeaderValue::from_static("frame-ancestors https://app.qorpera.com");
+        apply_preview_framing_headers(&upstream, &mut out, &allowed);
+        assert!(out.get("x-frame-options").is_none());
+        assert_eq!(
+            out.get("content-security-policy").unwrap().to_str().unwrap(),
+            "default-src 'self'; script-src 'self'; frame-ancestors https://app.qorpera.com"
+        );
+
+        let mut empty_out = HeaderMap::new();
+        apply_preview_framing_headers(&HeaderMap::new(), &mut empty_out, &allowed);
+        assert_eq!(
+            empty_out.get("content-security-policy").unwrap().to_str().unwrap(),
+            "frame-ancestors https://app.qorpera.com"
+        );
     }
 }
