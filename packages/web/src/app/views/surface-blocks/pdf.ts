@@ -23,9 +23,9 @@ interface LoadedPdf {
 }
 
 interface PendingPdfFrame {
+	readonly frame: WeakRef<HTMLIFrameElement>;
 	readonly bytes: Uint8Array;
 	readonly title: string;
-	sentWindow: Window | null;
 }
 
 export function formatPdfBytes(bytes: number): string {
@@ -45,7 +45,11 @@ export class SurfacePdfViewer {
 	readonly #signal: AbortSignal;
 	readonly #lifetime = new AbortController();
 	readonly #entries = new Map<string, Promise<LoadedPdf>>();
-	readonly #pendingFrames = new Map<HTMLIFrameElement, PendingPdfFrame>();
+	readonly #pendingFrames = new Set<PendingPdfFrame>();
+	readonly #sentWindows = new WeakSet<Window>();
+	readonly #frameCleanup = new FinalizationRegistry<PendingPdfFrame>((entry) => {
+		this.#pendingFrames.delete(entry);
+	});
 
 	constructor(read: StudioBinaryReader, signal: AbortSignal) {
 		this.#read = read;
@@ -60,12 +64,18 @@ export class SurfacePdfViewer {
 			(event) => {
 				const data = event.data as { type?: unknown } | null;
 				if (event.origin !== location.origin || data?.type !== PDF_PREVIEW_READY) return;
-				for (const [frame, pending] of this.#pendingFrames) {
+				for (const pending of this.#pendingFrames) {
+					const frame = pending.frame.deref();
+					if (!frame) {
+						this.#pendingFrames.delete(pending);
+						this.#frameCleanup.unregister(pending);
+						continue;
+					}
 					if (!frame.isConnected) continue;
 					const target = frame.contentWindow;
 					if (!target || event.source !== target) continue;
-					if (pending.sentWindow === target) return;
-					pending.sentWindow = target;
+					if (this.#sentWindows.has(target)) return;
+					this.#sentWindows.add(target);
 					target.postMessage(
 						{ type: PDF_PREVIEW_DATA, bytes: pending.bytes, title: pending.title },
 						location.origin,
@@ -142,10 +152,13 @@ export class SurfacePdfViewer {
 	): HTMLElement {
 		const stage = h("div", { class: "studio-pdf-stage" }, h("p", { class: "studio-pdf-state" }, t("Loading PDF…")));
 		let closed = false;
-		let mountedFrame: HTMLIFrameElement | undefined;
+		let mountedEntry: PendingPdfFrame | undefined;
 		onClose?.(() => {
 			closed = true;
-			if (mountedFrame) this.#pendingFrames.delete(mountedFrame);
+			if (mountedEntry) {
+				this.#pendingFrames.delete(mountedEntry);
+				this.#frameCleanup.unregister(mountedEntry);
+			}
 		});
 		this.#load(ref).then(
 			({ bytes, url }) => {
@@ -157,8 +170,16 @@ export class SurfacePdfViewer {
 					referrerpolicy: "no-referrer",
 					title,
 				});
-				mountedFrame = frame;
-				this.#pendingFrames.set(frame, { bytes, title, sentWindow: null });
+				for (const existing of this.#pendingFrames) {
+					if (!existing.frame.deref()) {
+						this.#pendingFrames.delete(existing);
+						this.#frameCleanup.unregister(existing);
+					}
+				}
+				const entry: PendingPdfFrame = { frame: new WeakRef(frame), bytes, title };
+				mountedEntry = entry;
+				this.#pendingFrames.add(entry);
+				this.#frameCleanup.register(frame, entry, entry);
 				stage.replaceChildren(frame);
 			},
 			() => {
@@ -190,6 +211,7 @@ export class SurfacePdfViewer {
 
 	dispose(): void {
 		this.#lifetime.abort();
+		for (const entry of this.#pendingFrames) this.#frameCleanup.unregister(entry);
 		this.#pendingFrames.clear();
 		for (const pending of this.#entries.values()) {
 			pending.then(
