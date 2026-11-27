@@ -33,6 +33,7 @@ import { agentFigure } from "../../ui/avatar.ts";
 import { isUnnamed } from "../../ui/company-name.ts";
 import { type MenuEntry, openContextMenu } from "../../ui/context-menu.ts";
 import { fmtTime, formatPresentationDate, h, icon, notice, personAvatar, replace, spinner } from "../../ui/dom.ts";
+import { MailFrame, mailHtmlToText, type SanitizedMailHtml, sanitizeMailHtml } from "../../ui/mail-frame.ts";
 import { presentationDay, presentationLocale, presentationTimeZone, t, timeZoneOption } from "../../ui/preferences.ts";
 import { uiScale } from "../../ui/scale.ts";
 import type { CompanyController } from "../company.ts";
@@ -109,6 +110,8 @@ interface MailboxUi {
 	search: string;
 	/** Messages opened or folded by the member, by `thread:kind:id`; the rest follow the default (the newest open). */
 	expanded: Record<string, boolean>;
+	remoteImages: Record<string, boolean>;
+	blockedLink: { readonly message: string; readonly href: string } | null;
 	writing: boolean;
 	/** The Write window's new email. */
 	write: Draft;
@@ -189,7 +192,29 @@ const newDraft = (): Draft => ({
 	error: null,
 });
 
+interface MailFrameEntry {
+	readonly html: string;
+	allowRemote: boolean;
+	sanitized: SanitizedMailHtml;
+	readonly frame: MailFrame;
+	page: Page;
+}
+
 const uis = new WeakMap<HTMLElement, MailboxUi>();
+const mailFrames = new WeakMap<MailboxUi, Map<string, MailFrameEntry>>();
+const frameSignals = new WeakMap<MailboxUi, AbortSignal>();
+
+function disposeFrames(ui: MailboxUi): void {
+	const frames = mailFrames.get(ui);
+	if (!frames) return;
+	for (const entry of frames.values()) entry.frame.dispose();
+	frames.clear();
+}
+
+export function disposeMailbox(container: HTMLElement): void {
+	const ui = uis.get(container);
+	if (ui) disposeFrames(ui);
+}
 const jsonCache = new WeakMap<object, string>();
 const staffJsonCache = new WeakMap<readonly HostedStaffAgent[], string>();
 const routinesJsonCache = new WeakMap<readonly WebRoutine[], string>();
@@ -486,6 +511,7 @@ export function renderMailbox(
 	const profileId = company.profile.profileId;
 	let ui = uis.get(container);
 	if (!ui || ui.profileId !== profileId) {
+		if (ui) disposeFrames(ui);
 		ui = {
 			profileId,
 			tab: "inbox",
@@ -494,6 +520,8 @@ export function renderMailbox(
 			letterAgent: null,
 			search: "",
 			expanded: {},
+			remoteImages: {},
+			blockedLink: null,
 			writing: false,
 			write: newDraft(),
 			replies: {},
@@ -515,6 +543,12 @@ export function renderMailbox(
 			pendingFocus: null,
 		};
 		uis.set(container, ui);
+	}
+	if (frameSignals.get(ui) !== company.signal) {
+		if (frameSignals.has(ui)) disposeFrames(ui);
+		frameSignals.set(ui, company.signal);
+		if (company.signal.aborted) disposeFrames(ui);
+		else company.signal.addEventListener("abort", () => disposeFrames(ui), { once: true });
 	}
 	const state = company.store.get();
 	const mail = state.mail;
@@ -596,6 +630,11 @@ export function renderMailbox(
 			shownKey(container, computeKey());
 			return true;
 		},
+		syncKey: () => {
+			if (!stillShown() || company.store.get() !== state) return false;
+			shownKey(container, computeKey());
+			return true;
+		},
 	};
 	if (moveFocus === undefined && ui.pendingFocus !== null && document.activeElement !== ui.pendingFocus.carried) {
 		ui.pendingFocus = null;
@@ -637,6 +676,7 @@ interface Page {
 	readonly profileId: string;
 	readonly redraw: (moveFocus?: string) => void;
 	readonly updateSearch?: () => boolean;
+	readonly syncKey?: () => boolean;
 	readonly options: MailboxOptions;
 }
 
@@ -726,6 +766,7 @@ function drawPage(page: Page): HTMLElement {
 	const { ui, company } = page;
 	const mail = company.store.get().mail;
 	const off = mail !== undefined && !mailShown(mail);
+	const usedFrames = new Set<string>();
 	const body = !mail
 		? spinner(t("Reading the mail"))
 		: off
@@ -733,10 +774,18 @@ function drawPage(page: Page): HTMLElement {
 			: ui.letter
 				? letterView(page, ui.letter)
 				: ui.open
-					? threadView(page, ui.open)
+					? threadView(page, ui.open, usedFrames)
 					: ui.tab === "addresses"
 						? addressesView(page)
 						: listView(page);
+	const frames = mailFrames.get(ui);
+	if (frames) {
+		for (const [frameKey, entry] of frames) {
+			if (usedFrames.has(frameKey)) continue;
+			entry.frame.dispose();
+			frames.delete(frameKey);
+		}
+	}
 	const reading = mail !== undefined && !off && (ui.letter !== null || ui.open !== null);
 	const writing = ui.writing && canWrite(page) && mail !== undefined && !off;
 	return h(
@@ -821,6 +870,7 @@ function side(page: Page): HTMLElement {
 							ui.open = null;
 							ui.letter = null;
 							ui.changing = null;
+							ui.blockedLink = null;
 							page.redraw(`tab:${tab}`);
 						},
 					},
@@ -863,6 +913,7 @@ function bar(page: Page): HTMLElement {
 							ui.search = field.value;
 							ui.open = null;
 							ui.letter = null;
+							ui.blockedLink = null;
 							if (!wasReading && page.updateSearch?.()) return;
 							// What the new words find is read from its top, not from where the old list was left.
 							const list = field.closest(".mailbox")?.querySelector(".mailbox-scroll");
@@ -1170,6 +1221,7 @@ function accountUse(page: Page, account: MailAccount): string {
 function openThread(page: Page, thread: string): void {
 	page.ui.open = thread;
 	page.ui.note = "";
+	page.ui.blockedLink = null;
 	page.redraw("back");
 }
 
@@ -1418,7 +1470,7 @@ function initials(name: string): string {
 		.toLocaleUpperCase(presentationLocale());
 }
 
-function threadView(page: Page, thread: string): HTMLElement {
+function threadView(page: Page, thread: string, usedFrames: Set<string>): HTMLElement {
 	const { company, ui } = page;
 	const read = company.store.get().mail?.threads[thread];
 	const summary = mailSummary(company, thread);
@@ -1436,6 +1488,7 @@ function threadView(page: Page, thread: string): HTMLElement {
 			"data-focus-key": "back",
 			onclick: () => {
 				ui.open = null;
+				ui.blockedLink = null;
 				page.redraw(`row:${thread}`);
 			},
 		},
@@ -1505,13 +1558,113 @@ function threadView(page: Page, thread: string): HTMLElement {
 			h(
 				"ol",
 				{ class: "mailbox-messages" },
-				...shown.messages.map((message) => messageItem(page, thread, message, message === last, summary)),
+				...shown.messages.map((message) =>
+					messageItem(page, thread, message, message === last, summary, usedFrames),
+				),
 			),
 			...shown.waiting.map((send) => draftItem(page, thread, send)),
 			replyArea(page, thread, summary, last),
 		);
 	}
 	return h("div", { class: "mailbox-thread" }, ...parts);
+}
+
+function openMailLink(page: Page, key: string, href: string): void {
+	const { ui } = page;
+	let parsed: URL;
+	try {
+		parsed = new URL(href);
+	} catch {
+		return;
+	}
+	if (parsed.protocol === "mailto:") {
+		if (!canWrite(page) || (page.company.store.get().mail?.addresses.length ?? 0) === 0) return;
+		let decoded: string;
+		try {
+			decoded = decodeURIComponent(parsed.pathname);
+		} catch {
+			return;
+		}
+		const addresses = decoded
+			.split(",")
+			.map((part) => part.trim())
+			.filter(isAddress);
+		if (!addresses.length) return;
+		const subject =
+			parsed.searchParams
+				.get("subject")
+				?.replace(/[\p{Cc}\s]+/gu, " ")
+				.trim()
+				.slice(0, 200) ?? "";
+		const body = parsed.searchParams.get("body")?.slice(0, 20_000) ?? "";
+		ui.write = {
+			...newDraft(),
+			to: { chips: [...new Set(addresses)].slice(0, MOST_RECIPIENTS), typed: "" },
+			subject,
+			text: body,
+		};
+		ui.writing = true;
+		ui.blockedLink = null;
+		page.redraw(subject ? "write-text" : "write-subject");
+		return;
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
+	const tab = window.open(parsed.href, "_blank");
+	if (tab) {
+		tab.opener = null;
+		if (ui.blockedLink?.message === key) {
+			ui.blockedLink = null;
+			page.redraw();
+		}
+		return;
+	}
+	ui.blockedLink = { message: key, href: parsed.href };
+	page.redraw();
+}
+
+function mailFrameFor(
+	page: Page,
+	key: string,
+	html: string,
+	allowRemote: boolean,
+	usedFrames: Set<string>,
+): MailFrameEntry | null {
+	const { ui } = page;
+	let frames = mailFrames.get(ui);
+	if (!frames) {
+		frames = new Map();
+		mailFrames.set(ui, frames);
+	}
+	const existing = frames.get(key);
+	if (existing && existing.html === html) {
+		existing.page = page;
+		if (existing.allowRemote !== allowRemote) {
+			existing.allowRemote = allowRemote;
+			existing.sanitized = sanitizeMailHtml(html, { allowRemoteImages: allowRemote });
+			existing.frame.update(existing.sanitized);
+		}
+		if (!existing.sanitized.hasContent) return null;
+		usedFrames.add(key);
+		return existing;
+	}
+	existing?.frame.dispose();
+	frames.delete(key);
+	const sanitized = sanitizeMailHtml(html, { allowRemoteImages: allowRemote });
+	if (!sanitized.hasContent) return null;
+	let entry: MailFrameEntry;
+	const frame = new MailFrame(sanitized, t("From outside the company"), {
+		onOpen: (href) => openMailLink(entry.page, key, href),
+		onEscape: () => {
+			if (entry.page.ui.writing) {
+				entry.page.ui.writing = false;
+				entry.page.redraw("write");
+			}
+		},
+	});
+	entry = { html, allowRemote, sanitized, frame, page };
+	frames.set(key, entry);
+	usedFrames.add(key);
+	return entry;
 }
 
 function senderOf(message: MailMessage): string {
@@ -1526,6 +1679,7 @@ function messageItem(
 	message: MailMessage,
 	newest: boolean,
 	summary: MailThreadSummary | undefined,
+	usedFrames: Set<string>,
 ): HTMLElement {
 	const { ui } = page;
 	const received = message.kind === "received";
@@ -1554,7 +1708,6 @@ function messageItem(
 		ui.expanded = { ...ui.expanded, [key]: !open };
 		page.redraw(`message:${key}`);
 	};
-	// An email a member sent themself is theirs: no agent wrote it.
 	const member = received ? undefined : message.member;
 	const agentId = received ? undefined : message.staffAgent?.staffAgentId;
 	const agent = received ? "" : agentName(page, agentId, message.staffAgent?.name);
@@ -1570,8 +1723,10 @@ function messageItem(
 			? memberFace(page, member)
 			: figure(page, agentId, message.staffAgent?.name, 40);
 	const text = message.text ?? "";
-	const flat = text.replace(/\s+/g, " ").trim();
-	if (!open)
+	const html = received ? (message.html ?? "") : "";
+	if (!open) {
+		const flatSource = text.trim() ? text : html ? mailHtmlToText(html) : "";
+		const flat = flatSource.replace(/\s+/g, " ").trim();
 		return h(
 			"li",
 			{ class: "mailbox-message is-folded" },
@@ -1590,6 +1745,7 @@ function messageItem(
 				h("time", { class: "mailbox-time", datetime: message.at }, when(message.at)),
 			),
 		);
+	}
 	const status = received
 		? null
 		: message.status === "sent"
@@ -1599,11 +1755,63 @@ function messageItem(
 				: message.status === "cancelled"
 					? h("span", { class: "mailbox-status is-failed" }, t("Cancelled"))
 					: h("span", { class: "mailbox-status" }, t("Sending"));
+	const allowRemote = ui.remoteImages[key] === true;
+	const htmlEntry = received && html ? mailFrameFor(page, key, html, allowRemote, usedFrames) : null;
+	const showHtml = htmlEntry !== null;
+	const truncated = showHtml ? received && message.htmlTruncated : received && message.textTruncated;
 	const notes = [
 		received && message.automated ? t("Automated email") : null,
-		received && message.textTruncated ? t("This email is longer; only its start is shown.") : null,
+		truncated ? t("This email is longer; only its start is shown.") : null,
 		message.textCleared ? t("This email's text is no longer kept.") : null,
 	].filter((note): note is string => note !== null);
+	const imageBar =
+		showHtml && !allowRemote && htmlEntry.sanitized.remoteImageCount > 0
+			? h(
+					"div",
+					{ class: "mailbox-html-bar" },
+					h("span", { class: "mailbox-muted" }, t("Images from outside are hidden.")),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "mailbox-text",
+							"data-focus-key": `show-images:${key}`,
+							onclick: (event: MouseEvent) => {
+								ui.remoteImages = { ...ui.remoteImages, [key]: true };
+								const next = sanitizeMailHtml(html, { allowRemoteImages: true });
+								htmlEntry.allowRemote = true;
+								htmlEntry.sanitized = next;
+								htmlEntry.frame.update(next);
+								(event.currentTarget as HTMLElement).closest(".mailbox-html-bar")?.remove();
+								if (!page.syncKey?.()) page.redraw();
+							},
+						},
+						t("Show images"),
+					),
+				)
+			: null;
+	const blocked = showHtml && ui.blockedLink?.message === key ? ui.blockedLink : null;
+	const blockedBar = blocked
+		? h(
+				"div",
+				{ class: "mailbox-html-bar" },
+				h(
+					"a",
+					{
+						class: "mailbox-text",
+						href: blocked.href,
+						target: "_blank",
+						rel: "noopener noreferrer",
+						onclick: () => {
+							ui.blockedLink = null;
+							page.redraw();
+						},
+					},
+					t("Open link"),
+				),
+				h("span", { class: "mailbox-muted mailbox-link-url" }, blocked.href),
+			)
+		: null;
 	const files = message.attachments.map((attachment) => attachment.filename).join(", ");
 	const to = received ? summary?.address : message.to.join(", ");
 	return h(
@@ -1637,11 +1845,15 @@ function messageItem(
 				h("span", { class: "mailbox-when" }, status, h("time", { datetime: message.at }, fmtTime(message.at))),
 			),
 			notes.length ? h("p", { class: "mailbox-note" }, notes.join(" ")) : null,
-			text
-				? received
-					? outside(text, "p", "mailbox-text-body")
-					: h("p", { class: "mailbox-text-body" }, text)
-				: null,
+			imageBar,
+			blockedBar,
+			showHtml
+				? h("div", { class: "mailbox-html-body", title: t("From outside the company") }, htmlEntry.frame.frame)
+				: text
+					? received
+						? outside(text, "p", "mailbox-text-body")
+						: h("p", { class: "mailbox-text-body" }, text)
+					: null,
 			files
 				? h("p", { class: "mailbox-files" }, icon("attach"), received ? outside(files) : h("span", null, files))
 				: null,
@@ -1720,6 +1932,7 @@ function openLetter(page: Page, folder: string): void {
 	page.ui.letter = folder;
 	page.ui.open = null;
 	page.ui.note = "";
+	page.ui.blockedLink = null;
 	page.redraw("back");
 }
 
@@ -3871,6 +4084,11 @@ function forwarded(message: MailMessage, summary: MailThreadSummary): string {
 		timeStyle: "short",
 		timeZone: presentationTimeZone(),
 	});
+	const bodyText = message.text?.trim()
+		? message.text
+		: message.kind === "received" && message.html
+			? mailHtmlToText(message.html)
+			: "";
 	const lines = [
 		`---------- ${t("Forwarded message")} ----------`,
 		`${t("From")}: ${senderOf(message)}`,
@@ -3879,7 +4097,7 @@ function forwarded(message: MailMessage, summary: MailThreadSummary): string {
 		`${t("To")}: ${to.join(", ")}`,
 		...(message.cc.length ? [`${t("Cc")}: ${message.cc.join(", ")}`] : []),
 		"",
-		message.text ?? "",
+		bodyText,
 	];
 	return [...`\n\n${lines.join("\n")}`].slice(0, 20_000).join("");
 }

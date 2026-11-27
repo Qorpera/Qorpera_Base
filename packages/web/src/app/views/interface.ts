@@ -19,7 +19,7 @@ import { companyInterface, interfaceViews, QUOTE_RECORD_COLUMNS, viewBlocks } fr
 import type { QuotedText } from "../quotes.ts";
 import { renderBank } from "./bank.ts";
 import { disposeData, renderData } from "./data.ts";
-import { renderMailbox } from "./mailbox.ts";
+import { disposeMailbox, renderMailbox } from "./mailbox.ts";
 
 /** What each container last showed, and the element that shows it. The page area is shared with every other
  * page, so a redraw is skipped only while that element is still the one on screen. */
@@ -103,6 +103,7 @@ function domId(...parts: string[]): string {
 
 export function disposeInterface(container: HTMLElement): void {
 	disposeData(container);
+	disposeMailbox(container);
 }
 
 export function renderInterface(
@@ -143,6 +144,7 @@ export function renderInterface(
 	const entry = companyInterface(company, name);
 	if (!entry) {
 		disposeData(container);
+		disposeMailbox(container);
 		show(container, JSON.stringify(["missing", profileId, locale, name]), () =>
 			h(
 				"section",
@@ -154,6 +156,7 @@ export function renderInterface(
 		return;
 	}
 	if (entry.name !== DATA_PAGE) disposeData(container);
+	if (entry.name !== "mailbox") disposeMailbox(container);
 	// The Mailbox draws itself from the company's mail as a mail app does (views/mailbox.ts).
 	if (entry.name === "mailbox") {
 		renderMailbox(container, company, name, writes?.mailManage ? { manage: writes.mailManage } : {});
