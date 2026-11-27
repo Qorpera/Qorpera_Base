@@ -1508,6 +1508,13 @@ export interface SurfacesStoreOptions {
 		image: SurfaceImageRef,
 		signal: AbortSignal,
 	) => Promise<Blob>;
+	readonly renameLegacyRoutine?: (
+		routineId: string,
+		clientRoutineId: string,
+		title: string,
+		signal: AbortSignal,
+	) => Promise<void>;
+	readonly deleteLegacyRoutine?: (routineId: string, clientRoutineId: string, signal: AbortSignal) => Promise<void>;
 }
 
 interface LocalSandboxCacheEntry {
@@ -1769,6 +1776,14 @@ export class SurfacesStore {
 
 	get canLoadCloudFiles(): boolean {
 		return Boolean(this.#options.loadCloudFiles);
+	}
+
+	get canRenameLegacyRoutine(): boolean {
+		return Boolean(this.#options.renameLegacyRoutine);
+	}
+
+	get canDeleteLegacyRoutine(): boolean {
+		return Boolean(this.#options.deleteLegacyRoutine);
 	}
 
 	readStudioBinary(file: StudioBinaryRef, signal: AbortSignal): Promise<Uint8Array> {
@@ -2460,25 +2475,54 @@ export class SurfacesStore {
 	): Promise<SurfaceAutomationSummary | undefined> {
 		const existing = this.state.automations.find((item) => item.id === id);
 		if (!existing) return undefined;
-		if (this.state.source === "cloud" && !id.startsWith("local-") && this.#options.client?.updateAutomation) {
-			const updated = await this.#run(`automation:${id}`, (client) =>
-				client.updateAutomation!(id, {
-					...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
-					...(patch.prompt !== undefined ? { prompt: patch.prompt.trim() } : {}),
-					...(patch.scheduleSummary !== undefined ? { scheduleSummary: patch.scheduleSummary.trim() } : {}),
-					...(patch.targetSurfaceSlug !== undefined ? { targetSurfaceSlug: patch.targetSurfaceSlug } : {}),
-				}),
-			);
-			if (!updated) return undefined;
-			this.store.set((state) => ({
-				automations: state.automations.map((item) => (item.id === id ? updated : item)),
-				scheduledAgentPrompts: {
-					...state.scheduledAgentPrompts,
-					[id]: updated.prompt ?? patch.prompt?.trim() ?? state.scheduledAgentPrompts[id] ?? "",
-				},
-				error: undefined,
-			}));
-			return updated;
+		if (this.state.source === "cloud" && !id.startsWith("local-")) {
+			if (!existing.ownable) {
+				const nextTitle = patch.title?.trim();
+				const initialPrompt =
+					this.state.scheduledAgentPrompts[id] ?? existing.lastOutcomeSummary ?? existing.scheduleSummary;
+				const promptChanged = patch.prompt !== undefined && patch.prompt.trim() !== initialPrompt.trim();
+				const scheduleChanged =
+					patch.scheduleSummary !== undefined && patch.scheduleSummary.trim() !== existing.scheduleSummary.trim();
+				const targetChanged =
+					patch.targetSurfaceSlug !== undefined &&
+					(patch.targetSurfaceSlug || null) !== (existing.targetSurfaceSlug || null);
+				if (!nextTitle || promptChanged || scheduleChanged || targetChanged || !this.#options.renameLegacyRoutine) {
+					this.store.set({ error: this.#options.unavailableMessage });
+					return undefined;
+				}
+				const renameLegacyRoutine = this.#options.renameLegacyRoutine;
+				const ok = await this.#run(`automation:${id}`, async () => {
+					await renameLegacyRoutine(id, existing.key, nextTitle, this.#visitAbort.signal);
+					return true;
+				});
+				if (!ok) return undefined;
+				const updated: SurfaceAutomationSummary = { ...existing, title: nextTitle };
+				this.store.set((state) => ({
+					automations: state.automations.map((item) => (item.id === id ? updated : item)),
+					error: undefined,
+				}));
+				return updated;
+			}
+			if (this.#options.client?.updateAutomation) {
+				const updated = await this.#run(`automation:${id}`, (client) =>
+					client.updateAutomation!(id, {
+						...(patch.title !== undefined ? { title: patch.title.trim() } : {}),
+						...(patch.prompt !== undefined ? { prompt: patch.prompt.trim() } : {}),
+						...(patch.scheduleSummary !== undefined ? { scheduleSummary: patch.scheduleSummary.trim() } : {}),
+						...(patch.targetSurfaceSlug !== undefined ? { targetSurfaceSlug: patch.targetSurfaceSlug } : {}),
+					}),
+				);
+				if (!updated) return undefined;
+				this.store.set((state) => ({
+					automations: state.automations.map((item) => (item.id === id ? updated : item)),
+					scheduledAgentPrompts: {
+						...state.scheduledAgentPrompts,
+						[id]: updated.prompt ?? patch.prompt?.trim() ?? state.scheduledAgentPrompts[id] ?? "",
+					},
+					error: undefined,
+				}));
+				return updated;
+			}
 		}
 		if (!this.isLocalInteractive || !id.startsWith("local-")) {
 			this.store.set({ error: this.#options.unavailableMessage });
@@ -2506,18 +2550,42 @@ export class SurfacesStore {
 	}
 
 	async deleteScheduledAgent(id: string): Promise<boolean> {
-		if (this.state.source === "cloud" && !id.startsWith("local-") && this.#options.client?.deleteAutomation) {
-			const ok = await this.#run(`automation:delete:${id}`, (client) => client.deleteAutomation!(id));
-			if (!ok) return false;
-			this.store.set((state) => {
-				const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
-				delete scheduledAgentPrompts[id];
-				return {
-					automations: state.automations.filter((item) => item.id !== id),
-					scheduledAgentPrompts,
-				};
-			});
-			return true;
+		const existing = this.state.automations.find((item) => item.id === id);
+		if (this.state.source === "cloud" && !id.startsWith("local-")) {
+			if (existing && !existing.ownable) {
+				const deleteLegacyRoutine = this.#options.deleteLegacyRoutine;
+				if (!deleteLegacyRoutine) {
+					this.store.set({ error: this.#options.unavailableMessage });
+					return false;
+				}
+				const ok = await this.#run(`automation:delete:${id}`, async () => {
+					await deleteLegacyRoutine(id, existing.key, this.#visitAbort.signal);
+					return true;
+				});
+				if (!ok) return false;
+				this.store.set((state) => {
+					const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
+					delete scheduledAgentPrompts[id];
+					return {
+						automations: state.automations.filter((item) => item.id !== id),
+						scheduledAgentPrompts,
+					};
+				});
+				return true;
+			}
+			if (this.#options.client?.deleteAutomation) {
+				const ok = await this.#run(`automation:delete:${id}`, (client) => client.deleteAutomation!(id));
+				if (!ok) return false;
+				this.store.set((state) => {
+					const scheduledAgentPrompts = { ...state.scheduledAgentPrompts };
+					delete scheduledAgentPrompts[id];
+					return {
+						automations: state.automations.filter((item) => item.id !== id),
+						scheduledAgentPrompts,
+					};
+				});
+				return true;
+			}
 		}
 		if (!this.isLocalInteractive || !id.startsWith("local-")) return false;
 		this.store.set((state) => {

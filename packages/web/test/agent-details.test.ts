@@ -528,6 +528,8 @@ describe("agent pages", () => {
 			setEnabled: vi.fn(async () => {}),
 			payer: vi.fn(async () => null),
 			setLogin: vi.fn(async () => null),
+			rename: vi.fn(async () => {}),
+			delete: vi.fn(async () => {}),
 		} satisfies WebRoutines;
 		const nativeSubscription = {
 			listConnections: vi.fn(async () => ({ connections: [] })),

@@ -1,5 +1,6 @@
 import type { CloudMemberFolderClient } from "@qorpera/cloud-client/cloud-member-folder";
 import { type AppManifest, OWED_APPS } from "@qorpera/cloud-client/interface-apps";
+import type { SurfaceAutomationSummary, SurfaceSession } from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import {
 	APP_GROUP_NAME_LIMIT,
@@ -94,6 +95,7 @@ import {
 	isOpenChange,
 	isRunningSession,
 	openExplorations,
+	type SurfacesStore,
 	surfacesDisabledOf,
 	surfacesOf,
 } from "../surfaces-store.ts";
@@ -2362,7 +2364,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 			item.status,
 			item.ownerUserId,
 			item.offer,
-			Boolean(state.busy[`automation:${item.id}`]),
+			Boolean(state.busy[`automation:${item.id}`] || state.busy[`automation:delete:${item.id}`]),
 		]),
 		input.scheduledStaff.map((agent) => [agent.id, agent.displayName, companyState.agentNotes?.[agent.id]?.next]),
 	]);
@@ -2372,7 +2374,9 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 				const targetTitle = automation.targetSurfaceSlug
 					? surfaceTitleBySlug.get(automation.targetSurfaceSlug)
 					: undefined;
-				const busy = Boolean(state.busy[`automation:${automation.id}`]);
+				const busy = Boolean(
+					state.busy[`automation:${automation.id}`] || state.busy[`automation:delete:${automation.id}`],
+				);
 				const owned = automationOwnerView(automation, viewer, role, members);
 				const when = targetTitle ? `${targetTitle} · ${automation.scheduleSummary}` : automation.scheduleSummary;
 				const line = owned.note ? `${owned.note} · ${when}` : when;
@@ -2422,7 +2426,7 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 					role: "switch",
 					"aria-checked": String(automation.enabled),
 					"aria-label": t("Turn {name} on or off", { name: automation.title }),
-					disabled: Boolean(state.busy[`automation:${automation.id}`]),
+					disabled: busy,
 					onclick: (event: MouseEvent) => {
 						event.stopPropagation();
 						void store.toggleAutomation(automation.id, !automation.enabled);
@@ -2439,7 +2443,14 @@ function syncAgentsHub(company: CompanyController, input: AgentsHubInput): HTMLE
 						{
 							type: "button",
 							class: "rail-agent-hub-row",
-							onclick: () => withSurfaceMigrationSheet((mod) => mod.openScheduleAgentSheet(store, automation)),
+							onclick: () => {
+								const onDelete = canDeleteAutomation(company, store, automation)
+									? () => void deleteAutomation(company, automation.id)
+									: undefined;
+								withSurfaceMigrationSheet((mod) =>
+									mod.openScheduleAgentSheet(store, automation, onDelete ? { onDelete } : undefined),
+								);
+							},
 						},
 						owned.face ? h("span", { class: "rail-automation-fig" }, stand, automationFace(owned.face)) : stand,
 						h(
@@ -2547,25 +2558,251 @@ function automationFace(face: AutomationPerson | "nobody"): HTMLElement {
 	return avatar;
 }
 
+const renamingAutomations = new WeakMap<CompanyController, Set<string>>();
+const deletingAutomations = new WeakMap<CompanyController, Set<string>>();
+const removingHubItems = new WeakMap<CompanyController, Set<string>>();
+
+function actionGuard(map: WeakMap<CompanyController, Set<string>>, company: CompanyController): Set<string> {
+	let pending = map.get(company);
+	if (!pending) {
+		pending = new Set();
+		map.set(company, pending);
+	}
+	return pending;
+}
+
+function canManageAutomation(
+	company: CompanyController,
+	store: SurfacesStore,
+	automation: SurfaceAutomationSummary,
+): boolean {
+	if (automation.id.startsWith("local-")) return store.isLocalInteractive;
+	const capabilities = company.store.get().team?.capabilities;
+	return automation.ownable ? capabilities?.write === true : capabilities?.authorize === true;
+}
+
+function canRenameAutomation(
+	company: CompanyController,
+	store: SurfacesStore,
+	automation: SurfaceAutomationSummary,
+): boolean {
+	return (
+		canManageAutomation(company, store, automation) &&
+		(automation.id.startsWith("local-") || automation.ownable || store.canRenameLegacyRoutine)
+	);
+}
+
+function canDeleteAutomation(
+	company: CompanyController,
+	store: SurfacesStore,
+	automation: SurfaceAutomationSummary,
+): boolean {
+	return (
+		canManageAutomation(company, store, automation) &&
+		(automation.id.startsWith("local-") || automation.ownable || store.canDeleteLegacyRoutine)
+	);
+}
+
+async function copyRailId(company: CompanyController, id: string): Promise<void> {
+	try {
+		if (!navigator.clipboard) throw new Error("No clipboard");
+		await navigator.clipboard.writeText(id);
+	} catch {
+		if (!company.signal.aborted) company.reportRailError(t("The ID could not be copied."));
+	}
+}
+
+async function renameAutomation(company: CompanyController, automationId: string): Promise<void> {
+	const pending = actionGuard(renamingAutomations, company);
+	if (pending.has(automationId)) return;
+	pending.add(automationId);
+	try {
+		const store = surfacesOf(company);
+		const current = store?.state.automations.find((item) => item.id === automationId);
+		if (!store || !current) return;
+		const title = await nameDialog({
+			title: t("Rename"),
+			label: t("Name"),
+			value: current.title,
+			confirm: t("Rename"),
+			maxLength: current.ownable ? 120 : 160,
+			signal: company.signal,
+		});
+		if (!title) return;
+		company.reportRailError(undefined);
+		const updated = await store.updateScheduledAgent(automationId, { title });
+		if (!updated && !company.signal.aborted)
+			company.reportRailError(t("{name} could not be renamed.", { name: current.title }));
+	} finally {
+		pending.delete(automationId);
+	}
+}
+
+async function deleteAutomation(company: CompanyController, automationId: string): Promise<void> {
+	const pending = actionGuard(deletingAutomations, company);
+	if (pending.has(automationId)) return;
+	pending.add(automationId);
+	try {
+		const store = surfacesOf(company);
+		const current = store?.state.automations.find((item) => item.id === automationId);
+		if (!store || !current) return;
+		const confirmed = await confirmDialog(
+			t("Delete {name}? It is removed for everyone in the company.", { name: current.title }),
+			t("Delete"),
+			true,
+			undefined,
+			company.signal,
+		);
+		if (!confirmed) return;
+		company.reportRailError(undefined);
+		if (!(await store.deleteScheduledAgent(automationId)) && !company.signal.aborted)
+			company.reportRailError(t("{name} could not be deleted.", { name: current.title }));
+	} finally {
+		pending.delete(automationId);
+	}
+}
+
 function automationMenu(company: CompanyController, automationId: string): MenuEntry[] {
 	const store = surfacesOf(company);
 	const automation = store?.state.automations.find((item) => item.id === automationId);
 	if (!store || !automation) return [];
 	const team = company.store.get().team;
-	return automationChoices(automation, company.userId, team?.role, team?.members ?? []).map((choice): MenuEntry => {
-		if (choice.kind === "hand")
+	const ownership = automationChoices(automation, company.userId, team?.role, team?.members ?? []).map(
+		(choice): MenuEntry => {
+			if (choice.kind === "hand")
+				return {
+					label: t("Hand to {name}", { name: firstName(choice.to.name) }),
+					lead: personAvatar(choice.to.name, choice.to.userId),
+					select: () => void store.offerAutomation(automationId, choice.to.userId),
+				};
+			if (choice.kind === "take")
+				return { label: t("Take it"), select: () => void store.offerAutomation(automationId, company.userId) };
 			return {
-				label: t("Hand to {name}", { name: firstName(choice.to.name) }),
-				lead: personAvatar(choice.to.name, choice.to.userId),
-				select: () => void store.offerAutomation(automationId, choice.to.userId),
+				label: t("Take the offer back"),
+				select: () => void store.answerAutomationOffer(automationId, choice.offerId, false),
 			};
-		if (choice.kind === "take")
-			return { label: t("Take it"), select: () => void store.offerAutomation(automationId, company.userId) };
-		return {
-			label: t("Take the offer back"),
-			select: () => void store.answerAutomationOffer(automationId, choice.offerId, false),
-		};
-	});
+		},
+	);
+	const items: MenuEntry[] = [...ownership];
+	if (ownership.length) items.push({ kind: "separator" });
+	if (canRenameAutomation(company, store, automation))
+		items.push({ label: t("Rename"), icon: "edit", select: () => void renameAutomation(company, automationId) });
+	items.push({ label: t("Copy ID"), icon: "copy", select: () => void copyRailId(company, automation.id) });
+	if (canDeleteAutomation(company, store, automation))
+		items.push(
+			{ kind: "separator" },
+			{
+				label: t("Delete"),
+				icon: "trash",
+				danger: true,
+				select: () => void deleteAutomation(company, automationId),
+			},
+		);
+	return items;
+}
+
+function hubSessionMenu(company: CompanyController, sessionId: string): MenuEntry[] {
+	const store = surfacesOf(company);
+	const session = store?.session(sessionId);
+	if (!store || !session) return [];
+	const canRemove = store.isLocalInteractive || company.store.get().team?.capabilities.write === true;
+	return [
+		{ label: t("Copy ID"), icon: "copy", select: () => void copyRailId(company, session.id) },
+		...(canRemove
+			? [
+					{ kind: "separator" as const },
+					{
+						label: t("Remove"),
+						icon: "trash",
+						danger: true,
+						select: () => void removeHubSession(company, sessionId),
+					},
+				]
+			: []),
+	];
+}
+
+async function removeHubSession(company: CompanyController, sessionId: string): Promise<void> {
+	const pending = actionGuard(removingHubItems, company);
+	if (pending.has(sessionId)) return;
+	pending.add(sessionId);
+	try {
+		const store = surfacesOf(company);
+		const session = store?.session(sessionId);
+		if (!store || !session) return;
+		const running = isRunningSession(session);
+		const open = session.changes.some(isOpenChange);
+		if (running || open) {
+			const question = running
+				? t("Remove {title}? The agent stops and its unapproved changes are dropped.", { title: session.title })
+				: t("Remove {title}? Its unapproved changes are dropped.", { title: session.title });
+			if (!(await confirmDialog(question, t("Remove"), true, undefined, company.signal))) return;
+		}
+		company.reportRailError(undefined);
+		if (!(await store.discardSession(sessionId)) && !company.signal.aborted)
+			company.reportRailError(t("{name} could not be deleted.", { name: session.title }));
+	} finally {
+		pending.delete(sessionId);
+	}
+}
+
+function findHubExploration(store: SurfacesStore, explorationId: string) {
+	for (const workspace of Object.values(store.state.workspaces)) {
+		const exploration = workspace.explorations.find((item) => item.id === explorationId);
+		if (!exploration) continue;
+		const variants = exploration.variantSessionIds
+			.map((id) => workspace.activeSessions.find((session) => session.id === id))
+			.filter((session): session is SurfaceSession => Boolean(session));
+		return { exploration, variants };
+	}
+	return undefined;
+}
+
+function hubExplorationMenu(company: CompanyController, explorationId: string): MenuEntry[] {
+	const store = surfacesOf(company);
+	const found = store ? findHubExploration(store, explorationId) : undefined;
+	if (!store || !found) return [];
+	const canRemove = store.isLocalInteractive || company.store.get().team?.capabilities.write === true;
+	return [
+		{ label: t("Copy ID"), icon: "copy", select: () => void copyRailId(company, found.exploration.id) },
+		...(canRemove
+			? [
+					{ kind: "separator" as const },
+					{
+						label: t("Remove"),
+						icon: "trash",
+						danger: true,
+						select: () => void removeHubExploration(company, explorationId),
+					},
+				]
+			: []),
+	];
+}
+
+async function removeHubExploration(company: CompanyController, explorationId: string): Promise<void> {
+	const pending = actionGuard(removingHubItems, company);
+	if (pending.has(explorationId)) return;
+	pending.add(explorationId);
+	try {
+		const store = surfacesOf(company);
+		const found = store ? findHubExploration(store, explorationId) : undefined;
+		if (!store || !found) return;
+		const running = found.variants.some(isRunningSession);
+		const open = found.variants.some((variant) => variant.changes.some(isOpenChange));
+		if (running || open) {
+			const question = running
+				? t("Remove {title}? The agent stops and its unapproved changes are dropped.", {
+						title: found.exploration.title,
+					})
+				: t("Remove {title}? Its unapproved changes are dropped.", { title: found.exploration.title });
+			if (!(await confirmDialog(question, t("Remove"), true, undefined, company.signal))) return;
+		}
+		company.reportRailError(undefined);
+		if (!(await store.discardExploration(found.exploration)) && !company.signal.aborted)
+			company.reportRailError(t("{name} could not be deleted.", { name: found.exploration.title }));
+	} finally {
+		pending.delete(explorationId);
+	}
 }
 
 function paintAgentsFold(hub: AgentsHubParts): void {
@@ -3881,6 +4118,8 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 	const pageElement = target.closest<HTMLElement>("[data-interface-page]");
 	const memberElement = target.closest<HTMLElement>("[data-member-id]");
 	const scheduledElement = target.closest<HTMLElement>("[data-scheduled-agent]");
+	const hubSessionElement = target.closest<HTMLElement>("[data-hub-session]");
+	const hubExplorationElement = target.closest<HTMLElement>("[data-hub-exploration]");
 	let items: MenuEntry[] = [];
 	let label = t("Sidebar");
 	let opener: HTMLElement = parts.list;
@@ -3889,8 +4128,33 @@ function openRailMenu(company: CompanyController, parts: RailParts, event: Mouse
 		const automationId = scheduledElement.dataset.scheduledAgent;
 		items = automationMenu(company, automationId);
 		label = t("{name} actions", { name: scheduledElement.querySelector("strong")?.textContent ?? t("Scheduled") });
-		opener = scheduledElement;
-		findOpener = () => parts.list.querySelector<HTMLElement>(`[data-scheduled-agent="${automationId}"]`);
+		opener = scheduledElement.querySelector<HTMLElement>(".rail-agent-hub-row") ?? scheduledElement;
+		findOpener = () => {
+			const row = [...parts.list.querySelectorAll<HTMLElement>("[data-scheduled-agent]")].find(
+				(item) => item.dataset.scheduledAgent === automationId,
+			);
+			return row?.querySelector<HTMLElement>(".rail-agent-hub-row") ?? row ?? null;
+		};
+	} else if (hubSessionElement?.dataset.hubSession) {
+		const sessionId = hubSessionElement.dataset.hubSession;
+		items = hubSessionMenu(company, sessionId);
+		label = t("{name} actions", { name: hubSessionElement.querySelector("strong")?.textContent ?? t("Working") });
+		opener = hubSessionElement;
+		findOpener = () =>
+			[...parts.list.querySelectorAll<HTMLElement>("[data-hub-session]")].find(
+				(item) => item.dataset.hubSession === sessionId,
+			) ?? null;
+	} else if (hubExplorationElement?.dataset.hubExploration) {
+		const explorationId = hubExplorationElement.dataset.hubExploration;
+		items = hubExplorationMenu(company, explorationId);
+		label = t("{name} actions", {
+			name: hubExplorationElement.querySelector("strong")?.textContent ?? t("Working"),
+		});
+		opener = hubExplorationElement;
+		findOpener = () =>
+			[...parts.list.querySelectorAll<HTMLElement>("[data-hub-exploration]")].find(
+				(item) => item.dataset.hubExploration === explorationId,
+			) ?? null;
 	} else if (memberElement?.dataset.memberId) {
 		const userId = memberElement.dataset.memberId;
 		// The row is rebuilt when a message arrives; focus goes back to the new one, in the zone it was opened from.

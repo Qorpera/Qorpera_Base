@@ -27,6 +27,7 @@ import {
 import { isRecord } from "@qorpera/contracts";
 import { type Cloud, CloudRpcError } from "./client.ts";
 import {
+	deleteStateFile,
 	folderNames,
 	invalid,
 	parentPath,
@@ -144,6 +145,11 @@ export type WebRoutineLoginRefusal =
 	| "sign_in"
 	| "plan_listener";
 
+export interface WebRoutineRenameOptions {
+	readonly userId: string;
+	readonly accounts: () => Promise<readonly WebMemberConnection[]>;
+}
+
 export interface WebRoutines {
 	list(): Promise<WebRoutine[]>;
 	runs(): Promise<CloudRoutineOccurrence[]>;
@@ -175,6 +181,8 @@ export interface WebRoutines {
 	 * first, as a save's, then the pick. A routine that waited for a login runs again. The same null as `payer`; a
 	 * refusal is a `WebRoutineLoginRefusedError`. */
 	setLogin(routineId: string, account: WebMemberConnection): Promise<WebRoutinePayer | null>;
+	rename(routineId: string, clientRoutineId: string, title: string, options: WebRoutineRenameOptions): Promise<void>;
+	delete(routineId: string, clientRoutineId: string): Promise<void>;
 }
 
 /** The routine has no file this member can change, or its file is gone: nothing was written. */
@@ -558,13 +566,18 @@ export function createWebRoutines(
 			};
 		});
 	};
-	/** A routine's file from the member's state folders (by the index's routine id). */
-	const routinePath = async (from: WebMemberFolder, routineId: string): Promise<string> => {
+	const findRoutinePath = async (from: WebMemberFolder, routineId: string): Promise<string | null> => {
 		const listed = (await from.stateFolders(signal)).routines;
 		check();
-		const path = listed?.find((item) => item.routineId === routineId)?.file;
-		if (!path || companyStatePath(path)?.kind !== "routine")
+		const path = listed?.find((item) => item.routineId === routineId)?.file ?? null;
+		if (path !== null && companyStatePath(path)?.kind !== "routine")
 			throw new WebRoutineGoneError("This routine has no file you can change.");
+		return path;
+	};
+	/** A routine's file from the member's state folders (by the index's routine id). */
+	const routinePath = async (from: WebMemberFolder, routineId: string): Promise<string> => {
+		const path = await findRoutinePath(from, routineId);
+		if (!path) throw new WebRoutineGoneError("This routine has no file you can change.");
 		return path;
 	};
 	/** A routine file's text, version and parse; null when nothing is at the path. */
@@ -865,6 +878,127 @@ export function createWebRoutines(
 				"qorpera_set_routine_login",
 				{ p_routine_id: routineId, p_connection_id: account.connectionId },
 				routineId,
+			);
+		},
+		async rename(routineId, clientRoutineId, title, options) {
+			const from = folder();
+			const nextTitle = title.trim();
+			const matchesRoutine = (id: string) => id === routineId || id === clientRoutineId;
+			let currentPayer: WebRoutinePayer | null = null;
+			let loadedConnections: readonly WebMemberConnection[] | undefined;
+			const sponsored = new Map<string, Promise<void>>();
+			const ensureSponsored = async (account: WebMemberConnection) => {
+				const cacheKey = `${account.connectionId}:${account.connectionVersion}`;
+				let pending = sponsored.get(cacheKey);
+				if (!pending) {
+					pending = sponsor(account).catch((error) => {
+						sponsored.delete(cacheKey);
+						throw error;
+					});
+					sponsored.set(cacheKey, pending);
+				}
+				await pending;
+			};
+			await rewriteStateFile(
+				from,
+				{
+					locate: async () => {
+						const payerInfo = await payerCall(
+							"qorpera_get_routine_payer",
+							{ p_routine_id: routineId },
+							routineId,
+						);
+						check();
+						if (!payerInfo) throw new WebRoutineNoPayerError("This routine cannot be renamed here.");
+						if (
+							payerInfo.status === "expired" ||
+							payerInfo.status === "concluded" ||
+							payerInfo.status === "retired"
+						)
+							throw new WebRoutineEndedError("This routine has ended.");
+						const serves =
+							payerInfo.connectionId !== null &&
+							(payerInfo.payer === "company" ||
+								(payerInfo.payer === "member" && payerInfo.payerUserId === options.userId));
+						if (!serves)
+							throw new WebRoutineNoPayerError("Another member's model account pays for this routine.");
+						if (payerInfo.status === "active" && payerInfo.payer === "company" && !payerInfo.canPay)
+							throw new WebRoutineNoPayerError(
+								"The model account paying for this routine cannot pay right now.",
+							);
+						currentPayer = payerInfo;
+						return findRoutinePath(from, routineId);
+					},
+					rewrite: (text, at) => {
+						const parsed = parseStateFile(at, text);
+						if (!parsed.ok || parsed.file.kind !== "routine" || !matchesRoutine(parsed.file.id))
+							throw new WebRoutineChangedError("This routine's file has changed.");
+						if (parsed.file.status === "concluded") throw new WebRoutineEndedError("This routine has ended.");
+						if (
+							currentPayer?.status === "paused" &&
+							currentPayer.pauseReason === "needs_model_account" &&
+							parsed.file.status === "active"
+						)
+							throw new WebRoutineNoPayerError("Choose a model account that can pay for this routine.");
+						return parsed.file.title === nextTitle ? null : setCompanyStateSettings(text, { title: nextTitle });
+					},
+					beforeWrite: async (file) => {
+						if (file.kind !== "routine" || !currentPayer || currentPayer.payer !== "member") return;
+						const listening =
+							file.trigger.when !== "every" &&
+							file.trigger.when !== "weekly" &&
+							file.trigger.when !== "window" &&
+							file.trigger.when !== "once";
+						loadedConnections ??= await options.accounts();
+						check();
+						const account = latestVersions(loadedConnections).find(
+							(item) => item.connectionId === currentPayer!.connectionId,
+						);
+						const accountCanPay =
+							account !== undefined &&
+							account.connectionStatus === "active" &&
+							account.authorizationState === "active" &&
+							canPayForRoutine(account, listening);
+						if (currentPayer.status === "active" && !accountCanPay)
+							throw new WebRoutineNoPayerError(
+								account && planLogin(account) && listening
+									? LISTENER_ON_PLAN
+									: "Choose a model account that can pay for this routine.",
+							);
+						if (accountCanPay) await ensureSponsored(account);
+					},
+					key: () => `web:routine-rename:${routineId}:${crypto.randomUUID()}`,
+					gone: "This routine has no file you can change.",
+					failure: "The routine could not be renamed.",
+				},
+				signal,
+				check,
+			);
+		},
+		async delete(routineId, clientRoutineId) {
+			const from = folder();
+			const matchesRoutine = (id: string) => id === routineId || id === clientRoutineId;
+			await deleteStateFile(
+				from,
+				{
+					locate: async (attempt) => {
+						const path = await findRoutinePath(from, routineId);
+						if (path !== null || attempt > 0) return path;
+						const row = (await list()).find((item) => item.routineId === routineId);
+						if (row && row.status !== "retired")
+							throw new WebRoutineGoneError("This routine has no file you can change.");
+						return null;
+					},
+					verify: (text, at) => {
+						const parsed = parseStateFile(at, text);
+						if (!parsed.ok || parsed.file.kind !== "routine" || !matchesRoutine(parsed.file.id))
+							throw new WebRoutineChangedError("This routine's file has changed.");
+					},
+					key: () => `web:routine-delete:${routineId}:${crypto.randomUUID()}`,
+					failure: "The routine could not be deleted.",
+				},
+				signal,
+				check,
 			);
 		},
 	};

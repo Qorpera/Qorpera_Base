@@ -479,7 +479,11 @@ const SCHEDULE_PRESETS: readonly string[] = [
 	phrase("Every hour"),
 ];
 
-export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceAutomationSummary): void {
+export function openScheduleAgentSheet(
+	store: SurfacesStore,
+	existing?: SurfaceAutomationSummary,
+	options?: { readonly onDelete?: () => void },
+): void {
 	const editing = Boolean(existing);
 	const titleText = editing ? t("Scheduled agent") : t("New scheduled agent");
 	const dialog = new SurfaceDialog(titleText, "surface-sheet surface-schedule-sheet", () => undefined);
@@ -543,11 +547,16 @@ export function openScheduleAgentSheet(store: SurfacesStore, existing?: SurfaceA
 		editing ? t("Save") : t("Create scheduled agent"),
 	);
 	const remove =
-		editing && existing && store.isLocalInteractive && existing.id.startsWith("local-")
+		editing && existing && (options?.onDelete || (store.isLocalInteractive && existing.id.startsWith("local-")))
 			? (() => {
 					const button = h("button", { type: "button", class: "btn" }, t("Delete"));
 					button.addEventListener("click", async () => {
 						if (button.disabled) return;
+						if (options?.onDelete) {
+							dialog.close(false);
+							options.onDelete();
+							return;
+						}
 						button.disabled = true;
 						submit.disabled = true;
 						const deleted = await store.deleteScheduledAgent(existing.id);

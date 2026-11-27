@@ -579,8 +579,21 @@ export class SurfaceSessionDrawer {
 				[...this.el.querySelectorAll<HTMLElement>(".surface-overview-card.is-agent")].find(
 					(item) => item.dataset.session === session.id,
 				) ?? null,
-			items: [{ label: t("Remove"), icon: "trash", danger: true, select: () => void this.#remove(session.id) }],
+			items: [
+				{ label: t("Copy ID"), icon: "copy", select: () => void this.#copyId(session.id) },
+				{ kind: "separator" },
+				{ label: t("Remove"), icon: "trash", danger: true, select: () => void this.#remove(session.id) },
+			],
 		});
+	}
+
+	async #copyId(id: string): Promise<void> {
+		try {
+			if (!navigator.clipboard) throw new Error("No clipboard");
+			await navigator.clipboard.writeText(id);
+		} catch {
+			if (!this.#signal.aborted) this.#store.store.set({ error: t("The ID could not be copied.") });
+		}
 	}
 
 	async #remove(sessionId: string): Promise<void> {
