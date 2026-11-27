@@ -7,6 +7,7 @@ import { describeSurfaceBlocks, type JsonValue, starterSurfaceLayout } from "@qo
 import { describe, expect, it, vi } from "vitest";
 import { cloudActionEffect, cloudActionReviewMandate } from "../src/cloud-action-review.ts";
 import type { CloudAgentSendReceipt } from "../src/cloud-agent-mouth.ts";
+import { decodeChangeDiffOutput, parseGitNumstatZ } from "../src/cloud-coding-preflight-land.ts";
 import type { CloudCompanyPathControl } from "../src/cloud-company-path-gateway.ts";
 import { CloudControlRpcRefused } from "../src/cloud-control-errors.ts";
 import { cloudFolderFileTools } from "../src/cloud-folder-file-tools.ts";
@@ -4488,5 +4489,81 @@ describe("cloud surface runtime tools", () => {
 		expect(() => tool.parseArguments({ sessionId: "not-a-uuid", message: "Hi" })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "   " })).toThrow();
 		expect(() => tool.parseArguments({ sessionId, message: "Hi", changeId: "bad" })).toThrow();
+	});
+
+	it("forwards supersedeKey, affectedPaths, and diffStats across Surface tools and parses git numstat output", async () => {
+		const surfaceId = randomUUID();
+		const sessionId = randomUUID();
+		const changeId = randomUUID();
+		const calls: Array<{ method: string; args: Record<string, unknown> }> = [];
+		const port = createControlPlaneSurfaceToolsPort({
+			async call(method, args) {
+				calls.push({ method, args });
+				if (method === "qorpera_native_surface_start_session") {
+					return { sessionId, explorationId: null };
+				}
+				return { changeId, seq: 1, openChangeCount: 1 };
+			},
+		});
+
+		const startTool = createStartSurfaceSessionTool(port);
+		const startParsed = startTool.parseArguments({
+			surfaceId,
+			prompt: "Refresh from upstream main",
+			title: "Sync upstream",
+			supersedeKey: "GitHub-Sync",
+		});
+		await startTool.execute(startParsed, toolContext());
+		expect(calls[0]).toMatchObject({
+			method: "qorpera_native_surface_start_session",
+			args: { p_supersede_key: "github-sync" },
+		});
+		expect(() => startTool.parseArguments({ surfaceId, prompt: "Bad key", supersedeKey: "bad key!" })).toThrow();
+
+		await port.recordChange(
+			sessionId,
+			{
+				title: "Sync commit",
+				summary: "Updated app source.",
+				parentSha: "1".repeat(40),
+				commitSha: "2".repeat(40),
+				affectedPaths: ["src/app.tsx", "src/nav.tsx"],
+				diffStats: { filesChanged: 2, additions: 14, deletions: 3 },
+				supersedeKey: "github-sync",
+			},
+			toolContext(),
+		);
+		expect(calls[1]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: {
+				p_affected_paths: ["src/app.tsx", "src/nav.tsx"],
+				p_diff_stats: { filesChanged: 2, additions: 14, deletions: 3 },
+				p_supersede_key: "github-sync",
+			},
+		});
+
+		const patchTool = createStageSurfacePatchTool(sessionId, port);
+		const patchParsed = patchTool.parseArguments({
+			title: "Refresh metrics",
+			summary: "Updated KPIs.",
+			ops: [{ op: "write_text", path: "metrics.json", content: "{}" }],
+			supersedeKey: "daily-metrics",
+		});
+		await patchTool.execute(patchParsed, toolContext());
+		expect(calls[2]).toMatchObject({
+			method: "qorpera_native_surface_record_change",
+			args: { p_supersede_key: "daily-metrics" },
+		});
+
+		const rawNumstat = "12\t3\tsrc/app.tsx\0-\t-\tassets/logo.png\0";
+		expect(parseGitNumstatZ(rawNumstat)).toEqual({
+			affectedPaths: ["src/app.tsx", "assets/logo.png"],
+			diffStats: { filesChanged: 2, additions: 12, deletions: 3 },
+		});
+		const encoded = Buffer.from(rawNumstat, "utf8").toString("base64");
+		expect(decodeChangeDiffOutput(`__QORPERA_CHANGE_DIFF_V1__:${encoded}\n`)).toEqual({
+			affectedPaths: ["src/app.tsx", "assets/logo.png"],
+			diffStats: { filesChanged: 2, additions: 12, deletions: 3 },
+		});
 	});
 });

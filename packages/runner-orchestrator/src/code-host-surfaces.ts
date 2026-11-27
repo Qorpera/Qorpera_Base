@@ -873,6 +873,36 @@ export async function composePreviewTree(
 	});
 }
 
+const MAX_STAGED_AFFECTED_PATHS = 500;
+const MAX_STAGED_AFFECTED_PATH_CHARS = 512;
+
+function parseGitNumstatZ(numstat: string): {
+	readonly affectedPaths: string[];
+	readonly diffStats: { readonly filesChanged: number; readonly additions: number; readonly deletions: number };
+} {
+	const entries = numstat.split("\0").filter(Boolean);
+	const allPaths: string[] = [];
+	let additions = 0;
+	let deletions = 0;
+	for (const entry of entries) {
+		const parts = entry.split("\t");
+		if (parts.length < 3) continue;
+		const add = Number.parseInt(parts[0] ?? "0", 10);
+		const del = Number.parseInt(parts[1] ?? "0", 10);
+		if (Number.isFinite(add) && add > 0) additions += add;
+		if (Number.isFinite(del) && del > 0) deletions += del;
+		const filePath = parts.slice(2).join("\t");
+		if (filePath) allPaths.push(filePath);
+	}
+	const affectedPaths = allPaths
+		.slice(0, MAX_STAGED_AFFECTED_PATHS)
+		.map((filePath) => filePath.slice(0, MAX_STAGED_AFFECTED_PATH_CHARS));
+	return {
+		affectedPaths,
+		diffStats: { filesChanged: allPaths.length, additions, deletions },
+	};
+}
+
 export async function inspectChangeRange(
 	job: CodeHostJob,
 	input: InspectChangeRangeInput,
@@ -901,26 +931,13 @@ export async function inspectChangeRange(
 				{ maximumOutputBytes: MAX_READ },
 			)
 		).toString("utf8");
-		const entries = numstat.split("\0").filter(Boolean);
-		const paths: string[] = [];
-		let additions = 0;
-		let deletions = 0;
-		for (const entry of entries) {
-			const parts = entry.split("\t");
-			if (parts.length < 3) continue;
-			const add = Number.parseInt(parts[0] ?? "0", 10);
-			const del = Number.parseInt(parts[1] ?? "0", 10);
-			if (Number.isFinite(add)) additions += add;
-			if (Number.isFinite(del)) deletions += del;
-			const filePath = parts.slice(2).join("\t");
-			if (filePath) paths.push(filePath);
-		}
+		const parsed = parseGitNumstatZ(numstat);
 
 		return {
 			parentSha,
 			headSha,
-			affectedPaths: paths,
-			diffStats: { filesChanged: paths.length, additions, deletions },
+			affectedPaths: parsed.affectedPaths,
+			diffStats: parsed.diffStats,
 			restored: run.restored,
 		};
 	});
@@ -1143,6 +1160,8 @@ export interface VerifyStagedSurfaceBranchResult {
 	readonly headSha: string;
 	readonly changed: boolean;
 	readonly filesChanged: number;
+	readonly affectedPaths?: readonly string[];
+	readonly diffStats?: { readonly filesChanged: number; readonly additions: number; readonly deletions: number };
 	readonly baseChecksFile?: CodeCommitFile;
 	readonly checksFile?: CodeCommitFile;
 	readonly restored: readonly string[];
@@ -1176,22 +1195,36 @@ export async function verifyStagedSurfaceBranch(
 			"CODE_HOST_EXPORT_FAILED",
 		);
 		if (!beyond.length) {
-			return { branch, baseSha, headSha, changed: false, filesChanged: 0, restored: run.restored };
+			return {
+				branch,
+				baseSha,
+				headSha,
+				changed: false,
+				filesChanged: 0,
+				affectedPaths: [],
+				diffStats: { filesChanged: 0, additions: 0, deletions: 0 },
+				restored: run.restored,
+			};
 		}
 		const { records } = await run.checkNamesIncremental(run.repo, baseSha, headSha);
 		const refused = codeFolderRefuses(run.area, records, CODE_FOLDER_ANY_SESSION);
 		if (refused.length > 0) throw new CodeHostRefusal("CODE_HOST_NAMES_FOLDER_REFUSES", refused);
-		const [changedPaths, baseChecksFile, checksFile] = await Promise.all([
-			diffPathsBetween(run, baseSha, headSha, "CODE_HOST_EXPORT_FAILED"),
+		const [numstatRaw, baseChecksFile, checksFile] = await Promise.all([
+			run.gitOk(run.repo, ["diff", "--numstat", "--no-renames", "-z", baseSha, headSha], "CODE_HOST_EXPORT_FAILED", {
+				maximumOutputBytes: MAX_READ,
+			}),
 			readCommitChecksFile(run, baseSha),
 			readCommitChecksFile(run, headSha),
 		]);
+		const parsedDiff = parseGitNumstatZ(numstatRaw.toString("utf8"));
 		return {
 			branch,
 			baseSha,
 			headSha,
 			changed: true,
-			filesChanged: changedPaths.length,
+			filesChanged: parsedDiff.diffStats.filesChanged,
+			affectedPaths: parsedDiff.affectedPaths,
+			diffStats: parsedDiff.diffStats,
 			baseChecksFile,
 			checksFile,
 			restored: run.restored,

@@ -14,12 +14,14 @@ export const SURFACE_SCHEMA_VERSION = "qorpera.surface/v1";
 
 export const SURFACE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const SURFACE_OPTION_GROUP_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const SURFACE_SUPERSEDE_KEY_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,79}$/;
 export const SURFACE_MAX_TITLE_CHARS = 80;
 export const SURFACE_MAX_PROMPT_CHARS = 16_000;
 export const SURFACE_MAX_CHANGE_TITLE_CHARS = 160;
 export const SURFACE_MAX_CHANGE_SUMMARY_CHARS = 2_000;
 export const SURFACE_MAX_OPTION_GROUP_KEY_CHARS = 80;
 export const SURFACE_MAX_OPTION_GROUP_TITLE_CHARS = 160;
+export const SURFACE_MAX_SUPERSEDE_KEY_CHARS = 80;
 export const SURFACE_MAX_COMPARE_VARIANTS = 3;
 
 export const SURFACE_GROUPS = ["products", "operations"] as const;
@@ -317,6 +319,7 @@ export interface SurfaceChangeUnit {
 	readonly status: SurfaceChangeStatus;
 	readonly optionGroupKey?: string | null;
 	readonly optionGroupTitle?: string | null;
+	readonly supersedeKey?: string | null;
 	readonly parentSha: string | null;
 	readonly headSha: string | null;
 	readonly dependsOnChangeIds: readonly string[];
@@ -353,6 +356,7 @@ export interface SurfaceSession {
 	readonly turnRequestedByUserId?: string | null;
 	readonly explorationId: string | null;
 	readonly explorationVariantLabel: string | null;
+	readonly supersedeKey?: string | null;
 	readonly branchHeadSha?: string | null;
 	readonly hasActiveChat: boolean;
 	readonly question: SurfaceSessionQuestion | null;
@@ -626,6 +630,15 @@ export function isSurfaceOptionGroupKey(value: unknown): value is string {
 	);
 }
 
+export function isSurfaceSupersedeKey(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.length >= 1 &&
+		value.length <= SURFACE_MAX_SUPERSEDE_KEY_CHARS &&
+		SURFACE_SUPERSEDE_KEY_PATTERN.test(value)
+	);
+}
+
 export function parseSurfaceSlug(value: unknown, label = "surface.slug"): string {
 	if (!isSurfaceSlug(value)) throw new WireValueError(label);
 	return value;
@@ -804,6 +817,16 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		raw.optionGroupTitle === undefined
 			? undefined
 			: parseOptionalText(raw.optionGroupTitle, `${label}.optionGroupTitle`, SURFACE_MAX_OPTION_GROUP_TITLE_CHARS);
+	const supersedeKey =
+		raw.supersedeKey === undefined
+			? undefined
+			: raw.supersedeKey === null
+				? null
+				: isSurfaceSupersedeKey(raw.supersedeKey)
+					? raw.supersedeKey
+					: (() => {
+							throw new WireValueError(`${label}.supersedeKey`);
+						})();
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		sessionId: parseUuid(raw.sessionId, `${label}.sessionId`),
@@ -815,6 +838,7 @@ export function parseSurfaceChangeUnit(value: unknown, label = "change"): Surfac
 		status: parseEnum(raw.status, SURFACE_CHANGE_STATUSES, `${label}.status`),
 		...(optionGroupKey !== undefined ? { optionGroupKey } : {}),
 		...(optionGroupTitle !== undefined ? { optionGroupTitle } : {}),
+		...(supersedeKey !== undefined ? { supersedeKey } : {}),
 		parentSha: parseOptionalText(raw.parentSha, `${label}.parentSha`, 64),
 		headSha: parseOptionalText(raw.headSha, `${label}.headSha`, 64),
 		dependsOnChangeIds: parseUuidArray(raw.dependsOnChangeIds ?? [], `${label}.dependsOnChangeIds`, 64),
@@ -905,6 +929,16 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 			: parseStringArray(raw.notePaths, `${label}.notePaths`, 64, 512);
 	const branchHeadSha =
 		raw.branchHeadSha === undefined ? undefined : parseOptionalText(raw.branchHeadSha, `${label}.branchHeadSha`, 64);
+	const supersedeKey =
+		raw.supersedeKey === undefined
+			? undefined
+			: raw.supersedeKey === null
+				? null
+				: isSurfaceSupersedeKey(raw.supersedeKey)
+					? raw.supersedeKey
+					: (() => {
+							throw new WireValueError(`${label}.supersedeKey`);
+						})();
 	return {
 		id: parseUuid(raw.id, `${label}.id`),
 		surfaceId: parseUuid(raw.surfaceId, `${label}.surfaceId`),
@@ -918,6 +952,7 @@ export function parseSurfaceSession(value: unknown, label = "session"): SurfaceS
 		...(turnRequestedByUserId !== undefined ? { turnRequestedByUserId } : {}),
 		explorationId: parseOptionalUuid(raw.explorationId, `${label}.explorationId`),
 		explorationVariantLabel: parseOptionalText(raw.explorationVariantLabel, `${label}.explorationVariantLabel`, 80),
+		...(supersedeKey !== undefined ? { supersedeKey } : {}),
 		...(branchHeadSha !== undefined ? { branchHeadSha } : {}),
 		hasActiveChat: raw.hasActiveChat,
 		question,

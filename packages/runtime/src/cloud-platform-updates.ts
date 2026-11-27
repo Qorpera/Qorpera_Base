@@ -573,6 +573,13 @@ export const PLATFORM_UPDATES: readonly PlatformUpdate[] = Object.freeze([
 		title: "Numbers name no one, in a reply either",
 		text: "On an Analytics page or a numbers tab, and in every reply about its numbers, give counts, sums and groups: never a person's name or email, one order or one visit, because you read with more access than the member may have. Asked who (best customers, who came back), say how many fall in which groups, and where the member can look for themselves (the company database or the source the numbers came from).",
 	},
+	{
+		id: "surface-guards-supersede-and-change-stats",
+		kind: "behaviour",
+		date: "2026-11-27",
+		title: "Interface repo guard, upkeep superseding, change stats",
+		text: "manage_worker coding sessions can no longer target a company Interface repository directly; always update Interface codebases through Interface sessions so changes stay staged for Preview and approval. Recurring upkeep or sync sessions can pass a stable supersedeKey (such as github-sync) when starting a session or staging a change so each fresh update automatically supersedes the previous unapproved refresh instead of piling up duplicates. Staged code changes now automatically record their affected file paths and line diff stats.",
+	},
 ]);
 
 export const REFLECTION_DECISIONS = ["use", "later", "not", "reviewed"] as const;

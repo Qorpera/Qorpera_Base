@@ -23,6 +23,7 @@ import {
 	ensureSurfaceStarterRepository,
 	inspectChangeRange,
 	rebaseSessionChanges,
+	verifyStagedSurfaceBranch,
 } from "../src/code-host-surfaces.ts";
 import { readSurfacePreviewRecipe } from "../src/surface-preview-runner.ts";
 import { localShell } from "./helpers/code-host-shell.ts";
@@ -873,5 +874,27 @@ describe("code-host surfaces multi-change engine", () => {
 				rebased.status === "clean" ? rebased.rebasedChanges.map((c) => ({ ...c, title: "Feature" })) : [],
 		});
 		expect(unsafeUpper).toMatchObject({ status: "deferred", reason: "worktree_unsafe" });
+	}, 20_000);
+
+	it("returns affectedPaths and diffStats from verifyStagedSurfaceBranch", async () => {
+		const f = await keptFixture();
+		const s = await f.startSession();
+		const headSha = await s.commit(
+			{
+				"src/index.ts": "export const a = 1;\nexport const b = 2;\n",
+				"src/styles.css": "body { margin: 0; }\n",
+			},
+			"Add app files",
+		);
+		const verified = await verifyStagedSurfaceBranch(f.job, {
+			repository: f.repository,
+			workerId: s.workerId,
+			baseSha: f.baseSha,
+			headSha,
+		});
+		expect(verified.changed).toBe(true);
+		expect(verified.filesChanged).toBe(2);
+		expect(verified.affectedPaths).toEqual(["src/index.ts", "src/styles.css"]);
+		expect(verified.diffStats).toEqual({ filesChanged: 2, additions: 3, deletions: 0 });
 	}, 20_000);
 });
