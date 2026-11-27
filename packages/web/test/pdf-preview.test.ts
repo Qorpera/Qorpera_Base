@@ -246,7 +246,10 @@ describe("pdf preview door", () => {
 			window.dispatchEvent(staleReady);
 			expect(firstPost).not.toHaveBeenCalled();
 
-			const secondReady = new MessageEvent("message", { data: { type: PDF_PREVIEW_READY }, origin: location.origin });
+			const secondReady = new MessageEvent("message", {
+				data: { type: PDF_PREVIEW_READY },
+				origin: location.origin,
+			});
 			Object.defineProperty(secondReady, "source", { value: secondFrame.contentWindow });
 			window.dispatchEvent(secondReady);
 			expect(secondPost).toHaveBeenCalledTimes(1);
