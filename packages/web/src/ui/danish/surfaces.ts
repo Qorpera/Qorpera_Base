@@ -663,4 +663,7 @@ export const SURFACES: Record<string, string> = {
 	Delivered: "Leveret",
 	"Card payments": "Kortbetalinger",
 	"Added by hand": "Tilføjet i hånden",
+	"Merging…": "Fletter…",
+	"Waiting for changes to finish merging…": "Venter på at ændringerne er færdige med at blive flettet…",
+	"Publish changes?": "Udgiv ændringer?",
 };
