@@ -3168,24 +3168,25 @@ describe("multi-batch boundary commits", () => {
 
 	it("reuses a single-chunk upload intent on stage and falls back cleanly when metadata changes or intent lapses", async () => {
 		const { core, open } = await fixture();
+		const openSpy = vi.spyOn(core, "openUpload");
 		const sealSpy = vi.spyOn(core, "sealUpload");
 		const view = await open();
 		await write(view, "plain.md", "# Title\n");
-		expect(core.intents.size).toBe(1);
+		expect(openSpy).toHaveBeenCalledTimes(1);
 		const firstId = [...core.intents.keys()][0]!;
 		expect(sealSpy).toHaveBeenCalledTimes(1);
 		expect(sealSpy).toHaveBeenLastCalledWith(ENV, expect.anything(), firstId);
 		expect((await view.publish()).paths).toEqual([{ path: "plain.md", outcome: "saved" }]);
 		expect(core.entries.get("plain.md")?.mediaType).toBe("text/markdown");
 
-		const beforeRename = core.intents.size;
+		openSpy.mockClear();
 		await write(view, "temp.bin", "renamed markdown");
 		await view.rename({ from: "temp.bin", to: "final.md", noReplace: false });
 		expect((await view.publish()).paths).toEqual([{ path: "final.md", outcome: "saved" }]);
 		expect(core.entries.get("final.md")?.mediaType).toBe("text/markdown");
-		expect(core.intents.size).toBe(beforeRename + 2);
+		expect(openSpy).toHaveBeenCalledTimes(2);
 
-		const beforeLapse = core.intents.size;
+		openSpy.mockClear();
 		const { handle } = await view.open({
 			path: "lapsed.txt",
 			create: true,
@@ -3195,10 +3196,11 @@ describe("multi-batch boundary commits", () => {
 		const data = Buffer.from("lapsed chunk intent");
 		await view.chunk({ handle, index: 0, sha256: hashOf(data), bytes: data.byteLength, offset: 0, data });
 		const chunkIntentId = [...core.intents.keys()].at(-1)!;
-		core.lapsed.add(chunkIntentId);
+		core.intents.delete(chunkIntentId);
 		await view.close(handle, data.byteLength);
 		expect((await view.publish()).paths).toEqual([{ path: "lapsed.txt", outcome: "saved" }]);
-		expect(core.intents.size).toBe(beforeLapse + 2);
+		expect(openSpy).toHaveBeenCalledTimes(2);
+		expect([...core.intents.keys()].at(-1)).not.toBe(chunkIntentId);
 		expect(await read(view, "lapsed.txt")).toBe("lapsed chunk intent");
 	});
 });
