@@ -504,6 +504,29 @@ begin
 	if exists (select 1 from public.qorpera_mail_unsubscribes where thread_id = v_thread_9) then
 		raise exception 'Unsubscribe preview must not insert unsubscribe rows';
 	end if;
+	update public.qorpera_mail_settings set company_hourly_recipients = 0;
+	begin
+		perform public.qorpera_manage_agent_mail(
+			v_binding, 'call-unsub-limit-1',
+			jsonb_build_object('action', 'unsubscribe', 'threadId', v_thread_9, 'preview', false)
+		);
+		raise exception 'Agent mailto unsubscribe over sending limit must be refused';
+	exception when others then
+		if sqlstate <> 'P0001' or sqlerrm <> 'The company has reached its email sending limit' then
+			raise exception 'Expected P0001 sending limit refusal for agent, got %: %', sqlstate, sqlerrm;
+		end if;
+	end;
+	perform pg_temp.base_claims('authenticated', v_owner);
+	begin
+		perform public.qorpera_member_mail_unsubscribe(v_env, v_thread_9, null);
+		raise exception 'Member mailto unsubscribe over sending limit must be refused';
+	exception when others then
+		if sqlstate <> '54000' or sqlerrm <> 'The company has reached its email sending limit' then
+			raise exception 'Expected 54000 sending limit refusal for member, got %: %', sqlstate, sqlerrm;
+		end if;
+	end;
+	perform pg_temp.base_claims('service_role');
+	update public.qorpera_mail_settings set company_hourly_recipients = 60;
 
 	v_rx := public.qorpera_receive_mail(
 		v_email_10::text,
