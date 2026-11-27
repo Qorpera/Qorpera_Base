@@ -315,9 +315,12 @@ declare
 	v_conclusion text;
 	v_check_status text;
 	v_effective_status text;
+	v_current_sha text;
 	v_effective_sha text;
 	v_gh_state jsonb;
 	v_gh_runs jsonb;
+	v_overflow_failed boolean;
+	v_evict_key text;
 	v_check_time text;
 	v_pr_numbers text[];
 	v_push_ref text;
@@ -575,21 +578,39 @@ begin
 			order by s.id asc
 			for update of s
 		loop
-			v_effective_sha := coalesce(v_head_sha, v_session.external_pr ->> 'headSha', v_session.branch_head_sha);
+			v_current_sha := case
+				when v_session.external_pr is not null then v_session.external_pr ->> 'headSha'
+				else v_session.branch_head_sha
+			end;
+			if v_head_sha is not null and v_current_sha is not null and v_head_sha <> v_current_sha then
+				continue;
+			end if;
+			v_effective_sha := coalesce(v_head_sha, v_current_sha);
 			v_gh_state := v_session.checks_summary -> 'github';
 			if jsonb_typeof(v_gh_state) = 'object'
 				and v_effective_sha is not null
 				and v_gh_state ->> 'sha' = v_effective_sha
 				and jsonb_typeof(v_gh_state -> 'runs') = 'object' then
 				v_gh_runs := v_gh_state -> 'runs';
+				v_overflow_failed := coalesce((v_gh_state ->> 'overflowFailed')::boolean, false);
 			else
 				v_gh_runs := '{}'::jsonb;
+				v_overflow_failed := false;
 			end if;
 			if (v_gh_runs ? v_check_name) or (select count(*) from jsonb_object_keys(v_gh_runs)) < 40 then
 				v_gh_runs := v_gh_runs || jsonb_build_object(v_check_name, v_check_status);
+			elsif v_check_status in ('failed', 'running') then
+				v_evict_key := null;
+				select r.k into v_evict_key from jsonb_each_text(v_gh_runs) as r(k, v) where r.v = 'passed' limit 1;
+				if v_evict_key is not null then
+					v_gh_runs := (v_gh_runs - v_evict_key) || jsonb_build_object(v_check_name, v_check_status);
+				elsif v_check_status = 'failed' then
+					v_overflow_failed := true;
+				end if;
 			end if;
 			v_effective_status := case
-				when v_check_status = 'failed'
+				when v_overflow_failed
+					or v_check_status = 'failed'
 					or exists (select 1 from jsonb_each_text(v_gh_runs) as r(k, v) where r.v = 'failed') then 'failed'
 				when v_check_status = 'running'
 					or exists (select 1 from jsonb_each_text(v_gh_runs) as r(k, v) where r.v = 'running') then 'running'
@@ -604,7 +625,8 @@ begin
 					'updatedAt', v_check_time,
 					'github', jsonb_strip_nulls(jsonb_build_object(
 						'sha', v_effective_sha,
-						'runs', v_gh_runs
+						'runs', v_gh_runs,
+						'overflowFailed', case when v_overflow_failed then true else null end
 					))
 				),
 				external_pr = case

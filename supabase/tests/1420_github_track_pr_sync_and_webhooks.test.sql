@@ -347,6 +347,32 @@ begin
 		convert_to(jsonb_build_object(
 			'repository', jsonb_build_object('full_name', 'acme/shop'),
 			'check_run', jsonb_build_object(
+				'name', 'ci / stale',
+				'conclusion', 'cancelled',
+				'head_sha', v_sha_4,
+				'pull_requests', jsonb_build_array(jsonb_build_object('number', 42))
+			)
+		)::text, 'utf8'),
+		100, repeat('1', 64)
+	);
+	update public.qorpera_event_deliveries
+	set status = 'verified', verified_at = clock_timestamp(), delivery_key = 'gh-del-check-stale-sha'
+	where id = v_delivery_id;
+	perform pg_temp.base_assert(
+		(select checks_summary #>> '{github,sha}' = v_sha_1
+			and checks_summary #>> '{github,runs,ci / lint}' = 'failed'
+			and checks_summary ->> 'status' = 'failed'
+		 from public.qorpera_surface_sessions where id = v_session_a),
+		'Stale-SHA check_run matched by PR number must not overwrite current headSha check state'
+	);
+
+	v_delivery_id := extensions.gen_random_uuid();
+	insert into public.qorpera_event_deliveries(id, hook_id, profile_id, status, event_type, content_type, body, body_bytes, body_sha256)
+	values (
+		v_delivery_id, v_hook, v_profile, 'received', 'check_run.completed', 'application/json',
+		convert_to(jsonb_build_object(
+			'repository', jsonb_build_object('full_name', 'acme/shop'),
+			'check_run', jsonb_build_object(
 				'name', 'ci / build',
 				'conclusion', 'success',
 				'head_sha', v_sha_1,
