@@ -785,7 +785,7 @@ export const SURFACES: Record<string, string> = {
 	"No preview changes on this track yet. Ask for a change or inspect Mockups and Plans.":
 		"Ingen ændringer klar til forhåndsvisning i dette spor endnu. Bed om en ændring eller se Mockups og Planer.",
 	"Live baseline": "Live-version",
-	"Combined preview ({count} tracks)": "Samlet forhåndsvisning ({count} spor)",
+	"Combined ({count} tracks)": "Samlet ({count} spor)",
 	"Combined preview": "Samlet forhåndsvisning",
 	"Isolated track preview": "Isoleret sporforhåndsvisning",
 	"No mockups on this track yet. Ask the assistant to sketch a design or UI mockup.":
@@ -801,7 +801,7 @@ export const SURFACES: Record<string, string> = {
 	"Working… press Stop to pause": "Arbejder… tryk Stop for at sætte på pause",
 	"This track was discarded. Start a new track to continue.":
 		"Dette spor blev kasseret. Start et nyt spor for at fortsætte.",
-	"Continue discussing or refine this track…": "Fortsæt drøftelsen eller tilpas dette spor…",
+	"Reply or refine this track…": "Svar eller tilpas dette spor…",
 	"Send reply": "Send svar",
 	"Start track": "Start spor",
 	"This will discard “{title}” and remove its unmerged changes.":
