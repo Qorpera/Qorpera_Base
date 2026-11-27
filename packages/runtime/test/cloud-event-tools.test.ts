@@ -3,9 +3,9 @@ import {
 	CloudCompanyFolderClient,
 	type CloudCompanyFolderSignedHooks,
 } from "@qorpera/runtime/cloud-company-folder-client";
+import { HttpCloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-control";
 import type { CloudCompanyPathControl } from "@qorpera/runtime/cloud-company-path-gateway";
-import { CloudCompanyFolderRpcError, CloudCompanyPathRpcRefusal } from "@qorpera/runtime/cloud-company-path-refusal";
-import { CloudControlRpcRefused } from "@qorpera/runtime/cloud-control-errors";
+import { CloudCompanyFolderRpcError } from "@qorpera/runtime/cloud-company-path-refusal";
 import { cloudEventTools } from "@qorpera/runtime/cloud-event-tools";
 import { CloudNativeToolRun } from "@qorpera/runtime/cloud-native-tool-authority";
 import {
@@ -1245,39 +1245,94 @@ describe("agent event tools", () => {
 			}
 		});
 
-		it("surfaces known unsubscribe SQL refusals in prepare as REFUSED instead of TOOL_UNAVAILABLE", async () => {
-			const cases = [
+		it("surfaces PostgREST unsubscribe SQL refusals through HttpCloudCompanyPathControl as REFUSED", async () => {
+			const postgrestError = (status: number, code: string, message: string): Response =>
+				new Response(JSON.stringify({ code, details: null, hint: null, message }), {
+					status,
+					headers: { "content-type": "application/json" },
+				});
+			const cases: ReadonlyArray<readonly [string, (runId: string) => Response[], string]> = [
 				[
 					"r1",
-					new CloudControlRpcRefused("42501", "Mailto unsubscribe target does not match the sender domain"),
+					() => [postgrestError(403, "42501", "Mailto unsubscribe target does not match the sender domain")],
 					"REFUSED: Mailto unsubscribe target does not match the sender domain; use the web link or block the sender instead",
 				],
 				[
 					"r2",
-					new CloudCompanyPathRpcRefusal("Account verification mail cannot be unsubscribed"),
+					() => [postgrestError(403, "42501", "Account verification mail cannot be unsubscribed")],
 					"REFUSED: Account verification mail cannot be unsubscribed",
 				],
 				[
 					"r3",
-					new CloudControlRpcRefused("22023", "This conversation has no unsubscribe information"),
+					() => [postgrestError(400, "22023", "This conversation has no unsubscribe information")],
 					"REFUSED: This conversation has no unsubscribe information",
 				],
-			] as const;
-			for (const [callId, err, expected] of cases) {
-				const f = await fixture(() => {
-					throw err;
+				[
+					"r4",
+					(runId) => [
+						new Response(
+							JSON.stringify({
+								schema: "qorpera.agent-mail-action/v1",
+								runId,
+								action: "unsubscribe",
+								preview: true,
+								thread: threadId,
+								deliveryId,
+								fromAddress: "news@example.org",
+								method: "mailto",
+								to: "leave@example.org",
+								subject: "Unsubscribe",
+								body: "Unsubscribe",
+							}),
+							{ status: 200, headers: { "content-type": "application/json" } },
+						),
+						postgrestError(400, "P0001", "The company has reached its email sending limit"),
+					],
+					"REFUSED: The company has reached its email sending limit",
+				],
+				[
+					"r5",
+					() => [postgrestError(501, "0A000", "Sending company mail is switched off")],
+					"REFUSED: Sending company mail is switched off",
+				],
+			];
+			for (const [callId, buildResponses, expected] of cases) {
+				const { binding, authority } = nativeToolAuthorityFixture();
+				const run = await CloudNativeToolRun.open(
+					binding,
+					{ describeToolAuthority: async () => authority },
+					new AbortController().signal,
+				);
+				const queue = [...buildResponses(binding.runId)];
+				const control = new HttpCloudCompanyPathControl({
+					supabaseUrl: "https://example.supabase.test/",
+					serviceRoleKey: "sb_secret_test",
+					fetch: async () => {
+						const next = queue.shift();
+						if (!next) throw new Error("unexpected fetch");
+						return next;
+					},
+				});
+				const boundary = new CloudNativeToolBoundary({
+					companyId: run.identity.companyId,
+					runId: run.identity.runId,
+					identity: run.identity,
+					tools: cloudEventTools(binding, run.identity, control),
+					assertActive: (signal) => run.assertActive(signal),
+					signal: run.signal,
 				});
 				try {
-					const reply = await f.boundary.invoke(callId, "qorpera", "manage_mail", {
+					const reply = await boundary.invoke(callId, "qorpera", "manage_mail", {
 						action: "unsubscribe",
 						threadId,
 					});
-					expect(reply.success).toBe(false);
+					expect(reply.success, callId).toBe(false);
 					const envelope = JSON.parse(reply.contentItems[0]!.text) as CloudToolResult;
-					expect(envelope.status).toBe("denied");
-					expect(envelope.content).toMatchObject({ kind: "text", text: expected });
+					expect(envelope.status, callId).toBe("denied");
+					expect(envelope.content, callId).toMatchObject({ kind: "text", text: expected });
+					expect(queue, callId).toHaveLength(0);
 				} finally {
-					f.run.close();
+					run.close();
 				}
 			}
 		});

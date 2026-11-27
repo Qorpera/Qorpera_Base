@@ -80,7 +80,7 @@ const MANAGE_MAIL_REFUSALS: ReadonlyMap<string, string> = new Map(
 				"The mailbox is paused; resume it to unsubscribe by email",
 			],
 			[
-				"54000",
+				"P0001",
 				"The company has reached its email sending limit",
 				"The company has reached its email sending limit",
 			],

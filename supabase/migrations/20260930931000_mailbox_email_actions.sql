@@ -1466,7 +1466,10 @@ begin
 		where profile_id = p_profile_id and created_at > v_now - interval '1 day'
 			and (status <> 'cancelled' or attempt_count > 0);
 		if v_hour + 1 > v_settings.company_hourly_recipients or v_day + 1 > v_settings.company_daily_recipients then
-			raise exception 'The company has reached its email sending limit' using errcode = '54000';
+			if p_user_id is not null then
+				raise exception 'The company has reached its email sending limit' using errcode = '54000';
+			end if;
+			raise exception 'The company has reached its email sending limit' using errcode = 'P0001';
 		end if;
 		v_company := public.qorpera_mail_display_name(
 			(select profile.name from public.qorpera_profiles as profile where profile.id = p_profile_id),
