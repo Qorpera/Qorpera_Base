@@ -33,13 +33,7 @@ import {
 } from "../../ui/surface-figure.ts";
 import type { SiteAnswer } from "../company.ts";
 import { surfaceHash } from "../router.ts";
-import {
-	type SurfaceLook,
-	surfaceFigureOf,
-	surfaceSubtitleOf,
-	surfaceLookOf,
-	surfaceTint,
-} from "../surface-kinds.ts";
+import { type SurfaceLook, surfaceFigureOf, surfaceLookOf, surfaceSubtitleOf, surfaceTint } from "../surface-kinds.ts";
 import {
 	askedToPublish,
 	isOpenVariant,

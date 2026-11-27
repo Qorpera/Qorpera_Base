@@ -1089,10 +1089,7 @@ export class SurfaceSessionDrawer {
 							{
 								type: "button",
 								class: `surface-overview-act surface-approve-btn surface-approve-all${armedAll ? " is-confirming" : ""}`,
-								"aria-label": approveName(
-									t("Approve all {count}", { count: approvableCount }),
-									armedAll,
-								),
+								"aria-label": approveName(t("Approve all {count}", { count: approvableCount }), armedAll),
 								"data-act": "approve-shown",
 								...(armedAll ? { "data-armed": "true" } : {}),
 							},

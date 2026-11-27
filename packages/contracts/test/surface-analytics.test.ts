@@ -253,7 +253,11 @@ describe("an ask source", () => {
 			".from.kind must be one of line, area, bar, pie, funnel",
 		],
 		["stacked as text", chart({ ask: "a/b", x: "d", y: "v", stacked: "yes" }), ".from.stacked must be true or false"],
-		["estimate as text", chart({ ask: "a/b", x: "d", y: "v", estimate: "yes" }), ".from.estimate must be true or false"],
+		[
+			"estimate as text",
+			chart({ ask: "a/b", x: "d", y: "v", estimate: "yes" }),
+			".from.estimate must be true or false",
+		],
 		[
 			"estimate on a figure",
 			{ type: "facts", items: [{ label: "A", from: { ask: "a/b", pick: "v", estimate: true } }] },

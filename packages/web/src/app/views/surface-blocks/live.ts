@@ -137,9 +137,9 @@ export function lastRecord(answer: CloudMemberDataAnswer): Record<string, unknow
 	return answerRecords(answer).at(-1);
 }
 
-function numberText(number: number, grouping: boolean): string {
+function numberText(number: number, grouping: boolean, fractions: number): string {
 	return new Intl.NumberFormat(presentationLocale(), {
-		maximumFractionDigits: Math.abs(number) >= WHOLE_FROM ? 0 : 2,
+		maximumFractionDigits: fractions,
 		useGrouping: grouping,
 	}).format(number);
 }
@@ -147,7 +147,7 @@ function numberText(number: number, grouping: boolean): string {
 export function figureText(value: unknown): string | undefined {
 	if (typeof value === "string" && CODE_TEXT.test(value.trim())) return value;
 	const number = answerNumber(value);
-	if (number !== null) return numberText(number, true);
+	if (number !== null) return numberText(number, true, Math.abs(number) >= WHOLE_FROM ? 0 : 2);
 	if (typeof value === "string") return value.trim() === "" ? undefined : value;
 	if (typeof value === "boolean") return String(value);
 	return undefined;
@@ -158,7 +158,7 @@ export function cellText(value: unknown): string | undefined {
 	const number = answerNumber(value);
 	if (number !== null) {
 		const grouped = !Number.isInteger(number) || (typeof value === "number" && Math.abs(number) >= GROUPED_FROM);
-		return numberText(number, grouped);
+		return numberText(number, grouped, 2);
 	}
 	return figureText(value);
 }
@@ -255,6 +255,7 @@ export interface SurfaceAskDays {
 export interface SurfaceAskChart {
 	readonly doc: SurfaceChartDocument;
 	readonly keys: readonly string[];
+	readonly categoryKeys: readonly string[];
 	readonly days?: SurfaceAskDays;
 }
 
@@ -328,7 +329,7 @@ export function answerChart(answer: CloudMemberDataAnswer, source: SurfaceAskSou
 	const last = dayKeys.at(-1);
 	const days =
 		first && last && dayKeys.every((key) => key !== undefined) ? { first, last, count: kept.length } : undefined;
-	return { doc, keys: shown.map((line) => line.key), ...(days ? { days } : {}) };
+	return { doc, keys: shown.map((line) => line.key), categoryKeys: kept, ...(days ? { days } : {}) };
 }
 
 export function previousSource(source: SurfaceAskSource, days: SurfaceAskDays | undefined): SurfaceAskSource | null {

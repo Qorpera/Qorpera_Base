@@ -247,8 +247,7 @@ export function prepareFacts(block: SurfaceFactsBlock, ctx: SurfaceBlockContext)
 							if (fact.pick !== undefined && fact.source !== undefined) {
 								dd = h("dd");
 								const { pick, source, unit } = fact;
-								if (fact.live)
-									fact.live.follow((state) => drawFigure(dd, state, source, pick, unit), signal);
+								if (fact.live) fact.live.follow((state) => drawFigure(dd, state, source, pick, unit), signal);
 								else drawFigure(dd, { state: "unavailable" }, source, pick, unit);
 							} else {
 								dd =

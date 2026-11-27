@@ -236,7 +236,7 @@ describe("live asks: pure helpers", () => {
 		expect(figureText("0800")).toBe("0800");
 		expect(cellText("10042")).toBe("10042");
 		expect(cellText(2026)).toBe("2026");
-		expect(cellText("1234.567")).toBe((1235).toLocaleString("en"));
+		expect(cellText("1234.567")).toBe((1234.57).toLocaleString("en"));
 	});
 
 	it("turns an answer into a chart: dates in order, one series per y, digit strings as numbers", () => {
@@ -819,9 +819,12 @@ describe("chart colours from the layout", () => {
 });
 
 function notConnected(what: string): Error {
-	return Object.assign(new Error(`Not connected: ${what} once card payments are connected or an order is added by hand`), {
-		status: 400,
-	});
+	return Object.assign(
+		new Error(`Not connected: ${what} once card payments are connected or an order is added by hand`),
+		{
+			status: 400,
+		},
+	);
 }
 
 describe("a question whose source is not connected", () => {
@@ -1042,7 +1045,7 @@ describe("live charts: estimates, whole numbers and hours", () => {
 });
 
 describe("live figures, table cells and the qorpera codes", () => {
-	it("drops decimals from 100 up, keeps up to two below, and groups table numbers as figures", () => {
+	it("drops a figure's decimals from 100 up, keeps up to two below, and groups table numbers with their decimals", () => {
 		expect(figureText(147579.4)).toBe((147579).toLocaleString("en"));
 		expect(figureText("147579.40")).toBe((147579).toLocaleString("en"));
 		expect(figureText(-250.75)).toBe("-251");
@@ -1050,7 +1053,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect(figureText("99.5")).toBe("99.5");
 		expect(cellText(48250)).toBe((48250).toLocaleString("en"));
 		expect(cellText(9999)).toBe("9999");
-		expect(cellText("12345.5")).toBe((12346).toLocaleString("en"));
+		expect(cellText("12345.5")).toBe((12345.5).toLocaleString("en"));
 		expect(cellText(3.5)).toBe("3.5");
 		expect(cellText("48250")).toBe("48250");
 		expect(cellText("0042")).toBe("0042");
@@ -1058,7 +1061,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect(cellText(null)).toBeUndefined();
 		setLanguagePreference("da");
 		expect(figureText(147579.4)).toBe("147.579");
-		expect(cellText(1234.5)).toBe("1.235");
+		expect(cellText(1234.5)).toBe("1.234,5");
 	});
 
 	it("says the qorpera codes in words by question and column, and leaves other databases as written", () => {
@@ -1091,6 +1094,7 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect(byKind?.doc.categories).toEqual(["All", "Salaries", "Card and app fees"]);
 		expect(byKind?.doc.series?.map((series) => series.name)).toEqual(["Money in", "Money out"]);
 		expect(byKind?.keys).toEqual(["in", "out"]);
+		expect(byKind?.categoryKeys).toEqual(["all", "salaries", "fees"]);
 
 		const life = new AbortController();
 		const numbers = new FakeLive(async (asked) => {
@@ -1129,10 +1133,61 @@ describe("live figures, table cells and the qorpera codes", () => {
 		expect([...root.querySelectorAll(".studio-table td")].map((cell) => cell.textContent)).toEqual([
 			"Paid",
 			"2",
-			(12501).toLocaleString("en"),
+			(12500.5).toLocaleString("en"),
 			"On the way",
 			"1",
 			"300",
+		]);
+		life.abort();
+	});
+});
+
+describe("pie colours by a qorpera code", () => {
+	it("colours a slice by its code whether the member reads it in English or Danish", async () => {
+		const life = new AbortController();
+		const numbers = new FakeLive(async () =>
+			answer(
+				["state", "orders", "amount"],
+				[
+					["paid", 4, 100],
+					["cancelled", 1, 20],
+				],
+			),
+		);
+		const layout = {
+			schema: SURFACE_LAYOUT_SCHEMA,
+			colors: { preset: "calm" },
+			tabs: [
+				{
+					id: "now",
+					title: "Now",
+					blocks: [
+						{
+							type: "chart",
+							id: "c",
+							from: { ask: "qorpera/orders-states", x: "state", y: "orders", kind: "pie" },
+							colors: { paid: "#00aa00", cancelled: "#ff0000" },
+						},
+					],
+				},
+			],
+		};
+		const slices = async () => {
+			const root = mount(planOf(layoutView({ numbers }, life.signal), layout));
+			await settle();
+			const option = (await chartOption(root.querySelector<HTMLElement>(".studio-chart-host")!)) as unknown as {
+				series: { data: { name: string; itemStyle?: { color?: string } }[] }[];
+			};
+			return option.series[0]!.data.map((slice) => [slice.name, slice.itemStyle?.color]);
+		};
+		expect(await slices()).toEqual([
+			["Paid", "#00aa00"],
+			["Cancelled", "#ff0000"],
+		]);
+		setLanguagePreference("da");
+		expect(await slices()).toEqual([
+			["Betalt", "#00aa00"],
+			["Annulleret", "#ff0000"],
 		]);
 		life.abort();
 	});
