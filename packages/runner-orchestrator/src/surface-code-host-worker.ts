@@ -118,6 +118,7 @@ export type SurfaceAppSourceExport = (
 		tree: string;
 		kind?: "static" | "server" | "hybrid";
 		useTreeDirectly?: boolean;
+		subpath?: string | null;
 	},
 ) => Promise<{ sourceDir: string; cleanup?: () => Promise<void> }>;
 
@@ -1785,7 +1786,12 @@ export class SurfaceCodeHostWorker {
 		},
 		signal: AbortSignal,
 	): Promise<
-		| { readonly yielded: true }
+		| {
+				readonly yielded: true;
+				readonly reason?: "rollback_live_check_uncertain";
+				readonly deploymentId?: string;
+				readonly upstreamAddr?: string;
+		  }
 		| {
 				readonly yielded: false;
 				readonly versionId: string;
@@ -1844,7 +1850,12 @@ export class SurfaceCodeHostWorker {
 
 		const repoKey = `${input.environmentId}:${input.repository.owner.toLowerCase()}/${input.repository.name.toLowerCase()}`;
 		const buildAndDeploy = async (): Promise<
-			| { readonly yielded: true }
+			| {
+					readonly yielded: true;
+					readonly reason?: "rollback_live_check_uncertain";
+					readonly deploymentId?: string;
+					readonly upstreamAddr?: string;
+			  }
 			| {
 					readonly yielded: false;
 					readonly versionId: string;
@@ -1863,6 +1874,7 @@ export class SurfaceCodeHostWorker {
 						tree: input.commitSha,
 						kind: input.app.kind,
 						useTreeDirectly: true,
+						...(input.app.buildContext ? { subpath: input.app.buildContext } : {}),
 					}),
 				{ readOnly: true },
 			);
@@ -2067,7 +2079,12 @@ export class SurfaceCodeHostWorker {
 						};
 					}
 					if (rollback.uncertain) {
-						return { yielded: true };
+						return {
+							yielded: true,
+							reason: "rollback_live_check_uncertain",
+							deploymentId,
+							upstreamAddr: deployed.upstreamAddr,
+						};
 					}
 					throw error;
 				}
@@ -2957,12 +2974,23 @@ export class SurfaceCodeHostWorker {
 					signal,
 				);
 				if (deployed.yielded) {
-					this.#emit({
-						event: "surface-code-host-yielded",
-						kind: "publish",
-						jobId: pub.jobId,
-						surfaceId: pub.surfaceId,
-					});
+					if (deployed.reason === "rollback_live_check_uncertain") {
+						this.#emit({
+							event: "surface-code-host-rollback-uncertain",
+							kind: "publish",
+							jobId: pub.jobId,
+							surfaceId: pub.surfaceId,
+							deploymentId: deployed.deploymentId,
+							upstreamAddr: deployed.upstreamAddr,
+						});
+					} else {
+						this.#emit({
+							event: "surface-code-host-yielded",
+							kind: "publish",
+							jobId: pub.jobId,
+							surfaceId: pub.surfaceId,
+						});
+					}
 					return false;
 				}
 				await controlPlane.completeSurfacePublish(

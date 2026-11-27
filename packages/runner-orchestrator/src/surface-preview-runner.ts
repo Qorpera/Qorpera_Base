@@ -18,6 +18,7 @@ export interface SurfaceAppSpec {
 	readonly port: number;
 	readonly healthPath: string;
 	readonly dockerfile: string | null;
+	readonly buildContext?: string | null;
 	readonly idleTimeoutSec: number;
 	readonly memoryMb: number;
 	readonly vcpuLimit: number;
@@ -247,6 +248,7 @@ export function readSurfaceAppSpec(checksText: string | null): SurfaceAppSpecRea
 			port: site.port ?? 3000,
 			healthPath: site.healthPath ?? "/",
 			dockerfile: site.dockerfile ?? null,
+			buildContext: null,
 			idleTimeoutSec: site.idleTimeoutSec ?? 900,
 			memoryMb: site.memoryMb ?? 512,
 			vcpuLimit: site.vcpuLimit ?? 1,

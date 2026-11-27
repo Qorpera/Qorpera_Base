@@ -593,7 +593,7 @@ function resolveAppSpecForScope(
 			kind: "app",
 			app: {
 				...read.app,
-				dockerfile: read.app.dockerfile ? joinSubpath(subpath, read.app.dockerfile) : null,
+				buildContext: subpath,
 				folder: joinSubpath(subpath, read.app.folder),
 				recipe: read.app.recipe
 					? {
@@ -905,6 +905,7 @@ export async function exportCodeSiteSource(
 		tree: string;
 		kind?: "static" | "server" | "hybrid";
 		useTreeDirectly?: boolean;
+		subpath?: string | null;
 	},
 ): Promise<{ sourceDir: string; cleanup: () => Promise<void> }> {
 	const allowedKeys: string[] = ["repository", "tree"];
@@ -919,11 +920,16 @@ export async function exportCodeSiteSource(
 	) {
 		allowedKeys.push("useTreeDirectly");
 	}
+	const hasSubpath = typeof value === "object" && value !== null && "subpath" in value && value.subpath !== undefined;
+	if (hasSubpath) {
+		allowedKeys.push("subpath");
+	}
 	const input = closed(value, allowedKeys);
 	const rawRepo = input.repository;
 	const tree = input.tree;
 	const kind = input.kind;
 	const useTreeDirectly = input.useTreeDirectly;
+	const subpath = hasSubpath ? parseOptionalSurfaceSubpath(input.subpath) : null;
 	const repository = keptRepositoryOf(rawRepo);
 	if (typeof tree !== "string" || !SHA.test(tree)) throw new Error("INVALID_CODE_HOST_JOB");
 	if (kind !== undefined && kind !== "static" && kind !== "server" && kind !== "hybrid") {
@@ -946,7 +952,26 @@ export async function exportCodeSiteSource(
 			if (mainRef === null) throw new CodeHostRefusal("CODE_HOST_SITE_TREE_UNKNOWN", [tree]);
 			target = mainRef;
 		}
-		return await run.gitOk(run.repo, ["archive", "--format=tar", target], EXPORT_FAILED, {
+		let archiveSpec = target;
+		if (subpath !== null) {
+			const subSpec = `${target}:${subpath}`;
+			const probe = (
+				await run.gitOk(run.repo, ["cat-file", "--batch-check"], EXPORT_FAILED, {
+					stdin: Buffer.from(`${target}\n${subSpec}\n`),
+				})
+			)
+				.toString("latin1")
+				.split("\n");
+			if (!/^[0-9a-f]{40} (commit|tree) \d+$/.test(probe[0] ?? "")) {
+				throw new CodeHostRefusal("CODE_HOST_SITE_TREE_UNKNOWN", [target]);
+			}
+			const subLine = probe[1] ?? "";
+			if (!/^[0-9a-f]{40} tree \d+$/.test(subLine)) {
+				throw new CodeSiteTreeInvalid({ code: "SITE_FOLDER_MISSING", path: subpath, variable: null });
+			}
+			archiveSpec = subLine.slice(0, 40);
+		}
+		return await run.gitOk(run.repo, ["archive", "--format=tar", archiveSpec], EXPORT_FAILED, {
 			maximumOutputBytes: MAX_APP_SOURCE_TAR_BYTES,
 		});
 	});

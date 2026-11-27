@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -2576,11 +2576,13 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 		const imageRef = `127.0.0.1:5000/qorpera-apps/demo@sha256:${"7".repeat(64)}`;
 		const rpcCalls: Array<{ method: string; args: Record<string, unknown> }> = [];
 		const appHostCalls: Array<{ url: string; body?: string }> = [];
+		const reportedEvents: Array<Record<string, unknown>> = [];
 		let registerCount = 0;
 
 		const worker = new SurfaceCodeHostWorker({
 			exportSource: async (_job, input) => ({ sourceDir: input.tree }),
 			staleSweepIntervalMs: 60_000,
+			report: (ev) => reportedEvents.push(ev),
 			nativeEdge: {
 				routerInternalUrl: "http://127.0.0.1:8088",
 				controlToken: "router-secret",
@@ -2666,5 +2668,124 @@ describe("SurfaceCodeHostWorker discarded session worktree cleanup", () => {
 					c.args.p_claim_only === true,
 			),
 		).toHaveLength(3);
+		expect(reportedEvents).toContainEqual({
+			event: "surface-code-host-rollback-uncertain",
+			kind: "publish",
+			jobId,
+			surfaceId,
+			deploymentId: depId,
+			upstreamAddr: "127.0.0.1:46001",
+		});
+	});
+
+	it("exports only the monorepo subpath as the build context for subpath-configured server apps", async () => {
+		const f = await createCodeHostFixture();
+		const workerId = randomUUID();
+		await addCodeWorktree(f.job, { repository: f.repository, workerId, baseSha: f.baseSha });
+		const src = join(f.code, "worktrees", workerId);
+		await mkdir(join(src, "apps/api/.qorpera"), { recursive: true });
+		await writeFile(join(src, "Dockerfile"), "FROM scratch\n# root decoy\n");
+		await writeFile(join(src, "root-only.txt"), "decoy\n");
+		await writeFile(join(src, "apps/api/Dockerfile"), "FROM node:22-alpine\nCOPY server.js .\n");
+		await writeFile(join(src, "apps/api/server.js"), "console.log('subpath-api');\n");
+		await writeFile(
+			join(src, "apps/api/.qorpera/checks.json"),
+			JSON.stringify({
+				checks: [{ name: "test", run: "true" }],
+				site: { kind: "server", port: 4100, dockerfile: "Dockerfile", healthPath: "/health" },
+			}),
+		);
+		await f.git(src, "add", ".");
+		await f.git(src, "commit", "-m", "monorepo subpath server app");
+		const serverMainSha = await f.git(src, "rev-parse", "HEAD");
+		await f.git(join(f.code, "repo.git"), "--git-dir=.", "update-ref", "refs/heads/main", serverMainSha);
+
+		const profileId = randomUUID();
+		const environmentId = randomUUID();
+		const surfaceId = randomUUID();
+		const siteId = randomUUID();
+		const jobId = randomUUID();
+		const leaseToken = randomUUID();
+		const depId = randomUUID();
+		const verId = randomUUID();
+		const imageRef = `127.0.0.1:5000/qorpera-apps/subpath-api@sha256:${"6".repeat(64)}`;
+		let seenDockerfile: string | null = null;
+		let seenEntries: string[] = [];
+		let seenServerContent = "";
+
+		const worker = new SurfaceCodeHostWorker({
+			staleSweepIntervalMs: 60_000,
+			nativeEdge: {
+				routerInternalUrl: "http://127.0.0.1:8088",
+				controlToken: "router-secret",
+				appHostInternalUrl: "http://127.0.0.1:8089",
+				appHostControlToken: "apphost-secret",
+				buildAppImage: async (buildInput) => {
+					seenDockerfile = buildInput.dockerfile;
+					seenEntries = (await readdir(buildInput.sourceDir)).sort();
+					seenServerContent = await readFile(join(buildInput.sourceDir, "server.js"), "utf8");
+					return { ociImageRef: imageRef, builtMs: 12 };
+				},
+				appHostFetchImpl: async () => ({
+					status: 200,
+					body: JSON.stringify({ upstream_addr: "127.0.0.1:47001" }),
+				}),
+			},
+			control: {
+				async call(method, args) {
+					if (method === "qorpera_surface_claim_pending_jobs_for_lane") {
+						return {
+							sessions: [],
+							previews: [],
+							merges: [],
+							publishes: [
+								{
+									jobId,
+									surfaceId,
+									profileId,
+									environmentId,
+									sourceKind: "code_repo",
+									liveHeadSha: serverMainSha,
+									repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									repositorySubpath: "apps/api",
+									siteId,
+									siteSlug: "thetaband",
+									leaseToken,
+									payload: {
+										liveHeadSha: serverMainSha,
+										repositoryKey: `${f.repository.owner}/${f.repository.name}`,
+									},
+								},
+							],
+							cleanups: [],
+							automations: [],
+						};
+					}
+					if (method === "qorpera_surface_site_deployment_register") {
+						return {
+							siteId,
+							slug: "thetaband",
+							versionId: verId,
+							deploymentId: depId,
+							versionNumber: 1,
+							kind: "server",
+							state: args.p_promote_live === true ? "live" : "ready",
+						};
+					}
+					return { ok: true };
+				},
+			},
+			hosts: {
+				async run(_companyId, _envId, _signal, fn) {
+					return fn(f.job, undefined as never);
+				},
+			},
+		});
+
+		const result = await worker.pass(new AbortController().signal);
+		expect(result).toEqual({ previews: 0, merges: 0, publishes: 1, cleanups: 0, failed: 0 });
+		expect(seenDockerfile).toBe("Dockerfile");
+		expect(seenEntries).toEqual([".qorpera", "Dockerfile", "server.js"]);
+		expect(seenServerContent).toContain("subpath-api");
 	});
 });
