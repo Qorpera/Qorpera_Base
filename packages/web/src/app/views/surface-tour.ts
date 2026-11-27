@@ -10,12 +10,7 @@ import {
 import { h, icon } from "../../ui/dom.ts";
 import { presentationLocale, t } from "../../ui/preferences.ts";
 import type { StudioBinaryReader } from "./surface-studio-stage.ts";
-
-interface TourClipMeta {
-	readonly caption: string;
-	readonly file: string;
-	readonly seconds: number;
-}
+import { captionHash, parseVoiceClips, type VoiceClipMeta, voiceClipMime } from "./surface-voice-clips.ts";
 
 export interface StudioTourOptions {
 	readonly root: HTMLElement;
@@ -25,20 +20,9 @@ export interface StudioTourOptions {
 	readonly currentTab: () => string;
 }
 
-const CAPTION_HASH_RE = /^[0-9a-f]{8}$/;
-const CLIP_AUDIO_EXTS = new Set(["wav", "mp4", "m4a", "mp3", "webm"]);
 const WORDS_PER_SEC = 2.6;
 const BEAT_BREATH_MS = 1100;
 const MIN_BEAT_MS = 2600;
-
-function captionHash(text: string): string {
-	let hash = 0x811c9dc5;
-	for (const byte of new TextEncoder().encode(text)) {
-		hash ^= byte;
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	return hash.toString(16).padStart(8, "0");
-}
 
 function cleanFolder(folderRoot: string | null | undefined): string {
 	return folderRoot?.trim().replace(/^\/+|\/+$/g, "") ?? "";
@@ -46,54 +30,6 @@ function cleanFolder(folderRoot: string | null | undefined): string {
 
 function joinFolder(root: string, rel: string): string {
 	return root ? `${root}/${rel}` : rel;
-}
-
-function audioMime(file: string, mediaType: string): string {
-	if (mediaType.startsWith("audio/")) return mediaType;
-	const lower = file.toLowerCase();
-	if (lower.endsWith(".wav")) return "audio/wav";
-	if (lower.endsWith(".mp3")) return "audio/mpeg";
-	if (lower.endsWith(".webm")) return "audio/webm";
-	return "audio/mp4";
-}
-
-function parseClips(text: string | undefined): Map<string, TourClipMeta> {
-	const out = new Map<string, TourClipMeta>();
-	if (!text) return out;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		return out;
-	}
-	const list =
-		parsed &&
-		typeof parsed === "object" &&
-		!Array.isArray(parsed) &&
-		Array.isArray((parsed as { clips?: unknown }).clips)
-			? (parsed as { clips: unknown[] }).clips
-			: [];
-	for (const raw of list) {
-		if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-		const rec = raw as Record<string, unknown>;
-		const caption = typeof rec.caption === "string" ? rec.caption : "";
-		const file = typeof rec.file === "string" ? rec.file : "";
-		const seconds = typeof rec.seconds === "number" ? rec.seconds : Number.NaN;
-		const dot = file.lastIndexOf(".");
-		if (
-			!CAPTION_HASH_RE.test(caption) ||
-			dot <= 0 ||
-			file.slice(0, dot) !== caption ||
-			!CLIP_AUDIO_EXTS.has(file.slice(dot + 1)) ||
-			!Number.isFinite(seconds) ||
-			seconds <= 0 ||
-			seconds > 60
-		) {
-			continue;
-		}
-		if (!out.has(caption)) out.set(caption, { caption, file, seconds });
-	}
-	return out;
 }
 
 function escapeAttr(value: string): string {
@@ -163,7 +99,7 @@ export class StudioTourController {
 	readonly el = h("aside", { class: "studio-tour", hidden: true, "aria-label": t("Guided walkthrough") });
 	readonly #options: StudioTourOptions;
 	#doc: StudioTourDocument | null = null;
-	#clips = new Map<string, TourClipMeta>();
+	#clips = new Map<string, VoiceClipMeta>();
 	#binaries: Readonly<Record<string, StudioBinaryRef>> = {};
 	#folderRoot = "";
 	#signature = "";
@@ -210,7 +146,7 @@ export class StudioTourController {
 		this.#signature = sig;
 		const parsed = rawTour ? parseStudioTourDocument(rawTour) : null;
 		this.#doc = parsed;
-		this.#clips = parseClips(rawClips);
+		this.#clips = parseVoiceClips(rawClips);
 		if (!parsed) {
 			this.stop();
 			this.el.hidden = true;
@@ -410,7 +346,7 @@ export class StudioTourController {
 					const bytes = await this.#options.readBinary(ref, this.#options.signal);
 					if (seq !== this.#beatSeq || !this.#playing || this.#options.signal.aborted) return;
 					this.#clearAudio();
-					const blob = new Blob([bytes.slice()], { type: audioMime(clip.file, ref.mediaType) });
+					const blob = new Blob([bytes.slice()], { type: voiceClipMime(clip.file, ref.mediaType) });
 					const url = URL.createObjectURL(blob);
 					const audio = this.#audio ?? new Audio();
 					this.#audioUrl = url;

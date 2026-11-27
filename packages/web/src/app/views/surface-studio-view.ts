@@ -1478,6 +1478,9 @@ export class SurfaceStudioView {
 			askSurface: async (prompt, title) => {
 				await this.#askSurface(prompt, title);
 			},
+			reveal: (path) => {
+				this.#revealDeliverable(path);
+			},
 			...(this.#options.readBinary ? { readBinary: this.#options.readBinary } : {}),
 			...(this.#options.patches ? { patches: this.#options.patches } : {}),
 			...(this.#options.timeSlice !== undefined ? { timeSlice: this.#options.timeSlice } : {}),

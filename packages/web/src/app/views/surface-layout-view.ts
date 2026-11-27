@@ -53,6 +53,7 @@ import { preparePlays } from "./surface-blocks/plays.ts";
 import { reportFiles, SurfaceReports } from "./surface-blocks/report.ts";
 import { prepareSpecList, prepareTable } from "./surface-blocks/specs.ts";
 import { type LegacyStudioModel, SurfaceStages } from "./surface-blocks/stage.ts";
+import { SurfaceTalks } from "./surface-blocks/talks.ts";
 import { prepareTitle } from "./surface-blocks/title.ts";
 import { prepareTypeSpecimen } from "./surface-blocks/type-specimen.ts";
 import { prepareUnknown } from "./surface-blocks/unknown.ts";
@@ -68,6 +69,7 @@ export interface SurfaceLayoutOptions {
 	readonly timeSlice?: boolean;
 	readonly askSurface?: (prompt: string, title?: string) => Promise<void>;
 	readonly live?: SurfaceLiveHosts;
+	readonly reveal?: (path: string) => void;
 }
 
 export interface SurfaceLayoutInput {
@@ -137,6 +139,7 @@ function claimedFiles(
 	layoutPath: string,
 	apart: readonly string[],
 	libraries: SurfaceLibraries,
+	talks: SurfaceTalks,
 ): Set<string> {
 	const claimed = new Set([layoutPath]);
 	const tourPath = ctx.companyPath(STUDIO_TOUR_PATH);
@@ -161,6 +164,10 @@ function claimedFiles(
 		}
 		if (block.type === "library") {
 			for (const path of libraries.claimed(block, ctx, apart)) claimed.add(path);
+		}
+		if (block.type === "talks") {
+			for (const path of talks.claimed(block, ctx)) claimed.add(path);
+			continue;
 		}
 		if (block.type === "module") {
 			const folder = moduleFolder(block, ctx);
@@ -246,6 +253,7 @@ export class SurfaceLayoutView {
 	readonly #stages: SurfaceStages;
 	readonly #reports: SurfaceReports;
 	readonly #libraries: SurfaceLibraries;
+	readonly #talks: SurfaceTalks;
 	readonly #explainers: SurfaceExplainers;
 	readonly #pictures: SurfacePictures;
 	readonly #pdfs: SurfacePdfViewer;
@@ -278,6 +286,14 @@ export class SurfaceLayoutView {
 			store: options.store,
 			pictures: this.#pictures,
 			signal: options.signal,
+		});
+		this.#talks = new SurfaceTalks({
+			companyName: options.store.companyName,
+			pictures: this.#pictures,
+			read,
+			signal: options.signal,
+			post: (path, ctx) => this.#libraries.post(path, ctx),
+			openPost: (path) => options.reveal?.(path),
 		});
 		this.#reports = new SurfaceReports({
 			store: options.store,
@@ -334,7 +350,7 @@ export class SurfaceLayoutView {
 		this.#swatches = new Map();
 		const stageKeys = new Set<string>();
 		this.#apart = moduleFolders(layout, ctx);
-		const claimed = claimedFiles(layout, ctx, layoutPath, this.#apart, this.#libraries);
+		const claimed = claimedFiles(layout, ctx, layoutPath, this.#apart, this.#libraries, this.#talks);
 		this.#postTabs = layout.tabs.map((tab) => {
 			const blocks = tab.blocks.flatMap((node) => (node.type === "row" ? node.blocks : [node]));
 			const posts = blocks.flatMap((block) =>
@@ -359,30 +375,35 @@ export class SurfaceLayoutView {
 		const tabs = layout.tabs.map((tab) => ({ tab, nodes: this.#prepareTab(tab, ctx, input, claimed, stageKeys) }));
 		this.#stages.keep(stageKeys);
 		this.#asks.keep(asked);
-		this.#libraries.keep(
-			new Set(
-				layout.tabs.flatMap((tab) =>
-					tab.blocks.flatMap((node, index) =>
-						node.type === "row"
-							? node.blocks.map((block, slot) => nodeKey(block, `${tab.id}/${index}.${slot}`))
-							: [nodeKey(node, `${tab.id}/${index}`)],
-					),
+		const placed = new Set(
+			layout.tabs.flatMap((tab) =>
+				tab.blocks.flatMap((node, index) =>
+					node.type === "row"
+						? node.blocks.map((block, slot) => nodeKey(block, `${tab.id}/${index}.${slot}`))
+						: [nodeKey(node, `${tab.id}/${index}`)],
 				),
 			),
 		);
+		this.#libraries.keep(placed);
+		this.#talks.keep(placed);
 		const current = tabs.find((item) => item.tab.id === input.tab) ?? tabs[0]!;
 		const activeExplainers = new Set<string>();
+		const activeTalks = new Set<string>();
 		current.tab.blocks.forEach((node, index) => {
 			if (node.type === "row") {
 				node.blocks.forEach((block, slot) => {
 					if (block.type === "explainer")
 						activeExplainers.add(nodeKey(block, `${current.tab.id}/${index}.${slot}`));
+					if (block.type === "talks") activeTalks.add(nodeKey(block, `${current.tab.id}/${index}.${slot}`));
 				});
 			} else if (node.type === "explainer") {
 				activeExplainers.add(nodeKey(node, `${current.tab.id}/${index}`));
+			} else if (node.type === "talks") {
+				activeTalks.add(nodeKey(node, `${current.tab.id}/${index}`));
 			}
 		});
 		this.#explainers.keep(activeExplainers);
+		this.#talks.shown(activeTalks);
 		const tabBar =
 			tabs.length > 1
 				? h(
@@ -523,6 +544,8 @@ export class SurfaceLayoutView {
 				return this.#reports.prepare(block, ctx, this.#apart, alone);
 			case "library":
 				return this.#libraries.prepare(key, block, ctx, this.#apart, alone);
+			case "talks":
+				return this.#talks.prepare(key, block, ctx, alone);
 			case "explainer":
 				return this.#explainers.prepare(key, block, ctx, alone);
 			case "artifacts":
@@ -631,6 +654,7 @@ export class SurfaceLayoutView {
 		this.#fullscreen.close(false);
 		this.#reports.deactivate();
 		this.#libraries.deactivate();
+		this.#talks.deactivate();
 		this.#explainers.deactivate();
 	}
 
@@ -639,6 +663,7 @@ export class SurfaceLayoutView {
 		this.#fullscreen.close(false);
 		this.#reports.dispose();
 		this.#libraries.deactivate();
+		this.#talks.deactivate();
 		this.#explainers.dispose();
 		this.#pdfs.dispose();
 		this.#asks.dispose();

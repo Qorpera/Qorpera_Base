@@ -454,6 +454,14 @@ export class SurfaceLibraries {
 		return [...model.posts.map((post) => post.path), ...model.pictures];
 	}
 
+	post(path: string, ctx: SurfaceBlockContext): { readonly number: string; readonly title: string } | undefined {
+		for (const model of this.#models.get(ctx)?.values() ?? []) {
+			const post = model.posts.find((item) => item.path === path);
+			if (post) return { number: post.number, title: post.doc.headline };
+		}
+		return undefined;
+	}
+
 	holds(block: SurfaceLibraryBlock, ctx: SurfaceBlockContext, apart: readonly string[]): (path: string) => boolean {
 		const paths = new Set(this.#model(block, ctx, apart).posts.map((post) => post.path));
 		return (path) => paths.has(path);
