@@ -936,14 +936,21 @@ describe("external doors, direct logins, hooks, and live triggers against Postgr
 			await runaway.connect();
 			try {
 				await runaway.query("set statement_timeout = 0");
-				const sleepPromise = runaway.query("select pg_sleep(10)");
+				const sleepError = runaway.query("select pg_sleep(10)").then(
+					() => null,
+					(error) => error,
+				);
 				await new Promise((r) => setTimeout(r, 2_500));
 				const watched = await watchGw.watchOnce({ housekeeping: false });
 				assert.ok(
 					watched.ended.some((entry) => entry.login === liveCreds.user && entry.how === "cancelled"),
 					`expected watchOnce to cancel principal role ${liveCreds.user}, got ${JSON.stringify(watched.ended)}`,
 				);
-				await assert.rejects(() => sleepPromise, /canceling statement due to user request/);
+				const cancelledError = await sleepError;
+				assert.ok(
+					cancelledError && /canceling statement due to user request/.test(cancelledError.message),
+					`expected cancellation error, got ${cancelledError}`,
+				);
 			} finally {
 				await runaway.end().catch(() => undefined);
 			}
