@@ -1334,8 +1334,25 @@ describe("editing the platform subdomain", () => {
 			};
 		});
 
+		const createSecret = vi.fn(
+			async (input: { readonly name: string; readonly value: string; readonly purpose: string }) => {
+				runtimeState = {
+					...runtimeState,
+					availableSecrets: [
+						...runtimeState.availableSecrets,
+						{
+							secretId: "66666666-6666-4666-8666-666666666666",
+							name: input.name,
+							purpose: input.purpose,
+							version: 1,
+						},
+					],
+				};
+			},
+		);
+
 		const { address } = mount({ entry: { isPublic: true, domains: [] } }, true, {
-			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant }),
+			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant, createSecret }),
 		});
 		await settle();
 		address.open();
@@ -1346,6 +1363,7 @@ describe("editing the platform subdomain", () => {
 		runtimeRow.click();
 		await settle();
 		expect(title()).toBe("Environment & secrets");
+		expect(sheet().querySelector(".surface-address-runtime-mode-pill")?.textContent).toBe("Server app");
 		expect(load).toHaveBeenCalledTimes(1);
 
 		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-add-env"]')!.click();
@@ -1406,6 +1424,30 @@ describe("editing the platform subdomain", () => {
 		await settle();
 		expect(revokeGrant).toHaveBeenCalledWith(grantId);
 		expect(sheet().textContent).toContain("No secrets granted to this app yet.");
+
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-toggle-new-secret"]')!.click();
+		const newName = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-name"]')!;
+		const newValue = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-value"]')!;
+		newName.value = "resend_api_key";
+		newValue.value = "short";
+		newName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		expect(problem()).toBe("Enter at least 8 characters for a secret value.");
+		expect(createSecret).not.toHaveBeenCalled();
+
+		newValue.value = "re_live_1234567890";
+		newName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		expect(createSecret).toHaveBeenCalledWith(
+			{ name: "RESEND_API_KEY", value: "re_live_1234567890", purpose: "App secret" },
+			expect.any(AbortSignal),
+		);
+		expect(grantSecret).toHaveBeenLastCalledWith({
+			secretId: "66666666-6666-4666-8666-666666666666",
+			siteId: HOSTED_SITE,
+			scope: "runtime",
+			targetEnv: "dev",
+		});
+		expect(newValue.value).toBe("");
 
 		document.body.replaceChildren();
 		runtimeState = { ...runtimeState, canManage: false };

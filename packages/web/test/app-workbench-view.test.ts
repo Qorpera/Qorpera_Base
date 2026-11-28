@@ -336,7 +336,7 @@ describe("AppWorkbenchView", () => {
 		expect(view.el.querySelector('[data-act="stop-turn"]')).toBeNull();
 		const questionInput = view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")!;
 		expect(questionInput.disabled).toBe(false);
-		expect(questionInput.placeholder).toBe("Answer the question or type a reply…");
+		expect(questionInput.placeholder).toBe("Answer or reply…");
 		expect(view.el.textContent).toContain("Which sidebar width?");
 		view.el.querySelector<HTMLButtonElement>('[data-act="answer-option"][data-option="Compact (240px)"]')!.click();
 		await flush();

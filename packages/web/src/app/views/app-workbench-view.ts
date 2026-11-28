@@ -420,6 +420,7 @@ export class AppWorkbenchView {
 					saveConfig: (input) => host.store.setSurfaceAppRuntimeConfig(surface.id, input),
 					grantSecret: (input) => host.store.grantSurfaceAppSecret(input),
 					revokeGrant: (grantId) => host.store.revokeSurfaceAppSecretGrant(grantId),
+					...(host.createCompanySecret ? { createSecret: host.createCompanySecret } : {}),
 				};
 			},
 			signal: life,
@@ -2683,7 +2684,7 @@ export class AppWorkbenchView {
 				: discarded
 					? t("This track was discarded. Start a new track to continue.")
 					: needsInput
-						? t("Answer the question or type a reply…")
+						? t("Answer or reply…")
 						: completed
 							? t("Ask for a follow-up change…")
 							: t("Reply or refine this track…");
@@ -2798,7 +2799,7 @@ export class AppWorkbenchView {
 				this.#address.toggle(event.detail === 0);
 				return;
 			case "open-source":
-				this.#address.openSource(event.detail === 0);
+				this.#address.openSource(event.detail === 0, target);
 				return;
 			case "open-publish":
 				openPublishSheet(store, surface);
