@@ -361,7 +361,7 @@ export class SurfaceAddress {
 	readonly #runtimeNewSecretValue = h("input", {
 		type: "password",
 		class: "surface-address-input",
-		autocomplete: "new-password",
+		autocomplete: "off",
 		spellcheck: "false",
 		"data-key": "runtime-new-secret-value",
 	});
@@ -1900,13 +1900,18 @@ export class SurfaceAddress {
 		const targetEnv = (this.#runtimeTargetSelect.value || "prod") as SurfaceAppTargetEnv;
 		const siteId = current.siteId;
 		const target = this.#target;
+		const grantFailedMessage = t(
+			"Saved, but it could not be granted automatically. Select it from the list to grant it.",
+		);
 		this.#creatingSecret = true;
 		this.#problem = undefined;
 		this.#paint();
 		this.#setup.changed();
-		void binding
-			.createSecret({ name, value, purpose: t("App secret") }, this.#setup.signal)
-			.then(async () => {
+		let saved = false;
+		void (async () => {
+			try {
+				await binding.createSecret({ name, value, purpose: "App secret" }, this.#setup.signal);
+				saved = true;
 				this.#runtimeNewSecretValue.value = "";
 				if (this.#setup.signal.aborted || target !== this.#target) {
 					this.#creatingSecret = false;
@@ -1917,26 +1922,45 @@ export class SurfaceAddress {
 					this.#creatingSecret = false;
 					return;
 				}
-				const created = refreshed?.availableSecrets.find((item) => item.name === name);
-				if (created) {
-					await binding.grantSecret({ secretId: created.secretId, siteId, scope, targetEnv });
+				if (refreshed) {
+					this.#runtimeConfig = refreshed;
+					this.#syncRuntimeFields(refreshed);
 				}
+				const created = refreshed?.availableSecrets.find((item) => item.name === name);
+				if (!created) {
+					this.#runtimeNewSecretName.value = "";
+					this.#addingSecret = false;
+					this.#creatingSecret = false;
+					this.#problem = grantFailedMessage;
+					this.#changed();
+					return;
+				}
+				await binding.grantSecret({ secretId: created.secretId, siteId, scope, targetEnv });
 				this.#runtimeNewSecretName.value = "";
 				this.#addingSecret = false;
 				this.#creatingSecret = false;
 				if (this.#setup.signal.aborted || target !== this.#target) return;
 				await this.#loadRuntime(binding);
-			})
-			.catch((error: unknown) => {
+			} catch (error: unknown) {
 				this.#creatingSecret = false;
 				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (saved) {
+					this.#runtimeNewSecretName.value = "";
+					this.#addingSecret = false;
+					await this.#loadRuntime(binding);
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = grantFailedMessage;
+					this.#changed();
+					return;
+				}
 				if (error instanceof CloudRpcError && error.code === "23505") {
 					this.#problem = t("A secret with that name already exists. Select it from the list to grant it.");
 				} else {
 					this.#problem = addressRefusal(error, phrase("The secret could not be saved. Try again."));
 				}
 				this.#changed();
-			});
+			}
+		})();
 	}
 
 	#revokeRuntimeGrant(grantId: string): void {
@@ -2163,7 +2187,11 @@ export class SurfaceAddress {
 							"div",
 							{ class: "surface-address-runtime-mode" },
 							h("span", null, t("Hosting")),
-							h("span", { class: "surface-address-runtime-mode-pill" }, deploymentKindLabel(config.deploymentKind)),
+							h(
+								"span",
+								{ class: "surface-address-runtime-mode-pill" },
+								deploymentKindLabel(config.deploymentKind),
+							),
 						)
 					: null,
 				h(

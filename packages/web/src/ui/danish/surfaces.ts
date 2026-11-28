@@ -719,7 +719,6 @@ export const SURFACES: Record<string, string> = {
 	"Secret value (at least 8 characters)": "Hemmelighedsværdi (mindst 8 tegn)",
 	"New secret": "Ny hemmelighed",
 	"Save & grant": "Gem og tildel",
-	"App secret": "App-hemmelighed",
 	"Enter an uppercase secret name like STRIPE_SECRET_KEY.":
 		"Skriv et hemmelighedsnavn med store bogstaver som STRIPE_SECRET_KEY.",
 	"Enter at least 8 characters for a secret value.": "Skriv mindst 8 tegn for en hemmelighedsværdi.",
@@ -727,6 +726,8 @@ export const SURFACES: Record<string, string> = {
 	"Secret values cannot include null characters.": "Hemmelighedsværdier må ikke indeholde null-tegn.",
 	"A secret with that name already exists. Select it from the list to grant it.":
 		"Der findes allerede en hemmelighed med det navn. Vælg den fra listen for at tildele den.",
+	"Saved, but it could not be granted automatically. Select it from the list to grant it.":
+		"Gemt, men kunne ikke tildeles automatisk. Vælg den fra listen for at tildele den.",
 	"The secret could not be saved. Try again.": "Hemmeligheden kunne ikke gemmes. Prøv igen.",
 	"Create an encrypted company secret to inject it at build, test, or runtime.":
 		"Opret en krypteret virksomhedshemmelighed for at injicere den ved byg, test eller kørsel.",
