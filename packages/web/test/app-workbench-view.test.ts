@@ -331,6 +331,12 @@ describe("AppWorkbenchView", () => {
 
 		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION_2}"]`)!.click();
 		view.update();
+		expect(view.el.querySelector(".workbench-track-head .workbench-pill")?.textContent).toBe("Needs input");
+		expect(view.el.querySelector<HTMLElement>(".workbench-progress-slot")!.hidden).toBe(true);
+		expect(view.el.querySelector('[data-act="stop-turn"]')).toBeNull();
+		const questionInput = view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")!;
+		expect(questionInput.disabled).toBe(false);
+		expect(questionInput.placeholder).toBe("Answer the question or type a reply…");
 		expect(view.el.textContent).toContain("Which sidebar width?");
 		view.el.querySelector<HTMLButtonElement>('[data-act="answer-option"][data-option="Compact (240px)"]')!.click();
 		await flush();
@@ -973,22 +979,41 @@ describe("AppWorkbenchView", () => {
 		expect(tracksRail.hidden).toBe(true);
 		expect(panel.hidden).toBe(false);
 
+		const thread = view.el.querySelector<HTMLElement>(".workbench-thread")!;
 		body.style.flexDirection = "column";
 		Object.defineProperty(body, "clientWidth", { configurable: true, value: 420 });
 		view.update();
-		expect(tracksRail.hidden).toBe(false);
-		expect(panel.hidden).toBe(false);
+		expect(tracksRail.hidden).toBe(true);
+		expect(panel.hidden).toBe(true);
+		expect(thread.hidden).toBe(false);
 		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(true);
+		expect(thread.hidden).toBe(true);
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION}"]`)!.click();
 		view.update();
 		expect(tracksRail.hidden).toBe(true);
-		expect(panel.hidden).toBe(false);
-		view.el.querySelector<HTMLButtonElement>('[data-act="toggle-tracks"]')!.click();
-		view.update();
-		expect(tracksRail.hidden).toBe(false);
-		expect(panel.hidden).toBe(false);
+		expect(panel.hidden).toBe(true);
+		expect(thread.hidden).toBe(false);
 
 		const previewTabBtn = () =>
 			view.el.querySelector<HTMLButtonElement>('.workbench-tab-group [data-act="panel-tab"][data-tab="preview"]')!;
+		previewTabBtn().click();
+		view.update();
+		expect(panel.hidden).toBe(false);
+		expect(thread.hidden).toBe(true);
+		previewTabBtn().click();
+		view.update();
+		expect(panel.hidden).toBe(true);
+		expect(thread.hidden).toBe(false);
+
+		body.style.flexDirection = "row";
+		Object.defineProperty(body, "clientWidth", { configurable: true, value: 1000 });
+		view.update();
+		expect(tracksRail.hidden).toBe(false);
+		expect(panel.hidden).toBe(false);
+		expect(thread.hidden).toBe(false);
 		previewTabBtn().click();
 		view.update();
 		expect(panel.hidden).toBe(false);
@@ -1012,6 +1037,98 @@ describe("AppWorkbenchView", () => {
 		expect(view.el.querySelector(".surface-address-saved")?.textContent).toContain("Saved");
 
 		unsub();
+		view.dispose();
+		store.dispose();
+	});
+
+	it("hides merge-only Ship when autoPublish is enabled, preserves History accordion state, trims titles, and formats shipped toasts", async () => {
+		const webApp = appSummary({ autoPublish: true });
+		const activeTrack = session(["staged"], {
+			id: SESSION,
+			surfaceId: webApp.id,
+			title: "Polish checkout ",
+		});
+		let historyTrack = session([], {
+			id: SESSION_2,
+			surfaceId: webApp.id,
+			title: "Guided Vibe Flow",
+			state: "completed",
+			changes: [
+				change(CHANGES[1], 1, "merged", {
+					sessionId: SESSION_2,
+					surfaceId: webApp.id,
+					title: "Guided flow",
+				}),
+			],
+			openChangeCount: 0,
+		});
+		const shipSurfaceTrack = vi.fn(async () => ({
+			...activeTrack,
+			state: "completed" as const,
+			changes: activeTrack.changes.map((c) => ({ ...c, status: "merged" as const, canUndo: true })),
+			openChangeCount: 0,
+		}));
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [webApp]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				workspace([activeTrack], { surface: webApp, recentHistory: [historyTrack] }),
+			),
+			shipSurfaceTrack,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "web-app");
+		document.body.append(view.el);
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		expect(view.el.querySelector(".workbench-track-head-title")?.textContent).toBe("Polish checkout");
+		expect(view.el.querySelector('[data-act="ship-track"]')).toBeNull();
+		expect(view.el.querySelector('[data-act="ship-publish-track"]')).not.toBeNull();
+
+		const initialHistory = view.el.querySelector<HTMLDetailsElement>(".workbench-history")!;
+		expect(initialHistory.open).toBe(false);
+		initialHistory.open = true;
+		initialHistory.dispatchEvent(new Event("toggle"));
+		historyTrack = { ...historyTrack, updatedAt: "2026-11-27T11:00:00Z" };
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		const reopenedHistory = view.el.querySelector<HTMLDetailsElement>(".workbench-history")!;
+		expect(reopenedHistory.open).toBe(true);
+		reopenedHistory.open = false;
+		reopenedHistory.dispatchEvent(new Event("toggle"));
+		historyTrack = { ...historyTrack, updatedAt: "2026-11-27T11:05:00Z" };
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		expect(view.el.querySelector<HTMLDetailsElement>(".workbench-history")?.open).toBe(false);
+
+		const searchInput = view.el.querySelector<HTMLInputElement>(".workbench-search")!;
+		searchInput.value = "Vibe";
+		searchInput.dispatchEvent(new Event("input"));
+		expect(view.el.querySelector<HTMLDetailsElement>(".workbench-history")?.open).toBe(true);
+		searchInput.value = "";
+		searchInput.dispatchEvent(new Event("input"));
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION_2}"]`)!.click();
+		view.update();
+		expect(view.el.querySelector<HTMLDetailsElement>(".workbench-history")?.open).toBe(true);
+		expect(view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")?.placeholder).toBe(
+			"Ask for a follow-up change…",
+		);
+
+		view.el.querySelector<HTMLButtonElement>(`[data-act="select-track"][data-session="${SESSION}"]`)!.click();
+		view.update();
+		const shipPublish = () => view.el.querySelector<HTMLButtonElement>('[data-act="ship-publish-track"]')!;
+		shipPublish().click();
+		view.update();
+		shipPublish().click();
+		await flush();
+		view.update();
+		expect(view.el.querySelector(".surface-toast")?.textContent).toContain("Shipped “Polish checkout”");
+		expect(view.el.querySelector(".surface-toast")?.textContent).not.toContain("into Base");
+
 		view.dispose();
 		store.dispose();
 	});

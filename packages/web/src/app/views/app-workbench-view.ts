@@ -41,6 +41,7 @@ const TRACKS_WIDTH = 236;
 const THREAD_MIN_WIDTH = 340;
 const PANEL_DEFAULT_WIDTH = 440;
 const PANEL_MIN_WIDTH = 320;
+const STACKED_MAX_WIDTH = THREAD_MIN_WIDTH + PANEL_MIN_WIDTH + 4;
 const PANEL_MAX_WIDTH = 920;
 const PANEL_MAX_SHARE = 0.62;
 const MARKDOWN_CACHE_MAX = 96;
@@ -115,8 +116,16 @@ function artifactKindLabel(kind: SurfaceSessionArtifactKind): string {
 	}
 }
 
+function isWorkingSession(session: Pick<SurfaceSession, "state">): boolean {
+	return isRunningSession(session) && session.state !== "needs_input";
+}
+
+function cleanTrackTitle(title: string): string {
+	return title.trim();
+}
+
 function trackStateMeta(session: SurfaceSession): { readonly label: string; readonly tone: string } {
-	if (isRunningSession(session)) return { label: t("Working"), tone: "running" };
+	if (isWorkingSession(session)) return { label: t("Working"), tone: "running" };
 	if (session.state === "needs_input") return { label: t("Needs input"), tone: "attention" };
 	if (session.state === "failed") return { label: t("Failed"), tone: "danger" };
 	if (session.state === "completed") return { label: t("Shipped"), tone: "done" };
@@ -296,6 +305,9 @@ export class AppWorkbenchView {
 	#dialogMockupFrame: AppFrame | undefined;
 	#tracksOpen = true;
 	#tracksUserPinned = false;
+	#wasStacked = false;
+	#historyOpen = false;
+	#lastHistorySelectedId: string | null = null;
 	#bodyResizeObserver: ResizeObserver | undefined;
 	#panelOpen = true;
 	#panelTab: WorkbenchPanelTab = "preview";
@@ -559,6 +571,8 @@ export class AppWorkbenchView {
 			this.#combineSelected.clear();
 			this.#selectedMockupId = null;
 			this.#selectedPlanId = null;
+			this.#historyOpen = false;
+			this.#lastHistorySelectedId = null;
 			this.#searchQuery = "";
 			this.#searchInput.value = "";
 			this.#barKey = "";
@@ -748,7 +762,8 @@ export class AppWorkbenchView {
 			if (direction === "column" || direction === "column-reverse") return true;
 			if (direction === "row" || direction === "row-reverse") return false;
 		}
-		return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 720px)").matches;
+		const width = this.#bodyWidth();
+		return width > 0 && width <= STACKED_MAX_WIDTH;
 	}
 
 	#isTightRowLayout(): boolean {
@@ -772,30 +787,51 @@ export class AppWorkbenchView {
 	}
 
 	#syncLayoutToWidth(redrawBar = true): void {
+		const stacked = this.#isStackedLayout();
+		const enteredStacked = stacked && !this.#wasStacked;
+		const exitedStacked = !stacked && this.#wasStacked;
+		this.#wasStacked = stacked;
 		const width = this.#bodyWidth();
 		const prevTracksOpen = this.#tracksOpen;
-		if (width > 0) {
+		const prevPanelOpen = this.#panelOpen;
+		if (enteredStacked) {
+			this.#tracksOpen = false;
+			this.#tracksUserPinned = false;
+			this.#panelOpen = false;
+		} else if (stacked) {
+			if (this.#tracksOpen && this.#panelOpen) this.#tracksOpen = false;
+		} else if (exitedStacked) {
+			this.#panelOpen = true;
+			const bothFit = width === 0 || width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+			this.#tracksOpen = bothFit;
+			this.#tracksUserPinned = false;
+		} else if (width > 0) {
 			if (this.#isTightRowLayout() && this.#tracksOpen && this.#panelOpen) {
 				this.#tracksOpen = false;
 				this.#tracksUserPinned = false;
 			} else if (!this.#tracksUserPinned) {
-				if (this.#isStackedLayout()) {
-					this.#tracksOpen = true;
-				} else {
-					const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
-					if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
-					else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
-				}
+				const bothFit = width >= TRACKS_WIDTH + THREAD_MIN_WIDTH + PANEL_MIN_WIDTH;
+				if (this.#panelOpen && !bothFit) this.#tracksOpen = false;
+				else if (!this.#panelOpen || bothFit) this.#tracksOpen = true;
 			}
 		}
 		this.#tracksRail.hidden = !this.#tracksOpen;
+		this.#panel.hidden = !this.#panelOpen;
+		this.#thread.hidden = stacked && (this.#tracksOpen || this.#panelOpen);
 		this.#applyPanelWidth();
-		if (redrawBar && prevTracksOpen !== this.#tracksOpen && this.#surface && !this.#parked && !this.#deactivated) {
+		if (
+			redrawBar &&
+			(prevTracksOpen !== this.#tracksOpen || prevPanelOpen !== this.#panelOpen) &&
+			this.#surface &&
+			!this.#parked &&
+			!this.#deactivated
+		) {
 			const workspace = this.#host.store.workspace(this.#surface.id);
 			const selectedId = this.#host.store.selectedTrackOf(this.#surface.id);
 			const selected = selectedId ? this.#findSession(workspace, selectedId) : undefined;
 			this.#barKey = "";
 			this.#drawBar(this.#surface, workspace, selected);
+			this.#drawPanel(this.#surface, workspace, selected);
 		}
 	}
 
@@ -1038,6 +1074,13 @@ export class AppWorkbenchView {
 			this.#combineSelected.clear();
 		}
 		const combineBusy = Boolean(this.#host.store.state.busy[`combine-tracks:${surface.id}`]);
+		const selectedInHistory = Boolean(selectedId && history.some((item) => item.id === selectedId));
+		if (selectedInHistory && selectedId !== this.#lastHistorySelectedId) {
+			this.#historyOpen = true;
+		}
+		this.#lastHistorySelectedId = selectedInHistory ? selectedId : null;
+		const historyForcedOpen = filteredActive.length === 0 || (query.length > 0 && filteredHistory.length > 0);
+		const historyExpanded = this.#historyOpen || historyForcedOpen;
 		const key = JSON.stringify([
 			surface.id,
 			selectedId,
@@ -1046,6 +1089,7 @@ export class AppWorkbenchView {
 			combineBusy,
 			this.#armedKey,
 			query,
+			historyExpanded,
 			filteredActive.map((s) => [
 				s.id,
 				s.title,
@@ -1144,6 +1188,7 @@ export class AppWorkbenchView {
 			const attention = !isHistory && sessionNeedsAttention(session);
 			const checked = this.#combineSelected.has(session.id);
 
+			const title = cleanTrackTitle(session.title);
 			const card = h(
 				"button",
 				{
@@ -1169,10 +1214,10 @@ export class AppWorkbenchView {
 								class: "workbench-track-check",
 								checked,
 								tabindex: "-1",
-								"aria-label": session.title,
+								"aria-label": title,
 							})
 						: h("span", { class: `workbench-dot is-${meta.tone}`, "aria-hidden": "true" }),
-					h("span", { class: "workbench-track-title" }, session.title),
+					h("span", { class: "workbench-track-title" }, title),
 				),
 				h(
 					"div",
@@ -1204,6 +1249,30 @@ export class AppWorkbenchView {
 			return card;
 		};
 
+		const historyEl =
+			filteredHistory.length > 0
+				? (h(
+						"details",
+						{ class: "workbench-history", open: historyExpanded },
+						h(
+							"summary",
+							{ class: "workbench-history-summary" },
+							icon("chevron-down"),
+							h("span", null, t("History ({count})", { count: filteredHistory.length })),
+						),
+						h(
+							"div",
+							{ class: "workbench-history-list" },
+							...filteredHistory.map((session) => renderRow(session, true)),
+						),
+					) as HTMLDetailsElement)
+				: null;
+		if (historyEl) {
+			historyEl.addEventListener("toggle", () => {
+				if (!historyForcedOpen) this.#historyOpen = historyEl.open;
+			});
+		}
+
 		replace(
 			this.#trackList,
 			filteredActive.length > 0
@@ -1218,23 +1287,7 @@ export class AppWorkbenchView {
 						{ class: "workbench-track-empty" },
 						query ? t("No matching tracks.") : t("No active tracks yet."),
 					),
-			filteredHistory.length > 0
-				? h(
-						"details",
-						{ class: "workbench-history", open: filteredActive.length === 0 },
-						h(
-							"summary",
-							{ class: "workbench-history-summary" },
-							icon("chevron-down"),
-							h("span", null, t("History ({count})", { count: filteredHistory.length })),
-						),
-						h(
-							"div",
-							{ class: "workbench-history-list" },
-							...filteredHistory.map((session) => renderRow(session, true)),
-						),
-					)
-				: null,
+			historyEl,
 		);
 	}
 
@@ -1275,7 +1328,7 @@ export class AppWorkbenchView {
 		}
 
 		this.#trackHead.hidden = false;
-		const running = isRunningSession(selected);
+		const running = isWorkingSession(selected);
 		const shippable = canShipSession(selected);
 		const shipBusy = Boolean(store.state.busy[`ship-track:${selected.id}`]);
 		const discardBusy = Boolean(store.state.busy[`discard-session:${selected.id}`]);
@@ -1299,6 +1352,7 @@ export class AppWorkbenchView {
 			selected.externalPr?.number ?? null,
 			running,
 			shippable,
+			surface.autoPublish,
 			showingThisTrackPreview,
 			shipBusy,
 			discardBusy,
@@ -1308,6 +1362,7 @@ export class AppWorkbenchView {
 		if (headKey !== this.#headKey) {
 			this.#headKey = headKey;
 			const meta = trackStateMeta(selected);
+			const title = cleanTrackTitle(selected.title);
 			const shipArmed = this.#armedKey === `ship:${selected.id}`;
 			const shipPublishArmed = this.#armedKey === `ship-publish:${selected.id}`;
 			const rowActions = [
@@ -1338,14 +1393,14 @@ export class AppWorkbenchView {
 							h("span", null, t("Preview")),
 						)
 					: null,
-				shippable
+				shippable && !surface.autoPublish
 					? h(
 							"button",
 							{
 								type: "button",
 								class: `btn btn-small${shipArmed ? " is-confirming" : ""}`,
 								disabled: shipBusy,
-								title: t("Merge this track into Base without publishing live yet"),
+								title: t("Merge this track without publishing live yet"),
 								"data-act": "ship-track",
 								"data-session": selected.id,
 							},
@@ -1359,7 +1414,7 @@ export class AppWorkbenchView {
 								type: "button",
 								class: `btn btn-small btn-primary${shipPublishArmed ? " is-confirming" : ""}`,
 								disabled: shipBusy,
-								title: t("Merge this track into Base and publish live"),
+								title: t("Merge this track and publish live"),
 								"data-act": "ship-publish-track",
 								"data-session": selected.id,
 							},
@@ -1372,7 +1427,7 @@ export class AppWorkbenchView {
 				h(
 					"div",
 					{ class: "workbench-track-head-top" },
-					h("h2", { class: "workbench-track-head-title", title: selected.title }, selected.title),
+					h("h2", { class: "workbench-track-head-title", title }, title),
 					!isHistory
 						? h(
 								"button",
@@ -2576,6 +2631,7 @@ export class AppWorkbenchView {
 		const key = undo ? `${undo.id}:${undo.pending ? "p" : "r"}:${undo.label}` : "";
 		if (key === this.#toastKey) return;
 		this.#toastKey = key;
+		const label = undo ? cleanTrackTitle(undo.label) : "";
 		replace(
 			this.#toast,
 			undo
@@ -2584,13 +2640,13 @@ export class AppWorkbenchView {
 							"div",
 							{ class: "surface-toast is-pending" },
 							h("span", { class: "surface-state is-running", "aria-hidden": "true" }),
-							h("span", null, t("Merging “{title}”…", { title: undo.label })),
+							h("span", null, t("Merging “{title}”…", { title: label })),
 						)
 					: h(
 							"div",
 							{ class: "surface-toast" },
 							icon("check"),
-							h("span", null, t("Merged “{title}” into Base", { title: undo.label })),
+							h("span", null, t("Shipped “{title}”", { title: label })),
 							h(
 								"button",
 								{ type: "button", "data-act": "undo" },
@@ -2611,8 +2667,10 @@ export class AppWorkbenchView {
 				? this.#findSession(store.workspace(surface.id), store.selectedTrackOf(surface.id) ?? "")
 				: undefined);
 		const canWrite = this.#host.canWrite?.() !== false;
-		const running = Boolean(resolved && isRunningSession(resolved));
+		const running = Boolean(resolved && isWorkingSession(resolved));
 		const discarded = resolved?.state === "discarded";
+		const needsInput = resolved?.state === "needs_input";
+		const completed = resolved?.state === "completed";
 		const busy = Boolean(resolved && store.state.busy[`reply:${resolved.id}`]);
 		const stopBusy = Boolean(resolved && store.state.busy[`stop-turn:${resolved.id}`]);
 		const textReady = this.#composerInput.value.trim().length > 0 && !this.#images.problem;
@@ -2624,7 +2682,11 @@ export class AppWorkbenchView {
 				? t("Working…")
 				: discarded
 					? t("This track was discarded. Start a new track to continue.")
-					: t("Reply or refine this track…");
+					: needsInput
+						? t("Answer the question or type a reply…")
+						: completed
+							? t("Ask for a follow-up change…")
+							: t("Reply or refine this track…");
 
 		if (running && resolved) {
 			replace(
@@ -2747,7 +2809,7 @@ export class AppWorkbenchView {
 			case "toggle-tracks": {
 				this.#tracksOpen = !this.#tracksOpen;
 				this.#tracksUserPinned = true;
-				if (this.#tracksOpen && this.#panelOpen && this.#isTightRowLayout()) {
+				if (this.#tracksOpen && this.#panelOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
 					this.#panelOpen = false;
 				}
 				this.update(surface);
@@ -2755,7 +2817,7 @@ export class AppWorkbenchView {
 			}
 			case "toggle-panel": {
 				this.#panelOpen = !this.#panelOpen;
-				if (this.#panelOpen && this.#tracksOpen && this.#isTightRowLayout()) {
+				if (this.#panelOpen && this.#tracksOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2765,11 +2827,15 @@ export class AppWorkbenchView {
 			case "panel-tab": {
 				const tab = target.dataset.tab as WorkbenchPanelTab | undefined;
 				if (!tab) return;
-				this.#panelOpen = true;
-				this.#panelTab = tab;
-				if (this.#tracksOpen && this.#isTightRowLayout()) {
-					this.#tracksOpen = false;
-					this.#tracksUserPinned = false;
+				if (this.#isStackedLayout() && this.#panelOpen && this.#panelTab === tab) {
+					this.#panelOpen = false;
+				} else {
+					this.#panelOpen = true;
+					this.#panelTab = tab;
+					if (this.#tracksOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
+						this.#tracksOpen = false;
+						this.#tracksUserPinned = false;
+					}
 				}
 				this.update(surface);
 				return;
@@ -2781,6 +2847,10 @@ export class AppWorkbenchView {
 				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
+				if (this.#isStackedLayout()) {
+					this.#tracksOpen = false;
+					this.#panelOpen = false;
+				}
 				store.selectTrack(surface.id, null);
 				this.#syncPreviewToSelection(surface, null);
 				this.update(surface);
@@ -2795,6 +2865,10 @@ export class AppWorkbenchView {
 				this.#lastInitialTrackSyncKey = "";
 				this.#combineSelected.clear();
 				this.#disarm();
+				if (this.#isStackedLayout()) {
+					this.#tracksOpen = false;
+					this.#panelOpen = false;
+				}
 				store.selectTrack(surface.id, sessionId);
 				this.#selectedMockupId = null;
 				this.#selectedPlanId = null;
@@ -2822,7 +2896,7 @@ export class AppWorkbenchView {
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
 				this.#explicitCombineActive = true;
-				if (this.#tracksOpen && this.#isTightRowLayout()) {
+				if (this.#tracksOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2839,6 +2913,7 @@ export class AppWorkbenchView {
 					this.#combining = false;
 					this.#explicitCombineActive = false;
 					this.#combineSelected.clear();
+					if (this.#isStackedLayout()) this.#tracksOpen = false;
 				}
 				this.update(surface);
 				return;
@@ -2853,7 +2928,7 @@ export class AppWorkbenchView {
 				this.#combineSelected.clear();
 				this.#panelOpen = true;
 				this.#panelTab = "preview";
-				if (this.#tracksOpen && this.#isTightRowLayout()) {
+				if (this.#tracksOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
@@ -2909,7 +2984,9 @@ export class AppWorkbenchView {
 				if (!sessionId) return;
 				const session = store.session(sessionId);
 				const message = session
-					? t("This will discard “{title}” and remove its unmerged changes.", { title: session.title })
+					? t("This will discard “{title}” and remove its unmerged changes.", {
+							title: cleanTrackTitle(session.title),
+						})
 					: t("This will discard the track and remove its unmerged changes.");
 				const confirmed = await confirmDialog(message, t("Discard"), true);
 				if (!confirmed) return;
@@ -2944,7 +3021,7 @@ export class AppWorkbenchView {
 					this.#panelTab = "plans";
 					this.#selectedPlanId = artifactId;
 				}
-				if (this.#tracksOpen && this.#isTightRowLayout()) {
+				if (this.#tracksOpen && (this.#isTightRowLayout() || this.#isStackedLayout())) {
 					this.#tracksOpen = false;
 					this.#tracksUserPinned = false;
 				}
