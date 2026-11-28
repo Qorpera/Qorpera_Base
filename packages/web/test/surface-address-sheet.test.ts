@@ -1480,9 +1480,7 @@ describe("editing the platform subdomain", () => {
 		dupName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
 		await settle();
 		expect(dupValue.value).toBe("");
-		expect(problem()).toBe(
-			"Saved, but it could not be granted automatically. Select it from the list to grant it.",
-		);
+		expect(problem()).toBe("Saved, but it could not be granted automatically. Select it from the list to grant it.");
 		expect(sheet().querySelector('[data-key="runtime-new-secret-name"]')).toBeNull();
 		const selectOptions = [
 			...sheet().querySelectorAll<HTMLOptionElement>('[data-key="runtime-secret-select"] option'),
@@ -1515,9 +1513,12 @@ describe("editing the platform subdomain", () => {
 				y: top,
 				toJSON: () => ({}),
 			}) as DOMRect;
-		vi.spyOn(container, "getBoundingClientRect").mockReturnValue(rect(0, 0, 1000, 800));
-		vi.spyOn(bar(), "getBoundingClientRect").mockReturnValue(rect(120, 10, 160, 30));
-		vi.spyOn(chipBtn, "getBoundingClientRect").mockReturnValue(rect(360, 10, 140, 28));
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this === container) return rect(0, 0, 1000, 800);
+			if (this === chipBtn) return rect(360, 10, 140, 28);
+			if (this.classList.contains("surface-pill-address")) return rect(120, 10, 160, 30);
+			return rect(0, 0, 0, 0);
+		});
 		Object.defineProperty(sheet(), "offsetWidth", { configurable: true, value: 316 });
 
 		domainMount.address.openSource(false, chipBtn);

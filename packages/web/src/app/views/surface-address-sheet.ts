@@ -643,6 +643,9 @@ export class SurfaceAddress {
 		this.#addingSecret = false;
 		this.#runtimeNewSecretValue.value = "";
 		this.#anchorEl = null;
+		this.#sheet.style.left = "";
+		this.#sheet.style.top = "";
+		this.#sheet.classList.remove("is-placed");
 		this.#disarm(false);
 		this.#sheet.hidden = true;
 		this.#sheet.replaceChildren();
@@ -1867,8 +1870,9 @@ export class SurfaceAddress {
 
 	#createRuntimeSecret(): void {
 		const binding = this.#setup.runtimeConfig?.();
+		const createSecret = binding?.createSecret;
 		const current = this.#runtimeConfig;
-		if (this.#creatingSecret || !binding?.createSecret || !current || !current.canManage || !current.siteId) return;
+		if (this.#creatingSecret || !binding || !createSecret || !current || !current.canManage || !current.siteId) return;
 		const name = this.#runtimeNewSecretName.value.trim().toUpperCase();
 		const value = this.#runtimeNewSecretValue.value;
 		if (!CODING_VARIABLE_NAME.test(name)) {
@@ -1910,7 +1914,7 @@ export class SurfaceAddress {
 		let saved = false;
 		void (async () => {
 			try {
-				await binding.createSecret({ name, value, purpose: "App secret" }, this.#setup.signal);
+				await createSecret({ name, value, purpose: "App secret" }, this.#setup.signal);
 				saved = true;
 				this.#runtimeNewSecretValue.value = "";
 				if (this.#setup.signal.aborted || target !== this.#target) {
