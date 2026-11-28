@@ -30,7 +30,7 @@ import {
 } from "../surfaces-store.ts";
 import { SurfaceAddress } from "./surface-address-sheet.ts";
 import { SurfaceComposerImages } from "./surface-composer-images.ts";
-import { SurfaceDoorStage } from "./surface-door.ts";
+import { publishFailureText, SurfaceDoorStage } from "./surface-door.ts";
 import { openPublishSheet } from "./surface-publish-sheet.ts";
 import { APPROVE_ARM_MS, approveLabel } from "./surface-session-drawer.ts";
 import type { SurfaceMount, SurfaceViewHost } from "./surface-view.ts";
@@ -256,7 +256,7 @@ export class AppWorkbenchView {
 	readonly #composerInput = h("textarea", {
 		class: "workbench-composer-input",
 		rows: 1,
-		placeholder: t("Describe what you want to plan, design, or change…"),
+		placeholder: t("Plan, design, or describe a change…"),
 		"aria-label": t("Message"),
 	}) as HTMLTextAreaElement;
 	readonly #composerAction = h("div", { class: "workbench-composer-actions" });
@@ -679,7 +679,7 @@ export class AppWorkbenchView {
 		this.#composerInput.addEventListener(
 			"input",
 			() => {
-				growToText(this.#composerInput);
+				this.#syncComposerHeight();
 				this.#syncComposerState();
 			},
 			{ signal },
@@ -1041,7 +1041,13 @@ export class AppWorkbenchView {
 
 	#drawBanner(surface: SurfaceSummary): void {
 		const error = this.#host.store.state.error;
-		const publishError = surface.publishStatus === "failed" ? surface.lastPublishError : null;
+		const publishError =
+			surface.publishStatus === "failed"
+				? publishFailureText(surface.lastPublishError) ||
+					surface.lastPublishError?.trim() ||
+					t("The last publish failed. Try again.")
+				: null;
+		const beingFixed = Boolean(publishError) && surface.publishBeingFixed === true;
 		if (!error && !publishError) {
 			this.#banner.hidden = true;
 			this.#banner.replaceChildren();
@@ -1068,7 +1074,22 @@ export class AppWorkbenchView {
 					)
 				: null,
 			publishError
-				? h("div", { class: "workbench-banner is-warn", role: "status" }, h("span", null, publishError))
+				? h(
+						"div",
+						{ class: "workbench-banner is-warn", role: "status" },
+						h("span", null, publishError),
+						beingFixed
+							? h("span", { class: "workbench-banner-status" }, t("Being fixed"))
+							: h(
+									"button",
+									{
+										type: "button",
+										class: "btn btn-small",
+										"data-act": "open-publish",
+									},
+									t("Retry"),
+								),
+					)
 				: null,
 		);
 	}
@@ -2678,6 +2699,11 @@ export class AppWorkbenchView {
 		);
 	}
 
+	#syncComposerHeight(): void {
+		if (!this.#composerInput.value) this.#composerInput.style.height = "";
+		else growToText(this.#composerInput);
+	}
+
 	#syncComposerState(selected?: SurfaceSession): void {
 		const surface = this.#surface;
 		const store = this.#host.store;
@@ -2696,8 +2722,9 @@ export class AppWorkbenchView {
 		const textReady = this.#composerInput.value.trim().length > 0 && !this.#images.problem;
 
 		this.#composerInput.disabled = !canWrite || running || Boolean(discarded);
+		this.#images.setDisabled(this.#composerInput.disabled);
 		this.#composerInput.placeholder = !resolved
-			? t("Describe what you want to plan, design, or change…")
+			? t("Plan, design, or describe a change…")
 			: running
 				? t("Working…")
 				: discarded
@@ -2707,6 +2734,7 @@ export class AppWorkbenchView {
 						: completed
 							? t("Ask for a follow-up change…")
 							: t("Reply or refine this track…");
+		if (!this.#composerInput.value) this.#composerInput.style.height = "";
 
 		if (running && resolved) {
 			replace(
@@ -2749,7 +2777,7 @@ export class AppWorkbenchView {
 		const selectedId = store.selectedTrackOf(surface.id);
 		const files = this.#images.files;
 		this.#composerInput.value = "";
-		growToText(this.#composerInput);
+		this.#syncComposerHeight();
 		this.#images.set([]);
 		this.#syncComposerState();
 
@@ -2758,7 +2786,7 @@ export class AppWorkbenchView {
 			if (!created) {
 				if (!this.#composerInput.value) {
 					this.#composerInput.value = text;
-					growToText(this.#composerInput);
+					this.#syncComposerHeight();
 				}
 				if (!this.#images.files.length) this.#images.set(files);
 				this.#syncComposerState();
@@ -2769,7 +2797,7 @@ export class AppWorkbenchView {
 		if (!sent) {
 			if (!this.#composerInput.value) {
 				this.#composerInput.value = text;
-				growToText(this.#composerInput);
+				this.#syncComposerHeight();
 			}
 			if (!this.#images.files.length) this.#images.set(files);
 			this.#syncComposerState();

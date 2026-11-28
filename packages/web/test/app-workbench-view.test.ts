@@ -1239,4 +1239,80 @@ describe("AppWorkbenchView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("resets empty composer height, disables attach while running, and formats publish error banners", async () => {
+		let failedSurface = appSummary({
+			publishStatus: "failed",
+			lastPublishError: "PREVIEW_BUILD_FAILED\nexit code 1",
+			publishBeingFixed: false,
+		});
+		const runningTrack = session([], {
+			id: SESSION,
+			surfaceId: failedSurface.id,
+			title: "Hybrid upgrade",
+			state: "running",
+			openChangeCount: 0,
+		});
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [failedSurface]),
+			getSurfaceWorkspace: vi.fn(async () => workspace([runningTrack], { surface: failedSurface })),
+			surfaceSessionImages: vi.fn(async () => ({ sessionId: SESSION, messages: [] })),
+		});
+		const store = storeWith(client, {
+			uploadImage: vi.fn(async () => ({
+				sha256: "0".repeat(64),
+				bytes: 4,
+				mediaType: "image/png",
+			})),
+		});
+		await store.load();
+		const view = new SurfaceView({ store, mount: () => undefined, openMigration: () => undefined }, "web-app");
+		document.body.append(view.el);
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		const warnBanner = view.el.querySelector(".workbench-banner.is-warn")!;
+		expect(warnBanner.textContent).toContain("The site could not be built, so nothing was published.");
+		expect(warnBanner.textContent).not.toContain("PREVIEW_BUILD_FAILED");
+		expect(warnBanner.querySelector('[data-act="open-publish"]')?.textContent).toBe("Retry");
+
+		failedSurface = { ...failedSurface, publishBeingFixed: true };
+		await store.refreshSurfaces();
+		view.update();
+		expect(view.el.querySelector(".workbench-banner.is-warn .workbench-banner-status")?.textContent).toBe(
+			"Being fixed",
+		);
+
+		const input = view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")!;
+		const attachBtn = view.el.querySelector<HTMLButtonElement>(".workbench-composer .surface-attach")!;
+		input.style.height = "56px";
+		view.update();
+		expect(input.disabled).toBe(true);
+		expect(input.style.height).toBe("");
+		expect(attachBtn.hidden).toBe(false);
+		expect(attachBtn.disabled).toBe(true);
+
+		const shell = view.el.querySelector<HTMLElement>(".workbench-composer-shell")!;
+		const file = new File(["png"], "shot.png", { type: "image/png" });
+		const pasteEvent = new Event("paste", { bubbles: true, cancelable: true }) as ClipboardEvent;
+		Object.defineProperty(pasteEvent, "clipboardData", { value: { files: [file] } });
+		shell.dispatchEvent(pasteEvent);
+		expect(view.el.querySelectorAll(".workbench-composer .attachment-chip").length).toBe(0);
+
+		view.el.querySelector<HTMLButtonElement>('[data-act="new-track"]')!.click();
+		view.update();
+		expect(input.disabled).toBe(false);
+		expect(attachBtn.disabled).toBe(false);
+		expect(input.placeholder).toBe("Plan, design, or describe a change…");
+		input.value = "Two\nlines";
+		input.style.height = "60px";
+		input.value = "";
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(input.style.height).toBe("");
+
+		view.dispose();
+		store.dispose();
+	});
 });
