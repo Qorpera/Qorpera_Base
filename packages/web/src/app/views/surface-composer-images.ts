@@ -15,10 +15,13 @@ export class SurfaceComposerImages {
 	}) as HTMLInputElement;
 	#files: File[] = [];
 	#available = false;
+	#disabled = false;
 	#shownProblem = "";
+	readonly #zone: HTMLElement;
 	readonly #changed: () => void;
 
 	constructor(zone: HTMLElement, signal: AbortSignal, changed: () => void) {
+		this.#zone = zone;
 		this.#changed = changed;
 		this.tray = new AttachmentTray(
 			[],
@@ -54,7 +57,7 @@ export class SurfaceComposerImages {
 			"paste",
 			(event) => {
 				const files = [...(event.clipboardData?.files ?? [])];
-				if (!files.length || !this.#available) return;
+				if (!files.length || !this.#available || this.#disabled) return;
 				event.preventDefault();
 				this.#add(files);
 			},
@@ -63,7 +66,7 @@ export class SurfaceComposerImages {
 		zone.addEventListener(
 			"dragover",
 			(event) => {
-				if (!this.#available || !event.dataTransfer?.types.includes("Files")) return;
+				if (!this.#available || this.#disabled || !event.dataTransfer?.types.includes("Files")) return;
 				event.preventDefault();
 				zone.classList.add("is-dragging");
 			},
@@ -74,7 +77,7 @@ export class SurfaceComposerImages {
 			"drop",
 			(event) => {
 				zone.classList.remove("is-dragging");
-				if (!this.#available || !event.dataTransfer?.files.length) return;
+				if (!this.#available || this.#disabled || !event.dataTransfer?.files.length) return;
 				event.preventDefault();
 				this.#add([...event.dataTransfer.files]);
 			},
@@ -92,7 +95,7 @@ export class SurfaceComposerImages {
 	}
 
 	open(): void {
-		if (this.#available) this.#picker.click();
+		if (this.#available && !this.#disabled) this.#picker.click();
 	}
 
 	get problem(): string | undefined {
@@ -104,6 +107,12 @@ export class SurfaceComposerImages {
 		this.#available = available;
 		this.button.hidden = !available;
 		if (!available && this.#files.length) this.set([]);
+	}
+
+	setDisabled(disabled: boolean): void {
+		this.#disabled = disabled;
+		this.button.disabled = disabled;
+		if (disabled) this.#zone.classList.remove("is-dragging");
 	}
 
 	set(files: readonly File[]): void {

@@ -904,11 +904,11 @@ a.surface-address-row:hover { text-decoration: none; }
 	transition: background-color var(--motion-fast) ease, color var(--motion-fast) ease;
 }
 .surface-plus[hidden], .surface-attach[hidden] { display: none; }
-.surface-plus:hover:not(:disabled), .surface-plus.menu-open, .surface-attach:hover {
+.surface-plus:hover:not(:disabled), .surface-plus.menu-open, .surface-attach:hover:not(:disabled) {
 	background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text);
 }
 .surface-plus.is-on { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-.surface-plus:disabled { opacity: 0.45; }
+.surface-plus:disabled, .surface-attach:disabled { opacity: 0.4; }
 .surface-plus .icon { width: 18px; height: 18px; }
 .surface-attach .icon { width: 17px; height: 17px; }
 .surface-composer > .attachment-tray { padding: 0 0 8px; }
@@ -3210,6 +3210,7 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 }
 .workbench-banner.is-error { background: var(--danger-soft); color: var(--danger); }
 .workbench-banner.is-warn { background: color-mix(in srgb, var(--warning) 12%, transparent); color: var(--text); }
+.workbench-banner-status { flex: none; font-size: 12px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
 .workbench-banner-close {
 	display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
 	background: none; color: inherit; cursor: default;
@@ -3446,9 +3447,15 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 .workbench-composer {
 	flex: none; padding: 12px 24px 16px; border-top: 1px solid var(--border); background: var(--bg);
 }
+.workbench-composer > .attachment-tray { max-width: 780px; width: 100%; margin: 0 auto 8px; padding: 0; }
+.workbench-composer > .attachment-status { max-width: 780px; width: 100%; margin: 6px auto 0; padding: 0 4px; }
 .workbench-composer-shell {
 	max-width: 780px; width: 100%; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px;
 	border: 1px solid var(--border-strong); border-radius: 14px; background: var(--bg);
+}
+.workbench-composer-shell.is-dragging {
+	border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .workbench-composer-shell:focus-within { border-color: var(--text); }
 .workbench-composer-input {

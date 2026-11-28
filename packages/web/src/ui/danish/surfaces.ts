@@ -757,7 +757,7 @@ export const SURFACES: Record<string, string> = {
 	"{files} files · +{added} / -{removed}": "{files} filer · +{added} / -{removed}",
 	"Filter tracks…": "Filtrér spor…",
 	"Filter tracks": "Filtrér spor",
-	"Describe what you want to plan, design, or change…": "Beskriv hvad du vil planlægge, designe eller ændre…",
+	"Plan, design, or describe a change…": "Planlæg, design eller beskriv en ændring…",
 	"Resize side panel": "Skift bredde på sidepanel",
 	"Preview path": "Forhåndsvisningssti",
 	"Publish ({count})": "Udgiv ({count})",
