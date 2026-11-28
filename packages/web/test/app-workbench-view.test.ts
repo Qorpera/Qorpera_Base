@@ -291,13 +291,17 @@ describe("AppWorkbenchView", () => {
 		const threadScroll = view.el.querySelector<HTMLElement>(".workbench-thread-scroll")!;
 		expect(threadScroll.children[0]?.className).toBe("workbench-messages");
 		expect(threadScroll.children[1]?.className).toBe("workbench-progress-slot");
-		let scrollHeightValue = 600;
-		Object.defineProperty(threadScroll, "scrollHeight", { configurable: true, get: () => scrollHeightValue });
+		Object.defineProperty(threadScroll, "scrollHeight", {
+			configurable: true,
+			get: () =>
+				600 +
+				(threadScroll.textContent?.includes("Running verification checks") ? 80 : 0) +
+				(threadScroll.textContent?.includes("Preparing final summary") ? 140 : 0),
+		});
 		Object.defineProperty(threadScroll, "clientHeight", { configurable: true, value: 300 });
 		threadScroll.scrollTop = 260;
 		trackA = { ...trackA, currentActivity: "Running verification checks" };
 		activeSessions = activeSessions.map((item) => (item.id === trackA.id ? trackA : item));
-		scrollHeightValue = 680;
 		await store.refreshWorkspace(SURFACE);
 		view.update();
 		expect(view.el.textContent).toContain("Running verification checks");
@@ -306,7 +310,6 @@ describe("AppWorkbenchView", () => {
 		threadScroll.scrollTop = 40;
 		trackA = { ...trackA, currentActivity: "Preparing final summary" };
 		activeSessions = activeSessions.map((item) => (item.id === trackA.id ? trackA : item));
-		scrollHeightValue = 740;
 		await store.refreshWorkspace(SURFACE);
 		view.update();
 		expect(view.el.textContent).toContain("Preparing final summary");
