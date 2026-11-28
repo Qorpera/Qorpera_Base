@@ -64,6 +64,14 @@ export interface SurfaceRuntimeConfigBinding {
 		input: { readonly name: string; readonly value: string; readonly purpose: string },
 		signal?: AbortSignal,
 	) => Promise<void>;
+	readonly availableDatabases?: () => readonly string[] | undefined;
+	readonly refreshDatabases?: () => Promise<void> | void;
+}
+
+export interface SurfaceAutoPublishBinding {
+	readonly enabled: boolean;
+	readonly busy: boolean;
+	readonly toggle: () => void;
 }
 
 export interface SurfaceAddressSetup {
@@ -76,6 +84,7 @@ export interface SurfaceAddressSetup {
 	readonly slugChanged?: (updated: UpdatedSiteSlug) => void;
 	readonly codeSource?: () => SurfaceCodeSourceBinding | undefined;
 	readonly runtimeConfig?: () => SurfaceRuntimeConfigBinding | undefined;
+	readonly autoPublish?: () => SurfaceAutoPublishBinding | undefined;
 }
 
 export type AddressMark = "unknown" | "private" | "live";
@@ -410,6 +419,7 @@ export class SurfaceAddress {
 	#creatingSecret = false;
 	#revokingGrantId: string | null = null;
 	#anchorEl: HTMLElement | null = null;
+	#anchorSelector: string | null = null;
 	#runtimeEnvRows: Array<{ id: number; key: string; value: string }> = [];
 	#runtimeEnvRowSeq = 0;
 	#slugCheck: SlugCheckState = { kind: "idle" };
@@ -446,7 +456,10 @@ export class SurfaceAddress {
 		});
 		this.#runtimeDbField.setAttribute("aria-label", t("Linked company database (optional)"));
 		this.#runtimeDbField.placeholder = t("e.g. shop");
-		this.#runtimeDbField.addEventListener("input", () => this.#clearRuntimeSaved());
+		this.#runtimeDbField.addEventListener("input", () => {
+			this.#clearRuntimeSaved();
+			this.#syncRuntimeDbChips();
+		});
 		this.#runtimeSecretSelect.setAttribute("aria-label", t("Secret to grant"));
 		this.#runtimeNewSecretName.setAttribute("aria-label", t("Secret name"));
 		this.#runtimeNewSecretName.placeholder = t("e.g. STRIPE_SECRET_KEY");
@@ -520,7 +533,16 @@ export class SurfaceAddress {
 			this.#liveUrl = url;
 		}
 		if (this.#open && this.#paintKey() !== this.#painted) this.#paint();
-		return url ? JSON.stringify([this.mark(), this.name(), this.#open]) : "";
+		const autoPublish = this.#setup.autoPublish?.();
+		return url
+			? JSON.stringify([
+					this.mark(),
+					this.name(),
+					this.#open,
+					autoPublish?.enabled ?? null,
+					autoPublish?.busy ?? null,
+				])
+			: "";
 	}
 
 	mark(): AddressMark {
@@ -577,18 +599,21 @@ export class SurfaceAddress {
 			this.close(true);
 			return;
 		}
-		if (!this.#open) this.open(fromKeyboard, anchor);
+		const selector = anchor?.closest(".workbench-repo-chip") ? ".workbench-repo-chip" : null;
+		if (!this.#open) this.open(fromKeyboard, anchor, selector);
 		else {
 			this.#anchorEl = anchor ?? null;
+			this.#anchorSelector = selector;
 			this.#place();
 		}
 		if (this.#open) this.#openSource(source);
 	}
 
-	open(fromKeyboard = false, anchor?: HTMLElement | null): void {
+	open(fromKeyboard = false, anchor?: HTMLElement | null, anchorSelector?: string | null): void {
 		if (this.#open || !this.#liveUrl || this.#setup.signal.aborted) return;
 		const takeFocus = fromKeyboard || document.activeElement === this.#addressButton();
 		this.#anchorEl = anchor ?? null;
+		this.#anchorSelector = anchorSelector ?? null;
 		this.#open = true;
 		this.#problem = undefined;
 		this.#page = MAIN;
@@ -643,6 +668,7 @@ export class SurfaceAddress {
 		this.#addingSecret = false;
 		this.#runtimeNewSecretValue.value = "";
 		this.#anchorEl = null;
+		this.#anchorSelector = null;
 		this.#sheet.style.left = "";
 		this.#sheet.style.top = "";
 		this.#sheet.classList.remove("is-placed");
@@ -1267,6 +1293,8 @@ export class SurfaceAddress {
 	#paintKey(): string {
 		const known = this.#known;
 		const source = this.#setup.codeSource?.();
+		const autoPublish = this.#setup.autoPublish?.();
+		const availableDbs = this.#setup.runtimeConfig?.()?.availableDatabases?.();
 		return JSON.stringify([
 			this.#liveUrl,
 			this.#setup.canManage(),
@@ -1280,6 +1308,8 @@ export class SurfaceAddress {
 			this.#sourceReposLoaded,
 			this.#sourceRepos.map((repo) => [repo.repositoryKey, repo.sourceBranch]),
 			source ? [source.repositoryKey ?? "", source.repositorySubpath ?? "", source.defaultBranch] : null,
+			autoPublish ? [autoPublish.enabled, autoPublish.busy] : null,
+			availableDbs ?? null,
 			this.#runtimeLoading,
 			this.#savingRuntime,
 			this.#runtimeSaved,
@@ -1380,10 +1410,26 @@ export class SurfaceAddress {
 	}
 
 	#place(): void {
-		const anchor = this.#anchorEl?.isConnected ? this.#anchorEl : this.#addressButton();
 		const box = this.#setup.container.getBoundingClientRect();
-		const from = anchor?.getBoundingClientRect();
-		if (!from || box.width <= 0 || from.width <= 0) {
+		if (box.width <= 0) {
+			this.#sheet.classList.remove("is-placed");
+			return;
+		}
+		const candidates = [
+			this.#anchorSelector ? this.#setup.container.querySelector<HTMLElement>(this.#anchorSelector) : null,
+			this.#anchorEl?.isConnected ? this.#anchorEl : null,
+			this.#addressButton(),
+		];
+		let from: DOMRect | undefined;
+		for (const candidate of candidates) {
+			if (!candidate || !candidate.isConnected) continue;
+			const rect = candidate.getBoundingClientRect();
+			if (rect.width > 0) {
+				from = rect;
+				break;
+			}
+		}
+		if (!from) {
 			this.#sheet.classList.remove("is-placed");
 			return;
 		}
@@ -1446,11 +1492,13 @@ export class SurfaceAddress {
 							: known.hosting.publicEnabled
 								? this.#goButton()
 								: this.#quietLine(t(REFUSALS.PUBLIC_SITES_DISABLED!));
+		const autoPublish = manage ? this.#setup.autoPublish?.() : undefined;
+		const autoPublishRow = autoPublish ? this.#autoPublishRow(autoPublish) : null;
 		const source = manage ? this.#setup.codeSource?.() : undefined;
 		const sourceRow = source ? this.#sourceRow(source) : null;
 		const runtime = this.#setup.runtimeConfig?.();
 		const runtimeRow = runtime ? this.#runtimeRow(runtime) : null;
-		const configRows = [sourceRow, runtimeRow].filter((item): item is HTMLElement => item !== null);
+		const configRows = [autoPublishRow, sourceRow, runtimeRow].filter((item): item is HTMLElement => item !== null);
 		const head = h("div", { class: "surface-address-head" }, nameRow, under, this.#problemLine());
 		if (!known) return [head, configRows.length > 0 ? this.#group(...configRows) : null];
 		const domains = known.domains.map((domain) => this.#domainRow(domain, manage));
@@ -1482,6 +1530,31 @@ export class SurfaceAddress {
 					)
 				: null,
 		];
+	}
+
+	#autoPublishRow(binding: SurfaceAutoPublishBinding): HTMLElement {
+		return h(
+			"button",
+			{
+				type: "button",
+				role: "switch",
+				"aria-checked": String(binding.enabled),
+				class: "surface-address-row",
+				"data-key": "auto-publish",
+				disabled: binding.busy,
+				onclick: () => binding.toggle(),
+			},
+			icon("bolt"),
+			h("span", { class: "surface-address-row-label" }, t("Auto-publish on ship")),
+			h(
+				"span",
+				{ class: "surface-address-row-end" },
+				h("span", {
+					class: `surface-address-switch${binding.enabled ? " is-on" : ""}`,
+					"aria-hidden": "true",
+				}),
+			),
+		);
 	}
 
 	#sourceRow(source: SurfaceCodeSourceBinding): HTMLElement {
@@ -1728,6 +1801,13 @@ export class SurfaceAddress {
 		}
 	}
 
+	#syncRuntimeDbChips(): void {
+		const selected = this.#runtimeDbField.value.trim();
+		for (const chip of this.#sheet.querySelectorAll<HTMLButtonElement>("[data-db-pick]")) {
+			chip.classList.toggle("is-selected", chip.dataset.dbPick === selected);
+		}
+	}
+
 	#clearRuntimeSaved(repaint = true): void {
 		if (this.#runtimeSavedTimer !== undefined) {
 			clearTimeout(this.#runtimeSavedTimer);
@@ -1762,6 +1842,16 @@ export class SurfaceAddress {
 		this.#runtimeLoading = true;
 		this.#problem = undefined;
 		this.#paint();
+		const dbRefresh = binding.refreshDatabases?.();
+		if (dbRefresh) {
+			void Promise.resolve(dbRefresh).then(
+				() => {
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (this.#open && this.#paintKey() !== this.#painted) this.#paint();
+				},
+				() => undefined,
+			);
+		}
 		try {
 			const loaded = await binding.load(this.#setup.signal);
 			if (this.#setup.signal.aborted || target !== this.#target) return;
@@ -2182,6 +2272,41 @@ export class SurfaceAddress {
 							),
 						);
 
+		const availableDbs = this.#setup.runtimeConfig?.()?.availableDatabases?.();
+		const selectedDb = this.#runtimeDbField.value.trim();
+		const dbPicksEl =
+			availableDbs && availableDbs.length > 0
+				? h(
+						"div",
+						{
+							class: "surface-address-db-picks",
+							role: "group",
+							"aria-label": t("Available company databases"),
+						},
+						...availableDbs.map((db) =>
+							h(
+								"button",
+								{
+									type: "button",
+									class: `surface-address-db-chip${selectedDb === db ? " is-selected" : ""}`,
+									"data-db-pick": db,
+									disabled: !canEdit || this.#savingRuntime,
+									onclick: () => {
+										this.#runtimeDbField.value = db;
+										this.#clearRuntimeSaved();
+										this.#syncRuntimeDbChips();
+									},
+								},
+								db,
+							),
+						),
+					)
+				: null;
+		const dbHint =
+			availableDbs && availableDbs.length === 0 && !selectedDb
+				? t("No company databases exist yet. Ask your Co-Founder to create one before linking it here.")
+				: t("Injects a scoped DATABASE_URL automatically on the next preview or publish.");
+
 		return [
 			this.#top(t("Environment & secrets"), MAIN),
 			h(
@@ -2215,11 +2340,8 @@ export class SurfaceAddress {
 						h("span", null, t("Linked company database (optional)")),
 						this.#runtimeDbField,
 					),
-					h(
-						"p",
-						{ class: "surface-address-hint" },
-						t("Injects a scoped DATABASE_URL automatically on the next preview or publish."),
-					),
+					dbPicksEl,
+					h("p", { class: "surface-address-hint" }, dbHint),
 					h(
 						"div",
 						{ class: "surface-address-runtime-head" },

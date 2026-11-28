@@ -4,7 +4,12 @@ import {
 	surfaceFolderRoots,
 } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
-import { inferSurfaceKind, type StudioBinaryRef, type SurfaceSummary } from "@qorpera/contracts";
+import {
+	inferSurfaceKind,
+	isSurfaceLinkedDatabaseName,
+	type StudioBinaryRef,
+	type SurfaceSummary,
+} from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
@@ -347,6 +352,13 @@ function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): Inter
 				cover: manifest.cover ? `${found.path}/${manifest.cover}` : null,
 			}
 		: undefined;
+}
+
+export function linkedCompanyDatabaseNames(
+	data: { readonly databases: readonly { readonly database: string }[] } | null | undefined,
+): readonly string[] | undefined {
+	if (!data) return undefined;
+	return data.databases.map((db) => db.database).filter((name) => isSurfaceLinkedDatabaseName(name));
 }
 
 export function mountApplication(
@@ -2802,7 +2814,10 @@ export function mountApplication(
 							return client;
 						},
 						(described) => {
-							if (companyDatabases === databases) controller.store.set({ companyData: described });
+							if (companyDatabases === databases) {
+								controller.store.set({ companyData: described });
+								if (surfaceView?.company === controller) surfaceView.view.update();
+							}
 						},
 						controller.signal,
 					)
@@ -3946,6 +3961,8 @@ export function mountApplication(
 									{ ownerKind: "company", name: input.name, value: input.value, purpose: input.purpose },
 									signal,
 								),
+							availableDatabases: () => linkedCompanyDatabaseNames(controller.store.get().companyData),
+							refreshDatabases: () => companyDatabases?.refresh(),
 							canWrite: () => controller.store.get().team?.capabilities.write === true,
 							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {

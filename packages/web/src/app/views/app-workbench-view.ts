@@ -20,6 +20,7 @@ import { t } from "../../ui/preferences.ts";
 import { ReceivedAttachments } from "../../ui/received-attachments.ts";
 import { uiScale } from "../../ui/scale.ts";
 import {
+	formatTrackTitle,
 	groupSessionChanges,
 	isOpenChange,
 	isRunningSession,
@@ -421,6 +422,17 @@ export class AppWorkbenchView {
 					grantSecret: (input) => host.store.grantSurfaceAppSecret(input),
 					revokeGrant: (grantId) => host.store.revokeSurfaceAppSecretGrant(grantId),
 					...(host.createCompanySecret ? { createSecret: host.createCompanySecret } : {}),
+					...(host.availableDatabases ? { availableDatabases: host.availableDatabases } : {}),
+					...(host.refreshDatabases ? { refreshDatabases: host.refreshDatabases } : {}),
+				};
+			},
+			autoPublish: () => {
+				const surface = this.#surface;
+				if (!surface) return undefined;
+				return {
+					enabled: surface.autoPublish,
+					busy: Boolean(host.store.state.busy[`auto:${surface.id}`]),
+					toggle: () => void host.store.setAutoPublish(surface.id, !surface.autoPublish),
 				};
 			},
 			signal: life,
@@ -882,6 +894,7 @@ export class AppWorkbenchView {
 		const canManage = this.#host.managesSites?.() === true;
 		const canPublish = Boolean(surface.hasUnpublishedChanges || !surface.liveUrl);
 		const publishing = surface.publishStatus === "publishing" || Boolean(store.state.busy[`publish:${surface.id}`]);
+		const autoPublishBusy = Boolean(store.state.busy[`auto:${surface.id}`]);
 		const key = JSON.stringify([
 			surface.id,
 			surface.title,
@@ -889,6 +902,8 @@ export class AppWorkbenchView {
 			surface.repositorySubpath ?? null,
 			surface.defaultBranch ?? "main",
 			surface.liveUrl,
+			surface.autoPublish,
+			autoPublishBusy,
 			surface.unpublishedChangeCount,
 			surface.hasUnpublishedChanges,
 			surface.publishStatus ?? "idle",
@@ -954,7 +969,7 @@ export class AppWorkbenchView {
 						"button",
 						{
 							type: "button",
-							class: "btn btn-small btn-primary workbench-publish-btn",
+							class: `btn btn-small btn-primary workbench-publish-btn${publishing ? " is-publishing" : ""}`,
 							disabled: publishing,
 							"data-act": "open-publish",
 						},
@@ -1063,7 +1078,10 @@ export class AppWorkbenchView {
 		const history = workspace?.recentHistory ?? [];
 		const query = this.#searchQuery;
 		const matches = (session: SurfaceSession) =>
-			!query || session.title.toLowerCase().includes(query) || session.prompt.toLowerCase().includes(query);
+			!query ||
+			formatTrackTitle(session).toLowerCase().includes(query) ||
+			session.title.toLowerCase().includes(query) ||
+			session.prompt.toLowerCase().includes(query);
 		const filteredActive = active.filter(matches);
 		const filteredHistory = history.filter(matches);
 		const activeIds = new Set(active.map((item) => item.id));
@@ -1093,7 +1111,7 @@ export class AppWorkbenchView {
 			historyExpanded,
 			filteredActive.map((s) => [
 				s.id,
-				s.title,
+				formatTrackTitle(s),
 				s.state,
 				s.openChangeCount,
 				s.updatedAt,
@@ -1101,7 +1119,7 @@ export class AppWorkbenchView {
 				s.artifacts?.length ?? 0,
 				s.changes.some((c) => c.status === "conflicted"),
 			]),
-			filteredHistory.map((s) => [s.id, s.title, s.state, s.updatedAt, s.artifacts?.length ?? 0]),
+			filteredHistory.map((s) => [s.id, formatTrackTitle(s), s.state, s.updatedAt, s.artifacts?.length ?? 0]),
 		]);
 		if (key === this.#tracksKey) return;
 		this.#tracksKey = key;
@@ -1189,7 +1207,7 @@ export class AppWorkbenchView {
 			const attention = !isHistory && sessionNeedsAttention(session);
 			const checked = this.#combineSelected.has(session.id);
 
-			const title = cleanTrackTitle(session.title);
+			const title = formatTrackTitle(session);
 			const card = h(
 				"button",
 				{
@@ -1343,9 +1361,10 @@ export class AppWorkbenchView {
 				workspace.previewState.selectedSessionId === selected.id &&
 				this.#previewMatchesSelection(workspace.previewState, selected),
 		);
+		const headTitle = formatTrackTitle(selected);
 		const headKey = JSON.stringify([
 			selected.id,
-			selected.title,
+			headTitle,
 			selected.state,
 			selected.openChangeCount,
 			selected.checksSummary?.status ?? null,
@@ -1363,7 +1382,7 @@ export class AppWorkbenchView {
 		if (headKey !== this.#headKey) {
 			this.#headKey = headKey;
 			const meta = trackStateMeta(selected);
-			const title = cleanTrackTitle(selected.title);
+			const title = headTitle;
 			const shipArmed = this.#armedKey === `ship:${selected.id}`;
 			const shipPublishArmed = this.#armedKey === `ship-publish:${selected.id}`;
 			const rowActions = [
@@ -2969,6 +2988,7 @@ export class AppWorkbenchView {
 			case "ship-track": {
 				const sessionId = target.dataset.session;
 				if (!sessionId || !this.#arm(`ship:${sessionId}`)) return;
+				store.selectTrack(surface.id, sessionId);
 				await store.shipTrack(sessionId, false);
 				this.update(surface);
 				return;
@@ -2976,6 +2996,7 @@ export class AppWorkbenchView {
 			case "ship-publish-track": {
 				const sessionId = target.dataset.session;
 				if (!sessionId || !this.#arm(`ship-publish:${sessionId}`)) return;
+				store.selectTrack(surface.id, sessionId);
 				await store.shipTrack(sessionId, true);
 				this.update(surface);
 				return;
@@ -2986,7 +3007,7 @@ export class AppWorkbenchView {
 				const session = store.session(sessionId);
 				const message = session
 					? t("This will discard “{title}” and remove its unmerged changes.", {
-							title: cleanTrackTitle(session.title),
+							title: formatTrackTitle(session),
 						})
 					: t("This will discard the track and remove its unmerged changes.");
 				const confirmed = await confirmDialog(message, t("Discard"), true);

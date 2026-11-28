@@ -835,4 +835,8 @@ export const SURFACES: Record<string, string> = {
 	"Back to workbench": "Tilbage til arbejdsbordet",
 	"{count} combined tracks": "{count} kombinerede spor",
 	"v{revision}": "v{revision}",
+	"Auto-publish on ship": "Udgiv automatisk ved levering",
+	"Available company databases": "Tilgængelige virksomhedsdatabaser",
+	"No company databases exist yet. Ask your Co-Founder to create one before linking it here.":
+		"Der findes ingen virksomhedsdatabaser endnu. Bed din medstifter om at oprette en, før du forbinder den her.",
 };
