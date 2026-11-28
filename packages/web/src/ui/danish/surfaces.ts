@@ -798,7 +798,6 @@ export const SURFACES: Record<string, string> = {
 	"1 affected file": "1 berørt fil",
 	"{count} affected files": "{count} berørte filer",
 	"Overlaps with another change across {count} files.": "Overlapper med en anden ændring i {count} filer.",
-	"Working… press Stop to pause": "Arbejder… tryk Stop for at sætte på pause",
 	"This track was discarded. Start a new track to continue.":
 		"Dette spor blev kasseret. Start et nyt spor for at fortsætte.",
 	"Reply or refine this track…": "Svar eller tilpas dette spor…",

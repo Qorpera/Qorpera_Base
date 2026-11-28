@@ -288,11 +288,16 @@ describe("AppWorkbenchView", () => {
 		expect(view.el.textContent).toContain("Updating session middleware");
 		expect(view.el.textContent).toContain("Add cookie check");
 		expect(view.el.textContent).toContain("Checks passed");
+		const threadScroll = view.el.querySelector(".workbench-thread-scroll")!;
+		expect(threadScroll.children[0]?.className).toBe("workbench-messages");
+		expect(threadScroll.children[1]?.className).toBe("workbench-progress-slot");
 		expect(view.el.querySelector<HTMLAnchorElement>(".workbench-pr-link")?.href).toBe(
 			"https://github.com/qorpera/qorpera-base/pull/42",
 		);
 		expect(view.el.querySelectorAll('[data-act="stop-turn"]').length).toBe(1);
-		expect(view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")?.rows).toBe(1);
+		const runningInput = view.el.querySelector<HTMLTextAreaElement>(".workbench-composer-input")!;
+		expect(runningInput.rows).toBe(1);
+		expect(runningInput.placeholder).toBe("Working…");
 
 		view.el.querySelector<HTMLButtonElement>('[data-act="stop-turn"]')!.click();
 		await flush();

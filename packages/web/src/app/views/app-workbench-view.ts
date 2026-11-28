@@ -367,7 +367,7 @@ export class AppWorkbenchView {
 		this.#panel.append(this.#panelResizer, this.#panelContent);
 
 		this.#tracksRail.append(this.#tracksTop, this.#combineBar, this.#trackList);
-		this.#threadScroll.append(this.#progressSlot, this.#messagesSlot);
+		this.#threadScroll.append(this.#messagesSlot, this.#progressSlot);
 		this.#thread.append(this.#trackHead, this.#threadScroll, this.#composerForm);
 		this.#body.append(this.#tracksRail, this.#thread, this.#panel);
 		this.#bar.append(this.#barLeft, this.#barRight);
@@ -1428,8 +1428,11 @@ export class AppWorkbenchView {
 			);
 		}
 
+		const wasNearBottom =
+			this.#threadScroll.scrollHeight - this.#threadScroll.scrollTop - this.#threadScroll.clientHeight < 96;
 		const steps = selected.progressSteps ?? [];
 		const showProgress = Boolean(running || selected.currentActivity || steps.length > 0 || selected.checksSummary);
+		let progressChanged = false;
 		this.#progressSlot.hidden = !showProgress;
 		if (showProgress) {
 			const progressKey = JSON.stringify([
@@ -1441,10 +1444,12 @@ export class AppWorkbenchView {
 			]);
 			if (progressKey !== this.#progressKey) {
 				this.#progressKey = progressKey;
+				progressChanged = true;
 				replace(this.#progressSlot, this.#renderProgressCard(selected, running, steps));
 			}
 		} else if (this.#progressKey !== "") {
 			this.#progressKey = "";
+			progressChanged = true;
 			this.#progressSlot.replaceChildren();
 		}
 
@@ -1464,9 +1469,12 @@ export class AppWorkbenchView {
 			this.#armedKey,
 			Boolean(store.state.busy[`reply:${selected.id}`]),
 		]);
-		if (threadKey === this.#threadKey) return;
-		const wasNearBottom =
-			this.#threadScroll.scrollHeight - this.#threadScroll.scrollTop - this.#threadScroll.clientHeight < 96;
+		if (threadKey === this.#threadKey) {
+			if (progressChanged && wasNearBottom) {
+				this.#threadScroll.scrollTop = this.#threadScroll.scrollHeight;
+			}
+			return;
+		}
 		const switchingTrack = this.#lastRenderedSessionId !== selected.id;
 		const newMessage = selected.messages.length > this.#lastRenderedMessageCount;
 		this.#threadKey = threadKey;
@@ -1493,7 +1501,7 @@ export class AppWorkbenchView {
 			rows.push(this.#renderInlineChanges(selected));
 		}
 		replace(this.#messagesSlot, ...rows);
-		if (switchingTrack || (newMessage && wasNearBottom)) {
+		if (switchingTrack || ((newMessage || progressChanged) && wasNearBottom)) {
 			this.#threadScroll.scrollTop = this.#threadScroll.scrollHeight;
 		}
 	}
@@ -1525,8 +1533,12 @@ export class AppWorkbenchView {
 								"li",
 								{ class: `workbench-step is-${step.status}` },
 								h("span", { class: `workbench-step-dot is-${step.status}`, "aria-hidden": "true" }),
-								h("span", { class: "workbench-step-label" }, step.label),
-								step.detail ? h("span", { class: "workbench-step-detail" }, step.detail) : null,
+								h(
+									"div",
+									{ class: "workbench-step-copy" },
+									h("span", { class: "workbench-step-label" }, step.label),
+									step.detail ? h("span", { class: "workbench-step-detail" }, step.detail) : null,
+								),
 							),
 						),
 					)
@@ -2609,7 +2621,7 @@ export class AppWorkbenchView {
 		this.#composerInput.placeholder = !resolved
 			? t("Describe what you want to plan, design, or change…")
 			: running
-				? t("Working… press Stop to pause")
+				? t("Working…")
 				: discarded
 					? t("This track was discarded. Start a new track to continue.")
 					: t("Reply or refine this track…");
