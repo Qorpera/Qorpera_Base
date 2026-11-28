@@ -1493,7 +1493,18 @@ describe("editing the platform subdomain", () => {
 		const toggleAutoPublish = vi.fn(() => {
 			autoPublishOn = !autoPublishOn;
 		});
-		let dbList: readonly string[] | undefined = ["studio", "crm"];
+		let dbList: readonly string[] | undefined = undefined;
+		let resolveDbRefresh: (() => void) | undefined;
+		const refreshDatabases = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					resolveDbRefresh = () => {
+						dbList = ["studio", "crm"];
+						resolve();
+					};
+				}),
+		);
+		let chipHidden = false;
 		const domainMount = mount({ entry: { isPublic: true, domains: [] } }, true, {
 			codeSource: () => ({
 				repositoryKey: "surfaces/web-app",
@@ -1508,6 +1519,7 @@ describe("editing the platform subdomain", () => {
 				grantSecret,
 				revokeGrant,
 				availableDatabases: () => dbList,
+				refreshDatabases,
 			}),
 			autoPublish: () => ({
 				enabled: autoPublishOn,
@@ -1533,7 +1545,9 @@ describe("editing the platform subdomain", () => {
 			}) as DOMRect;
 		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
 			if (this === container) return rect(0, 0, 1000, 800);
-			if (this.classList.contains("workbench-repo-chip")) return rect(360, 10, 140, 28);
+			if (this.classList.contains("workbench-repo-chip")) {
+				return chipHidden ? rect(0, 0, 0, 0) : rect(360, 10, 140, 28);
+			}
 			if (this.classList.contains("surface-pill-address")) return rect(120, 10, 160, 30);
 			return rect(0, 0, 0, 0);
 		});
@@ -1546,6 +1560,14 @@ describe("editing the platform subdomain", () => {
 		await settle();
 		expect(title()).toBe("Code source");
 		expect(sheet().style.left).toBe("354px");
+
+		chipHidden = true;
+		domainMount.address.openSource(false, chipBtn);
+		domainMount.address.openSource(false, chipBtn);
+		await settle();
+		expect(sheet().classList.contains("is-placed")).toBe(true);
+		expect(sheet().style.left).toBe("114px");
+		chipHidden = false;
 
 		domainMount.address.close();
 		domainMount.address.open();
@@ -1564,6 +1586,10 @@ describe("editing the platform subdomain", () => {
 		autoPublishBusy = false;
 
 		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-config"]')!.click();
+		await settle();
+		expect(refreshDatabases).toHaveBeenCalledTimes(1);
+		expect(sheet().querySelector('[data-db-pick="studio"]')).toBeNull();
+		resolveDbRefresh!();
 		await settle();
 		const studioPick = sheet().querySelector<HTMLButtonElement>('[data-db-pick="studio"]')!;
 		expect(studioPick.textContent).toBe("studio");

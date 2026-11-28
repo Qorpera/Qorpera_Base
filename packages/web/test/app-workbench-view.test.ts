@@ -1134,12 +1134,7 @@ describe("AppWorkbenchView", () => {
 	});
 
 	it("formats chopped track titles, pins shipped track in History, and wires Auto-publish", async () => {
-		const webApp = surface({
-			id: SURFACE,
-			slug: "web-app",
-			title: "Web App",
-			archetype: "live_build",
-			kind: "web_app",
+		const webApp = appSummary({
 			autoPublish: true,
 			liveUrl: "https://dekura.qorpera.site/",
 			repositoryKey: "surfaces/web-app",

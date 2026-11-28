@@ -65,6 +65,7 @@ export interface SurfaceRuntimeConfigBinding {
 		signal?: AbortSignal,
 	) => Promise<void>;
 	readonly availableDatabases?: () => readonly string[] | undefined;
+	readonly refreshDatabases?: () => Promise<void> | void;
 }
 
 export interface SurfaceAutoPublishBinding {
@@ -1409,12 +1410,26 @@ export class SurfaceAddress {
 	}
 
 	#place(): void {
-		const anchor =
-			(this.#anchorSelector ? this.#setup.container.querySelector<HTMLElement>(this.#anchorSelector) : null) ??
-			(this.#anchorEl?.isConnected ? this.#anchorEl : this.#addressButton());
 		const box = this.#setup.container.getBoundingClientRect();
-		const from = anchor?.getBoundingClientRect();
-		if (!from || box.width <= 0 || from.width <= 0) {
+		if (box.width <= 0) {
+			this.#sheet.classList.remove("is-placed");
+			return;
+		}
+		const candidates = [
+			this.#anchorSelector ? this.#setup.container.querySelector<HTMLElement>(this.#anchorSelector) : null,
+			this.#anchorEl?.isConnected ? this.#anchorEl : null,
+			this.#addressButton(),
+		];
+		let from: DOMRect | undefined;
+		for (const candidate of candidates) {
+			if (!candidate || !candidate.isConnected) continue;
+			const rect = candidate.getBoundingClientRect();
+			if (rect.width > 0) {
+				from = rect;
+				break;
+			}
+		}
+		if (!from) {
 			this.#sheet.classList.remove("is-placed");
 			return;
 		}
@@ -1483,9 +1498,7 @@ export class SurfaceAddress {
 		const sourceRow = source ? this.#sourceRow(source) : null;
 		const runtime = this.#setup.runtimeConfig?.();
 		const runtimeRow = runtime ? this.#runtimeRow(runtime) : null;
-		const configRows = [autoPublishRow, sourceRow, runtimeRow].filter(
-			(item): item is HTMLElement => item !== null,
-		);
+		const configRows = [autoPublishRow, sourceRow, runtimeRow].filter((item): item is HTMLElement => item !== null);
 		const head = h("div", { class: "surface-address-head" }, nameRow, under, this.#problemLine());
 		if (!known) return [head, configRows.length > 0 ? this.#group(...configRows) : null];
 		const domains = known.domains.map((domain) => this.#domainRow(domain, manage));
@@ -1829,6 +1842,16 @@ export class SurfaceAddress {
 		this.#runtimeLoading = true;
 		this.#problem = undefined;
 		this.#paint();
+		const dbRefresh = binding.refreshDatabases?.();
+		if (dbRefresh) {
+			void Promise.resolve(dbRefresh).then(
+				() => {
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					if (this.#open && this.#paintKey() !== this.#painted) this.#paint();
+				},
+				() => undefined,
+			);
+		}
 		try {
 			const loaded = await binding.load(this.#setup.signal);
 			if (this.#setup.signal.aborted || target !== this.#target) return;

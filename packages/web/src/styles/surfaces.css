@@ -3164,6 +3164,9 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 .workbench-tab-btn.is-active { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 8%); }
 .workbench-tab-btn .icon { flex: none; width: 13.5px; height: 13.5px; }
 @container (max-width: 82em) {
+	.workbench-bar-left:has(.workbench-publish-btn.is-publishing) .workbench-repo-chip { display: none; }
+}
+@container (max-width: 66em) {
 	.workbench-bar-left:has(.workbench-publish-btn) .workbench-repo-chip { display: none; }
 }
 @container (max-width: 57.5em) {

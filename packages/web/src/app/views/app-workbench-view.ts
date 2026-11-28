@@ -423,6 +423,7 @@ export class AppWorkbenchView {
 					revokeGrant: (grantId) => host.store.revokeSurfaceAppSecretGrant(grantId),
 					...(host.createCompanySecret ? { createSecret: host.createCompanySecret } : {}),
 					...(host.availableDatabases ? { availableDatabases: host.availableDatabases } : {}),
+					...(host.refreshDatabases ? { refreshDatabases: host.refreshDatabases } : {}),
 				};
 			},
 			autoPublish: () => {
@@ -968,7 +969,7 @@ export class AppWorkbenchView {
 						"button",
 						{
 							type: "button",
-							class: "btn btn-small btn-primary workbench-publish-btn",
+							class: `btn btn-small btn-primary workbench-publish-btn${publishing ? " is-publishing" : ""}`,
 							disabled: publishing,
 							"data-act": "open-publish",
 						},

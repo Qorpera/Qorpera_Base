@@ -80,6 +80,7 @@ export interface SurfaceViewHost {
 		signal?: AbortSignal,
 	) => Promise<void>;
 	readonly availableDatabases?: () => readonly string[] | undefined;
+	readonly refreshDatabases?: () => Promise<void> | void;
 	readonly canWrite?: () => boolean;
 	readonly live?: SurfaceLiveHosts;
 }

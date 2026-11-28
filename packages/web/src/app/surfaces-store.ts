@@ -4821,7 +4821,9 @@ export class SurfacesStore {
 			this.#commitLocalChangesToBase(found.workspace.surface.id, openIds);
 			if (this.drawerOpenOn(sessionId)) this.store.set({ drawer: undefined });
 			this.#applySession(updated, "history");
-			if (openIds.length > 0) this.#offerUndo(updated.title, openIds, this.#undoVerb(found.workspace.surface));
+			if (openIds.length > 0) {
+				this.#offerUndo(formatTrackTitle(updated), openIds, this.#undoVerb(found.workspace.surface));
+			}
 			return true;
 		}
 		const updated = await this.#run(`session:${sessionId}`, (client) => client.approveSessionAll(sessionId));
@@ -4845,8 +4847,9 @@ export class SurfacesStore {
 		}
 		this.#applySession(updated, approvalOutcome(updated, false));
 		const verb = this.#undoVerbFor(updated.surfaceId);
-		if (merged.length > 0) this.#offerUndo(updated.title, merged, verb);
-		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, merging, verb);
+		const label = formatTrackTitle(updated);
+		if (merged.length > 0) this.#offerUndo(label, merged, verb);
+		else if (merging.length > 0) this.#offerPendingMerge(updated.surfaceId, label, merging, verb);
 		else if (updated.changes.some(isOpenChange)) void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return true;

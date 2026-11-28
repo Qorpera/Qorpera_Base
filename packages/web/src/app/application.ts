@@ -354,6 +354,13 @@ function cardAppOf(apps: readonly CompanyApp[] | undefined, name: string): Inter
 		: undefined;
 }
 
+export function linkedCompanyDatabaseNames(
+	data: { readonly databases: readonly { readonly database: string }[] } | null | undefined,
+): readonly string[] | undefined {
+	if (!data) return undefined;
+	return data.databases.map((db) => db.database).filter((name) => isSurfaceLinkedDatabaseName(name));
+}
+
 export function mountApplication(
 	root: HTMLElement,
 	cloud: Cloud,
@@ -2807,7 +2814,10 @@ export function mountApplication(
 							return client;
 						},
 						(described) => {
-							if (companyDatabases === databases) controller.store.set({ companyData: described });
+							if (companyDatabases === databases) {
+								controller.store.set({ companyData: described });
+								if (surfaceView?.company === controller) surfaceView.view.update();
+							}
 						},
 						controller.signal,
 					)
@@ -3951,13 +3961,8 @@ export function mountApplication(
 									{ ownerKind: "company", name: input.name, value: input.value, purpose: input.purpose },
 									signal,
 								),
-							availableDatabases: () => {
-								const data = controller.store.get().companyData;
-								if (!data) return undefined;
-								return data.databases
-									.map((db) => db.database)
-									.filter((name) => isSurfaceLinkedDatabaseName(name));
-							},
+							availableDatabases: () => linkedCompanyDatabaseNames(controller.store.get().companyData),
+							refreshDatabases: () => companyDatabases?.refresh(),
 							canWrite: () => controller.store.get().team?.capabilities.write === true,
 							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {

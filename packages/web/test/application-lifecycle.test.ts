@@ -4,7 +4,7 @@ import { cloudFileBytesSha256 } from "@qorpera/cloud-client/cloud-file-bytes";
 import { writeRoutineFile } from "@qorpera/cloud-client/company-state-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mountApplication } from "../src/app/application.ts";
+import { linkedCompanyDatabaseNames, mountApplication } from "../src/app/application.ts";
 import { AuthController } from "../src/app/auth.ts";
 import { CompanyController } from "../src/app/company.ts";
 import { takeWantedDataList } from "../src/app/data-page.ts";
@@ -3224,5 +3224,21 @@ describe("cold-boot waterfall optimizations", () => {
 		expect(enabledAttempt).toBeGreaterThanOrEqual(2);
 		expect(f.root.querySelector("main .surface-page")).not.toBeNull();
 		expect(f.root.querySelector('.rail-surface[data-surface-slug="website"]')).not.toBeNull();
+	});
+
+	it("filters company database names for app linking", () => {
+		expect(linkedCompanyDatabaseNames(undefined)).toBeUndefined();
+		expect(linkedCompanyDatabaseNames(null)).toBeUndefined();
+		expect(
+			linkedCompanyDatabaseNames({
+				databases: [
+					{ database: "studio" },
+					{ database: "qorpera" },
+					{ database: "pg_catalog" },
+					{ database: "qorpera_internal" },
+					{ database: "orders_v2" },
+				],
+			}),
+		).toEqual(["studio", "orders_v2"]);
 	});
 });
