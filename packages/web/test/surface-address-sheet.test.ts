@@ -1493,7 +1493,7 @@ describe("editing the platform subdomain", () => {
 		const toggleAutoPublish = vi.fn(() => {
 			autoPublishOn = !autoPublishOn;
 		});
-		let dbList: readonly string[] | undefined = undefined;
+		let dbList: readonly string[] | undefined;
 		let resolveDbRefresh: (() => void) | undefined;
 		const refreshDatabases = vi.fn(
 			() =>
