@@ -1872,7 +1872,8 @@ export class SurfaceAddress {
 		const binding = this.#setup.runtimeConfig?.();
 		const createSecret = binding?.createSecret;
 		const current = this.#runtimeConfig;
-		if (this.#creatingSecret || !binding || !createSecret || !current || !current.canManage || !current.siteId) return;
+		if (this.#creatingSecret || !binding || !createSecret || !current || !current.canManage || !current.siteId)
+			return;
 		const name = this.#runtimeNewSecretName.value.trim().toUpperCase();
 		const value = this.#runtimeNewSecretValue.value;
 		if (!CODING_VARIABLE_NAME.test(name)) {
