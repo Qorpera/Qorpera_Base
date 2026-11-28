@@ -567,6 +567,24 @@ export function isRunningSession(session: Pick<SurfaceSession, "state">): boolea
 	return RUNNING_SURFACE_SESSION_STATES.has(session.state);
 }
 
+export function formatTrackTitle(session: Pick<SurfaceSession, "title" | "prompt" | "changes">): string {
+	const raw = session.title.trim();
+	const prompt = session.prompt.trim();
+	const fromPrompt = Boolean(raw && prompt && prompt.startsWith(raw));
+	if (fromPrompt && raw.length >= 50) {
+		const changeTitles = [...new Set(session.changes.map((change) => change.title.trim()).filter(Boolean))];
+		if (changeTitles.length === 1) return changeTitles[0]!;
+	}
+	if (fromPrompt && prompt.length > raw.length && raw.length >= 70) {
+		const nextChar = prompt[raw.length] ?? "";
+		if (nextChar && !/\s/.test(nextChar)) {
+			const cut = raw.lastIndexOf(" ");
+			if (cut >= Math.floor(raw.length / 2)) return `${raw.slice(0, cut).trimEnd()}…`;
+		}
+	}
+	return raw;
+}
+
 export function isOpenChange(change: Pick<SurfaceChangeUnit, "status">): boolean {
 	return OPEN_SURFACE_CHANGE_STATUSES.has(change.status);
 }
@@ -6252,8 +6270,9 @@ export class SurfacesStore {
 		const outcome: ApprovalOutcome =
 			updated.state === "completed" || updated.state === "discarded" ? "history" : "open";
 		this.#applySession(updated, outcome);
-		if (newlyMerging.length > 0) this.#offerPendingMerge(updated.surfaceId, updated.title, newlyMerging, verb);
-		else if (newlyMerged.length > 0) this.#offerUndo(updated.title, newlyMerged, verb);
+		const label = formatTrackTitle(updated);
+		if (newlyMerging.length > 0) this.#offerPendingMerge(updated.surfaceId, label, newlyMerging, verb);
+		else if (newlyMerged.length > 0) this.#offerUndo(label, newlyMerged, verb);
 		void this.refreshWorkspace(updated.surfaceId);
 		void this.refreshSurfaces();
 		return updated;

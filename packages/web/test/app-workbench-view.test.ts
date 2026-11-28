@@ -1132,4 +1132,116 @@ describe("AppWorkbenchView", () => {
 		view.dispose();
 		store.dispose();
 	});
+
+	it("formats chopped track titles, pins shipped track in History, and wires Auto-publish", async () => {
+		const webApp = surface({
+			id: SURFACE,
+			slug: "web-app",
+			title: "Web App",
+			archetype: "live_build",
+			kind: "web_app",
+			autoPublish: true,
+			liveUrl: "https://dekura.qorpera.site/",
+			repositoryKey: "surfaces/web-app",
+		});
+		const choppedPrompt =
+			"Before writing any code, please ask me one quick clarifying question with 3 clickable options";
+		const choppedTitle = choppedPrompt.slice(0, 80);
+		const readyTrack = session([], {
+			id: SESSION,
+			surfaceId: webApp.id,
+			title: choppedTitle,
+			prompt: choppedPrompt,
+			state: "ready",
+			changes: [
+				change(CHANGES[0], 1, "staged", {
+					sessionId: SESSION,
+					surfaceId: webApp.id,
+					title: "Shopping List CSV export",
+				}),
+			],
+			openChangeCount: 1,
+		});
+		const noChangeChopped = session([], {
+			id: SESSION_2,
+			surfaceId: webApp.id,
+			title: choppedTitle,
+			prompt: choppedPrompt,
+			state: "needs_input",
+			changes: [],
+			openChangeCount: 0,
+		});
+		const shippedTrack = {
+			...readyTrack,
+			state: "completed" as const,
+			changes: readyTrack.changes.map((c) => ({ ...c, status: "merged" as const, canUndo: true })),
+			openChangeCount: 0,
+		};
+		let shipped = false;
+		const setSurfaceAutoPublish = vi.fn(async (_id: string, enabled: boolean) => ({
+			...webApp,
+			autoPublish: enabled,
+		}));
+		const client = fakeClient({
+			listSurfaces: vi.fn(async () => [webApp]),
+			getSurfaceWorkspace: vi.fn(async () =>
+				shipped
+					? workspace([noChangeChopped], { surface: webApp, recentHistory: [shippedTrack] })
+					: workspace([readyTrack, noChangeChopped], { surface: webApp }),
+			),
+			shipSurfaceTrack: vi.fn(async () => {
+				shipped = true;
+				return shippedTrack;
+			}),
+			setSurfaceAutoPublish,
+		});
+		const store = storeWith(client);
+		await store.load();
+		const view = new SurfaceView(
+			{
+				store,
+				mount: () => undefined,
+				openMigration: () => undefined,
+				managesSites: () => true,
+			},
+			"web-app",
+		);
+		document.body.append(view.el);
+		for (let i = 0; i < 3; i++) {
+			await flush();
+			view.update();
+		}
+
+		expect(view.el.querySelector(".workbench-track-head-title")?.textContent).toBe("Shopping List CSV export");
+		const railTitles = [...view.el.querySelectorAll(".workbench-track-title")].map((el) => el.textContent);
+		expect(railTitles[0]).toBe("Shopping List CSV export");
+		expect(railTitles[1]).toBe("Before writing any code, please ask me one quick clarifying question with 3…");
+
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		await flush();
+		view.update();
+		const autoSwitch = view.el.querySelector<HTMLButtonElement>('[data-key="auto-publish"]')!;
+		expect(autoSwitch.getAttribute("aria-checked")).toBe("true");
+		autoSwitch.click();
+		await flush();
+		expect(setSurfaceAutoPublish).toHaveBeenCalledWith(SURFACE, false);
+		view.el.querySelector<HTMLButtonElement>(".surface-pill-address")!.click();
+		view.update();
+
+		const shipPublish = () => view.el.querySelector<HTMLButtonElement>('[data-act="ship-publish-track"]')!;
+		shipPublish().click();
+		view.update();
+		shipPublish().click();
+		await flush();
+		view.update();
+
+		const toastText = view.el.querySelector(".surface-toast")?.textContent ?? "";
+		expect(toastText).toContain("Shipped “Shopping List CSV export”");
+		expect(store.selectedTrackOf(SURFACE)).toBe(SESSION);
+		expect(view.el.querySelector<HTMLDetailsElement>(".workbench-history")?.open).toBe(true);
+		expect(view.el.querySelector(".workbench-track-head-title")?.textContent).toBe("Shopping List CSV export");
+
+		view.dispose();
+		store.dispose();
+	});
 });

@@ -4,7 +4,12 @@ import {
 	surfaceFolderRoots,
 } from "@qorpera/cloud-client/surface-folder-files";
 import { CloudSurfacesClient } from "@qorpera/cloud-client/surfaces";
-import { inferSurfaceKind, type StudioBinaryRef, type SurfaceSummary } from "@qorpera/contracts";
+import {
+	inferSurfaceKind,
+	isSurfaceLinkedDatabaseName,
+	type StudioBinaryRef,
+	type SurfaceSummary,
+} from "@qorpera/contracts";
 import type { User } from "@supabase/supabase-js";
 import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
@@ -3946,6 +3951,13 @@ export function mountApplication(
 									{ ownerKind: "company", name: input.name, value: input.value, purpose: input.purpose },
 									signal,
 								),
+							availableDatabases: () => {
+								const data = controller.store.get().companyData;
+								if (!data) return undefined;
+								return data.databases
+									.map((db) => db.database)
+									.filter((name) => isSurfaceLinkedDatabaseName(name));
+							},
 							canWrite: () => controller.store.get().team?.capabilities.write === true,
 							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {

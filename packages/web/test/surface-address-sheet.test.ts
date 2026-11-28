@@ -29,7 +29,7 @@ function mount(
 	manage = true,
 	hooks: Pick<
 		SurfaceAddressSetup,
-		"beforePublic" | "publicChanged" | "slugChanged" | "codeSource" | "runtimeConfig"
+		"beforePublic" | "publicChanged" | "slugChanged" | "codeSource" | "runtimeConfig" | "autoPublish"
 	> = {},
 	liveUrl = LIVE_URL,
 ) {
@@ -1488,6 +1488,12 @@ describe("editing the platform subdomain", () => {
 		expect(selectOptions.some((text) => text?.includes("POSTMARK_TOKEN"))).toBe(true);
 
 		document.body.replaceChildren();
+		let autoPublishOn = true;
+		let autoPublishBusy = false;
+		const toggleAutoPublish = vi.fn(() => {
+			autoPublishOn = !autoPublishOn;
+		});
+		let dbList: readonly string[] | undefined = ["studio", "crm"];
 		const domainMount = mount({ entry: { isPublic: true, domains: [] } }, true, {
 			codeSource: () => ({
 				repositoryKey: "surfaces/web-app",
@@ -1496,10 +1502,22 @@ describe("editing the platform subdomain", () => {
 				listRepositories: vi.fn(async () => []),
 				save: vi.fn(async () => true),
 			}),
+			runtimeConfig: () => ({
+				load,
+				saveConfig,
+				grantSecret,
+				revokeGrant,
+				availableDatabases: () => dbList,
+			}),
+			autoPublish: () => ({
+				enabled: autoPublishOn,
+				busy: autoPublishBusy,
+				toggle: toggleAutoPublish,
+			}),
 		});
 		await settle();
 		const container = document.querySelector<HTMLElement>(".surface-canvas")!;
-		const chipBtn = h("button", { type: "button", class: "workbench-repo-chip" }, "surfaces/web-app");
+		let chipBtn = h("button", { type: "button", class: "workbench-repo-chip" }, "surfaces/web-app");
 		container.append(chipBtn);
 		const rect = (left: number, top: number, width: number, height: number): DOMRect =>
 			({
@@ -1515,13 +1533,16 @@ describe("editing the platform subdomain", () => {
 			}) as DOMRect;
 		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
 			if (this === container) return rect(0, 0, 1000, 800);
-			if (this === chipBtn) return rect(360, 10, 140, 28);
+			if (this.classList.contains("workbench-repo-chip")) return rect(360, 10, 140, 28);
 			if (this.classList.contains("surface-pill-address")) return rect(120, 10, 160, 30);
 			return rect(0, 0, 0, 0);
 		});
 		Object.defineProperty(sheet(), "offsetWidth", { configurable: true, value: 316 });
 
-		domainMount.address.openSource(false, chipBtn);
+		const staleChip = chipBtn;
+		chipBtn = h("button", { type: "button", class: "workbench-repo-chip" }, "surfaces/web-app");
+		staleChip.replaceWith(chipBtn);
+		domainMount.address.openSource(false, staleChip);
 		await settle();
 		expect(title()).toBe("Code source");
 		expect(sheet().style.left).toBe("354px");
@@ -1530,6 +1551,31 @@ describe("editing the platform subdomain", () => {
 		domainMount.address.open();
 		await settle();
 		expect(sheet().style.left).toBe("114px");
+		const autoSwitch = sheet().querySelector<HTMLButtonElement>('[data-key="auto-publish"]')!;
+		expect(autoSwitch.getAttribute("role")).toBe("switch");
+		expect(autoSwitch.getAttribute("aria-checked")).toBe("true");
+		autoSwitch.click();
+		expect(toggleAutoPublish).toHaveBeenCalledTimes(1);
+		domainMount.address.sync(true, domainMount.target, LIVE_URL);
+		expect(sheet().querySelector('[data-key="auto-publish"]')?.getAttribute("aria-checked")).toBe("false");
+		autoPublishBusy = true;
+		domainMount.address.sync(true, domainMount.target, LIVE_URL);
+		expect(sheet().querySelector<HTMLButtonElement>('[data-key="auto-publish"]')?.disabled).toBe(true);
+		autoPublishBusy = false;
+
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-config"]')!.click();
+		await settle();
+		const studioPick = sheet().querySelector<HTMLButtonElement>('[data-db-pick="studio"]')!;
+		expect(studioPick.textContent).toBe("studio");
+		studioPick.click();
+		expect(sheet().querySelector<HTMLInputElement>('[data-key="runtime-db"]')?.value).toBe("studio");
+		expect(studioPick.classList.contains("is-selected")).toBe(true);
+		dbList = [];
+		sheet().querySelector<HTMLInputElement>('[data-key="runtime-db"]')!.value = "";
+		domainMount.address.sync(true, domainMount.target, LIVE_URL);
+		expect(sheet().textContent).toContain("No company databases exist yet.");
+		back();
+
 		domainMount.address.openSource(false, chipBtn);
 		await settle();
 		expect(sheet().style.left).toBe("354px");

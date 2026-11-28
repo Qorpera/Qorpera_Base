@@ -79,6 +79,7 @@ export interface SurfaceViewHost {
 		input: { readonly name: string; readonly value: string; readonly purpose: string },
 		signal?: AbortSignal,
 	) => Promise<void>;
+	readonly availableDatabases?: () => readonly string[] | undefined;
 	readonly canWrite?: () => boolean;
 	readonly live?: SurfaceLiveHosts;
 }
