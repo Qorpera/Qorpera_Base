@@ -41,6 +41,7 @@ const TRACKS_WIDTH = 236;
 const THREAD_MIN_WIDTH = 340;
 const PANEL_DEFAULT_WIDTH = 440;
 const PANEL_MIN_WIDTH = 320;
+const STACKED_MAX_WIDTH = THREAD_MIN_WIDTH + PANEL_MIN_WIDTH + 4;
 const PANEL_MAX_WIDTH = 920;
 const PANEL_MAX_SHARE = 0.62;
 const MARKDOWN_CACHE_MAX = 96;
@@ -761,7 +762,8 @@ export class AppWorkbenchView {
 			if (direction === "column" || direction === "column-reverse") return true;
 			if (direction === "row" || direction === "row-reverse") return false;
 		}
-		return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 640px)").matches;
+		const width = this.#bodyWidth();
+		return width > 0 && width <= STACKED_MAX_WIDTH;
 	}
 
 	#isTightRowLayout(): boolean {
@@ -2982,7 +2984,9 @@ export class AppWorkbenchView {
 				if (!sessionId) return;
 				const session = store.session(sessionId);
 				const message = session
-					? t("This will discard “{title}” and remove its unmerged changes.", { title: cleanTrackTitle(session.title) })
+					? t("This will discard “{title}” and remove its unmerged changes.", {
+							title: cleanTrackTitle(session.title),
+						})
 					: t("This will discard the track and remove its unmerged changes.");
 				const confirmed = await confirmDialog(message, t("Discard"), true);
 				if (!confirmed) return;

@@ -1048,7 +1048,7 @@ describe("AppWorkbenchView", () => {
 			surfaceId: webApp.id,
 			title: "Polish checkout ",
 		});
-		const historyTrack = session([], {
+		let historyTrack = session([], {
 			id: SESSION_2,
 			surfaceId: webApp.id,
 			title: "Guided Vibe Flow",
@@ -1087,6 +1087,22 @@ describe("AppWorkbenchView", () => {
 		expect(view.el.querySelector(".workbench-track-head-title")?.textContent).toBe("Polish checkout");
 		expect(view.el.querySelector('[data-act="ship-track"]')).toBeNull();
 		expect(view.el.querySelector('[data-act="ship-publish-track"]')).not.toBeNull();
+
+		const initialHistory = view.el.querySelector<HTMLDetailsElement>(".workbench-history")!;
+		expect(initialHistory.open).toBe(false);
+		initialHistory.open = true;
+		initialHistory.dispatchEvent(new Event("toggle"));
+		historyTrack = { ...historyTrack, updatedAt: "2026-11-27T11:00:00Z" };
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		const reopenedHistory = view.el.querySelector<HTMLDetailsElement>(".workbench-history")!;
+		expect(reopenedHistory.open).toBe(true);
+		reopenedHistory.open = false;
+		reopenedHistory.dispatchEvent(new Event("toggle"));
+		historyTrack = { ...historyTrack, updatedAt: "2026-11-27T11:05:00Z" };
+		await store.refreshWorkspace(SURFACE);
+		view.update();
+		expect(view.el.querySelector<HTMLDetailsElement>(".workbench-history")?.open).toBe(false);
 
 		const searchInput = view.el.querySelector<HTMLInputElement>(".workbench-search")!;
 		searchInput.value = "Vibe";

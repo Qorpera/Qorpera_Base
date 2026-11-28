@@ -3262,7 +3262,7 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 	flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg);
 }
 .workbench-thread[hidden] { display: none; }
-@media (min-width: 641px) {
+@media (min-width: 665px) {
 	.workbench-thread { min-width: 340px; }
 }
 .workbench-track-head {
@@ -3526,7 +3526,7 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 	.workbench-tracks { width: 220px; }
 	.workbench-repo-chip { display: none; }
 }
-@media (max-width: 640px) {
+@media (max-width: 664px) {
 	.workbench-body { flex-direction: column; }
 	.workbench-tracks { flex: 1 1 0; width: 100%; max-height: none; border-right: 0; border-bottom: 0; }
 	.workbench-panel { flex: 1 1 0; width: 100% !important; min-width: 0; height: auto; border-left: 0; border-top: 0; }
