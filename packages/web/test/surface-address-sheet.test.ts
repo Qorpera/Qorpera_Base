@@ -1334,8 +1334,25 @@ describe("editing the platform subdomain", () => {
 			};
 		});
 
+		const createSecret = vi.fn(
+			async (input: { readonly name: string; readonly value: string; readonly purpose: string }) => {
+				runtimeState = {
+					...runtimeState,
+					availableSecrets: [
+						...runtimeState.availableSecrets,
+						{
+							secretId: "66666666-6666-4666-8666-666666666666",
+							name: input.name,
+							purpose: input.purpose,
+							version: 1,
+						},
+					],
+				};
+			},
+		);
+
 		const { address } = mount({ entry: { isPublic: true, domains: [] } }, true, {
-			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant }),
+			runtimeConfig: () => ({ load, saveConfig, grantSecret, revokeGrant, createSecret }),
 		});
 		await settle();
 		address.open();
@@ -1346,6 +1363,7 @@ describe("editing the platform subdomain", () => {
 		runtimeRow.click();
 		await settle();
 		expect(title()).toBe("Environment & secrets");
+		expect(sheet().querySelector(".surface-address-runtime-mode-pill")?.textContent).toBe("Server app");
 		expect(load).toHaveBeenCalledTimes(1);
 
 		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-add-env"]')!.click();
@@ -1406,6 +1424,126 @@ describe("editing the platform subdomain", () => {
 		await settle();
 		expect(revokeGrant).toHaveBeenCalledWith(grantId);
 		expect(sheet().textContent).toContain("No secrets granted to this app yet.");
+
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-toggle-new-secret"]')!.click();
+		const newName = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-name"]')!;
+		const newValue = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-value"]')!;
+		newName.value = "resend_api_key";
+		newValue.value = "short";
+		newName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		expect(problem()).toBe("Enter at least 8 characters for a secret value.");
+		expect(createSecret).not.toHaveBeenCalled();
+
+		newValue.value = "re_live_1234567890";
+		newName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		expect(createSecret).toHaveBeenCalledWith(
+			{ name: "RESEND_API_KEY", value: "re_live_1234567890", purpose: "App secret" },
+			expect.any(AbortSignal),
+		);
+		expect(grantSecret).toHaveBeenLastCalledWith({
+			secretId: "66666666-6666-4666-8666-666666666666",
+			siteId: HOSTED_SITE,
+			scope: "runtime",
+			targetEnv: "dev",
+		});
+		expect(newValue.value).toBe("");
+
+		sheet().querySelector<HTMLButtonElement>('[data-key="runtime-toggle-new-secret"]')!.click();
+		createSecret.mockRejectedValueOnce(refusal("duplicate key", "23505"));
+		const dupName = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-name"]')!;
+		const dupValue = sheet().querySelector<HTMLInputElement>('[data-key="runtime-new-secret-value"]')!;
+		dupName.value = "STRIPE_SECRET_KEY";
+		dupValue.value = "sk_live_duplicate_123";
+		dupName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		expect(problem()).toBe("A secret with that name already exists. Select it from the list to grant it.");
+		expect(sheet().querySelector('[data-key="runtime-new-secret-name"]')).not.toBeNull();
+
+		createSecret.mockImplementationOnce(async (input) => {
+			runtimeState = {
+				...runtimeState,
+				availableSecrets: [
+					...runtimeState.availableSecrets,
+					{
+						secretId: "77777777-7777-4777-8777-777777777777",
+						name: input.name,
+						purpose: input.purpose,
+						version: 1,
+					},
+				],
+			};
+		});
+		grantSecret.mockRejectedValueOnce(new Error("transient grant error"));
+		dupName.value = "POSTMARK_TOKEN";
+		dupValue.value = "pm_live_1234567890";
+		dupName.closest("form")!.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+		await settle();
+		expect(dupValue.value).toBe("");
+		expect(problem()).toBe("Saved, but it could not be granted automatically. Select it from the list to grant it.");
+		expect(sheet().querySelector('[data-key="runtime-new-secret-name"]')).toBeNull();
+		const selectOptions = [
+			...sheet().querySelectorAll<HTMLOptionElement>('[data-key="runtime-secret-select"] option'),
+		].map((opt) => opt.textContent);
+		expect(selectOptions.some((text) => text?.includes("POSTMARK_TOKEN"))).toBe(true);
+
+		document.body.replaceChildren();
+		const domainMount = mount({ entry: { isPublic: true, domains: [] } }, true, {
+			codeSource: () => ({
+				repositoryKey: "surfaces/web-app",
+				repositorySubpath: null,
+				defaultBranch: "main",
+				listRepositories: vi.fn(async () => []),
+				save: vi.fn(async () => true),
+			}),
+		});
+		await settle();
+		const container = document.querySelector<HTMLElement>(".surface-canvas")!;
+		const chipBtn = h("button", { type: "button", class: "workbench-repo-chip" }, "surfaces/web-app");
+		container.append(chipBtn);
+		const rect = (left: number, top: number, width: number, height: number): DOMRect =>
+			({
+				left,
+				top,
+				right: left + width,
+				bottom: top + height,
+				width,
+				height,
+				x: left,
+				y: top,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+			if (this === container) return rect(0, 0, 1000, 800);
+			if (this === chipBtn) return rect(360, 10, 140, 28);
+			if (this.classList.contains("surface-pill-address")) return rect(120, 10, 160, 30);
+			return rect(0, 0, 0, 0);
+		});
+		Object.defineProperty(sheet(), "offsetWidth", { configurable: true, value: 316 });
+
+		domainMount.address.openSource(false, chipBtn);
+		await settle();
+		expect(title()).toBe("Code source");
+		expect(sheet().style.left).toBe("354px");
+
+		domainMount.address.close();
+		domainMount.address.open();
+		await settle();
+		expect(sheet().style.left).toBe("114px");
+		domainMount.address.openSource(false, chipBtn);
+		await settle();
+		expect(sheet().style.left).toBe("354px");
+
+		back();
+		press("Use your own domain");
+		const connectBtn = sheet().querySelector<HTMLButtonElement>('[data-key="connect"]')!;
+		expect(connectBtn.disabled).toBe(true);
+		field()!.value = "example.com";
+		field()!.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(connectBtn.disabled).toBe(false);
+		field()!.value = "   ";
+		field()!.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(connectBtn.disabled).toBe(true);
 
 		document.body.replaceChildren();
 		runtimeState = { ...runtimeState, canManage: false };

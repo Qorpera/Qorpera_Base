@@ -10,6 +10,7 @@ import { withAbortScopes } from "../cloud/abort-scope.ts";
 import { CloudApi } from "../cloud/api.ts";
 import { forgetChatGptPlanSignIn, takeChatGptPlanReturn } from "../cloud/chatgpt-plan-sign-in.ts";
 import { type Cloud, CloudRpcError, describeError, translateCloudErrors } from "../cloud/client.ts";
+import { createWebCodingEnvironment } from "../cloud/coding-environment.ts";
 import { createWebCompanyAgents } from "../cloud/company-agents.ts";
 import { WebCompanyFiles } from "../cloud/company-files.ts";
 import { askCompanyNumbers } from "../cloud/company-numbers.ts";
@@ -3940,6 +3941,11 @@ export function mountApplication(
 								return site ? { siteId: site.id, client: siteHosting } : undefined;
 							},
 							managesSites,
+							createCompanySecret: (input, signal) =>
+								createWebCodingEnvironment(cloud, controller.profile, controller.userId).capture(
+									{ ownerKind: "company", name: input.name, value: input.value, purpose: input.purpose },
+									signal,
+								),
 							canWrite: () => controller.store.get().team?.capabilities.write === true,
 							isSiteLive: (surface) => siteServed(controller.store.get(), surface),
 							isMountLoading: (surface) => {

@@ -713,6 +713,28 @@ export const SURFACES: Record<string, string> = {
 	"Duplicate environment variable name: {name}.": "Duplikeret miljøvariabelnavn: {name}.",
 	"e.g. API_BASE_URL": "f.eks. API_BASE_URL",
 	"Secret to grant": "Hemmelighed at tildele",
+	"Secret name": "Hemmelighedsnavn",
+	"Secret value": "Hemmelighedsværdi",
+	"e.g. STRIPE_SECRET_KEY": "f.eks. STRIPE_SECRET_KEY",
+	"Secret value (at least 8 characters)": "Hemmelighedsværdi (mindst 8 tegn)",
+	"New secret": "Ny hemmelighed",
+	"Save & grant": "Gem og tildel",
+	"Enter an uppercase secret name like STRIPE_SECRET_KEY.":
+		"Skriv et hemmelighedsnavn med store bogstaver som STRIPE_SECRET_KEY.",
+	"Enter at least 8 characters for a secret value.": "Skriv mindst 8 tegn for en hemmelighedsværdi.",
+	"That secret value is too long.": "Hemmelighedsværdien er for lang.",
+	"Secret values cannot include null characters.": "Hemmelighedsværdier må ikke indeholde null-tegn.",
+	"A secret with that name already exists. Select it from the list to grant it.":
+		"Der findes allerede en hemmelighed med det navn. Vælg den fra listen for at tildele den.",
+	"Saved, but it could not be granted automatically. Select it from the list to grant it.":
+		"Gemt, men kunne ikke tildeles automatisk. Vælg den fra listen for at tildele den.",
+	"The secret could not be saved. Try again.": "Hemmeligheden kunne ikke gemmes. Prøv igen.",
+	"Create an encrypted company secret to inject it at build, test, or runtime.":
+		"Opret en krypteret virksomhedshemmelighed for at injicere den ved byg, test eller kørsel.",
+	Hosting: "Hosting",
+	"Static site": "Statisk side",
+	"Server app": "Server-app",
+	"Full-stack app": "Full-stack-app",
 	"Secret scope": "Hemmelighedsområde",
 	"Target environment": "Målmiljø",
 	Runtime: "Kørsel",
@@ -801,7 +823,7 @@ export const SURFACES: Record<string, string> = {
 	"Overlaps with another change across {count} files.": "Overlapper med en anden ændring i {count} filer.",
 	"This track was discarded. Start a new track to continue.":
 		"Dette spor blev kasseret. Start et nyt spor for at fortsætte.",
-	"Answer the question or type a reply…": "Besvar spørgsmålet, eller skriv et svar…",
+	"Answer or reply…": "Svar eller skriv…",
 	"Ask for a follow-up change…": "Bed om en opfølgende ændring…",
 	"Reply or refine this track…": "Svar eller tilpas dette spor…",
 	"Send reply": "Send svar",

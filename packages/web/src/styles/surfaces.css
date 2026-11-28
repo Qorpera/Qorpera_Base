@@ -235,6 +235,7 @@ a.surface-address-row:hover { text-decoration: none; }
 	flex: 1 1 0; min-width: 0; height: 100%; padding: 0; border: 0; outline: none;
 	background: transparent; color: var(--text); font: inherit; font-size: 14.5px;
 }
+.surface-address-slug-input:focus-visible { outline: none; box-shadow: none; }
 .surface-address-slug-suffix {
 	flex: none; padding-left: 2px; color: var(--text-soft); font-size: 14px; font-weight: 500;
 	white-space: nowrap; user-select: none;
@@ -349,6 +350,14 @@ a.surface-address-row:hover { text-decoration: none; }
 .surface-address-copy.is-copied .icon + .icon { display: block; color: var(--ok); }
 .surface-address-runtime-section { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .surface-address-runtime-section:first-child { padding-top: 0; border-top: 0; }
+.surface-address-runtime-mode {
+	display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 2px;
+	font-size: 12.5px; font-weight: 600; color: var(--text-muted);
+}
+.surface-address-runtime-mode-pill {
+	padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 7%, transparent);
+	color: var(--text); font-size: 11.5px; font-weight: 620;
+}
 .surface-address-runtime-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .surface-address-runtime-heading { margin: 0; font-size: 12.5px; font-weight: 650; color: var(--text); }
 .surface-address-runtime-list { display: grid; gap: 6px; }
@@ -3248,6 +3257,9 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 	padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--text) 6%, transparent);
 	color: var(--text-muted); font-size: 11px;
 }
+.workbench-track-meta-chip.is-running {
+	background: color-mix(in srgb, var(--sidebar-selection) 14%, transparent); color: var(--blue);
+}
 .workbench-track-meta-chip.is-ok { background: var(--ok-soft); color: color-mix(in srgb, var(--ok) 65%, var(--text)); }
 .workbench-track-meta-chip.is-danger { background: var(--danger-soft); color: var(--danger); }
 .workbench-history { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 6px; }
@@ -3353,12 +3365,16 @@ button.workbench-repo-chip:hover { background: var(--hover); border-color: var(-
 .workbench-msg-text { margin: 0; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workbench-msg-body { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 .workbench-question-card {
-	padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 12px;
-	background: color-mix(in srgb, var(--warning) 7%, var(--bg)); display: grid; gap: 10px;
+	min-width: 0; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+	border-radius: 12px; background: color-mix(in srgb, var(--warning) 7%, var(--bg)); display: grid; gap: 10px;
 }
 .workbench-question-label { font-size: 12px; font-weight: 660; color: color-mix(in srgb, var(--warning) 80%, var(--text)); }
-.workbench-question-text { margin: 0; font-size: 14px; line-height: 1.5; }
-.workbench-question-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.workbench-question-text { margin: 0; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.workbench-question-options { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.workbench-question-options .btn-small {
+	height: auto; min-height: 30px; max-width: 100%; padding: 6px 10px; white-space: normal; text-align: left;
+	line-height: 1.35; overflow-wrap: anywhere;
+}
 .workbench-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .workbench-section-label {
 	font-size: 11.5px; font-weight: 660; letter-spacing: 0.03em; text-transform: uppercase; color: var(--text-soft);

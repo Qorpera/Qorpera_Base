@@ -16,6 +16,7 @@ import {
 	type SurfaceAppTargetEnv,
 } from "@qorpera/contracts";
 import { CloudRpcError } from "../../cloud/client.ts";
+import { CODING_VARIABLE_NAME, codingValueProblem } from "../../cloud/coding-environment.ts";
 import {
 	type CompanySiteHostingState,
 	cleanSiteSlugInput,
@@ -59,6 +60,10 @@ export interface SurfaceRuntimeConfigBinding {
 	readonly saveConfig: (input: SetSurfaceAppRuntimeConfigInput) => Promise<SurfaceAppRuntimeConfig | undefined>;
 	readonly grantSecret: (input: GrantSurfaceAppSecretInput) => Promise<void>;
 	readonly revokeGrant: (grantId: string) => Promise<void>;
+	readonly createSecret?: (
+		input: { readonly name: string; readonly value: string; readonly purpose: string },
+		signal?: AbortSignal,
+	) => Promise<void>;
 }
 
 export interface SurfaceAddressSetup {
@@ -268,6 +273,17 @@ function pageName(page: Shown): string {
 	return page.kind === "domain" ? `domain:${page.domain.hostname}` : page.kind;
 }
 
+function deploymentKindLabel(kind: SurfaceAppRuntimeConfig["deploymentKind"]): string {
+	switch (kind) {
+		case "server":
+			return t("Server app");
+		case "hybrid":
+			return t("Full-stack app");
+		default:
+			return t("Static site");
+	}
+}
+
 export class SurfaceAddress {
 	readonly #setup: SurfaceAddressSetup;
 	readonly #sheet = h("div", { class: "surface-address-sheet", role: "dialog", tabindex: "-1", hidden: true });
@@ -333,6 +349,22 @@ export class SurfaceAddress {
 		class: "surface-address-select",
 		"data-key": "runtime-secret-select",
 	});
+	readonly #runtimeNewSecretName = h("input", {
+		type: "text",
+		class: "surface-address-input",
+		maxlength: "64",
+		autocomplete: "off",
+		autocapitalize: "characters",
+		spellcheck: "false",
+		"data-key": "runtime-new-secret-name",
+	});
+	readonly #runtimeNewSecretValue = h("input", {
+		type: "password",
+		class: "surface-address-input",
+		autocomplete: "off",
+		spellcheck: "false",
+		"data-key": "runtime-new-secret-value",
+	});
 	readonly #runtimeScopeSelect = h(
 		"select",
 		{
@@ -374,7 +406,10 @@ export class SurfaceAddress {
 	#runtimeSaved = false;
 	#runtimeSavedTimer: ReturnType<typeof setTimeout> | undefined;
 	#grantingSecret = false;
+	#addingSecret = false;
+	#creatingSecret = false;
 	#revokingGrantId: string | null = null;
+	#anchorEl: HTMLElement | null = null;
 	#runtimeEnvRows: Array<{ id: number; key: string; value: string }> = [];
 	#runtimeEnvRowSeq = 0;
 	#slugCheck: SlugCheckState = { kind: "idle" };
@@ -395,6 +430,7 @@ export class SurfaceAddress {
 		this.#setup = setup;
 		this.#field.setAttribute("aria-label", t("Your own domain"));
 		this.#field.placeholder = t("yourdomain.com");
+		this.#field.addEventListener("input", () => this.#syncConnectButton());
 		this.#slugField.setAttribute("aria-label", t("Site address"));
 		this.#slugField.addEventListener("input", () => this.#onSlugInput());
 		this.#sourceRepoSelect.setAttribute("aria-label", t("Repository"));
@@ -412,6 +448,10 @@ export class SurfaceAddress {
 		this.#runtimeDbField.placeholder = t("e.g. shop");
 		this.#runtimeDbField.addEventListener("input", () => this.#clearRuntimeSaved());
 		this.#runtimeSecretSelect.setAttribute("aria-label", t("Secret to grant"));
+		this.#runtimeNewSecretName.setAttribute("aria-label", t("Secret name"));
+		this.#runtimeNewSecretName.placeholder = t("e.g. STRIPE_SECRET_KEY");
+		this.#runtimeNewSecretValue.setAttribute("aria-label", t("Secret value"));
+		this.#runtimeNewSecretValue.placeholder = t("Secret value (at least 8 characters)");
 		this.#runtimeScopeSelect.setAttribute("aria-label", t("Secret scope"));
 		this.#runtimeTargetSelect.setAttribute("aria-label", t("Target environment"));
 		setup.container.append(this.#sheet);
@@ -430,6 +470,7 @@ export class SurfaceAddress {
 			this.#savingSource ||
 			this.#savingRuntime ||
 			this.#grantingSecret ||
+			this.#creatingSecret ||
 			this.#revokingGrantId !== null
 		);
 	}
@@ -464,9 +505,13 @@ export class SurfaceAddress {
 			this.#savingRuntime = false;
 			this.#clearRuntimeSaved(false);
 			this.#grantingSecret = false;
+			this.#addingSecret = false;
+			this.#creatingSecret = false;
 			this.#revokingGrantId = null;
 			this.#runtimeEnvRows = [];
 			this.#runtimeDbField.value = "";
+			this.#runtimeNewSecretName.value = "";
+			this.#runtimeNewSecretValue.value = "";
 			this.#liveUrl = url;
 			this.#syncedLiveUrl = url;
 			if (next) void this.#read();
@@ -522,7 +567,7 @@ export class SurfaceAddress {
 		else this.open(fromKeyboard);
 	}
 
-	openSource(fromKeyboard = false): void {
+	openSource(fromKeyboard = false, anchor?: HTMLElement | null): void {
 		const source = this.#setup.canManage() ? this.#setup.codeSource?.() : undefined;
 		if (!source) {
 			this.toggle(fromKeyboard);
@@ -532,13 +577,18 @@ export class SurfaceAddress {
 			this.close(true);
 			return;
 		}
-		if (!this.#open) this.open(fromKeyboard);
+		if (!this.#open) this.open(fromKeyboard, anchor);
+		else {
+			this.#anchorEl = anchor ?? null;
+			this.#place();
+		}
 		if (this.#open) this.#openSource(source);
 	}
 
-	open(fromKeyboard = false): void {
+	open(fromKeyboard = false, anchor?: HTMLElement | null): void {
 		if (this.#open || !this.#liveUrl || this.#setup.signal.aborted) return;
 		const takeFocus = fromKeyboard || document.activeElement === this.#addressButton();
+		this.#anchorEl = anchor ?? null;
 		this.#open = true;
 		this.#problem = undefined;
 		this.#page = MAIN;
@@ -590,6 +640,12 @@ export class SurfaceAddress {
 		this.#timer = undefined;
 		this.#cancelSlugCheck();
 		this.#clearRuntimeSaved(false);
+		this.#addingSecret = false;
+		this.#runtimeNewSecretValue.value = "";
+		this.#anchorEl = null;
+		this.#sheet.style.left = "";
+		this.#sheet.style.top = "";
+		this.#sheet.classList.remove("is-placed");
 		this.#disarm(false);
 		this.#sheet.hidden = true;
 		this.#sheet.replaceChildren();
@@ -1228,6 +1284,8 @@ export class SurfaceAddress {
 			this.#savingRuntime,
 			this.#runtimeSaved,
 			this.#grantingSecret,
+			this.#addingSecret,
+			this.#creatingSecret,
 			this.#revokingGrantId ?? "",
 			this.#runtimeEnvRows.map((row) => row.id),
 			this.#runtimeConfig === undefined
@@ -1322,7 +1380,7 @@ export class SurfaceAddress {
 	}
 
 	#place(): void {
-		const anchor = this.#addressButton();
+		const anchor = this.#anchorEl?.isConnected ? this.#anchorEl : this.#addressButton();
 		const box = this.#setup.container.getBoundingClientRect();
 		const from = anchor?.getBoundingClientRect();
 		if (!from || box.width <= 0 || from.width <= 0) {
@@ -1693,6 +1751,8 @@ export class SurfaceAddress {
 
 	#openRuntime(binding: SurfaceRuntimeConfigBinding): void {
 		this.#clearRuntimeSaved(false);
+		this.#addingSecret = false;
+		this.#runtimeNewSecretValue.value = "";
 		this.#go({ kind: "runtime" });
 		void this.#loadRuntime(binding);
 	}
@@ -1806,6 +1866,106 @@ export class SurfaceAddress {
 				this.#changed();
 			},
 		);
+	}
+
+	#createRuntimeSecret(): void {
+		const binding = this.#setup.runtimeConfig?.();
+		const createSecret = binding?.createSecret;
+		const current = this.#runtimeConfig;
+		if (this.#creatingSecret || !binding || !createSecret || !current || !current.canManage || !current.siteId)
+			return;
+		const name = this.#runtimeNewSecretName.value.trim().toUpperCase();
+		const value = this.#runtimeNewSecretValue.value;
+		if (!CODING_VARIABLE_NAME.test(name)) {
+			this.#problem = t("Enter an uppercase secret name like STRIPE_SECRET_KEY.");
+			this.#paint();
+			this.#runtimeNewSecretName.focus();
+			return;
+		}
+		const valueIssue = codingValueProblem(value);
+		if (valueIssue === "short") {
+			this.#problem = t("Enter at least 8 characters for a secret value.");
+			this.#paint();
+			this.#runtimeNewSecretValue.focus();
+			return;
+		}
+		if (valueIssue === "long") {
+			this.#problem = t("That secret value is too long.");
+			this.#paint();
+			this.#runtimeNewSecretValue.focus();
+			return;
+		}
+		if (valueIssue === "nul") {
+			this.#problem = t("Secret values cannot include null characters.");
+			this.#paint();
+			this.#runtimeNewSecretValue.focus();
+			return;
+		}
+		const scope = (this.#runtimeScopeSelect.value || "runtime") as SurfaceAppSecretScope;
+		const targetEnv = (this.#runtimeTargetSelect.value || "prod") as SurfaceAppTargetEnv;
+		const siteId = current.siteId;
+		const target = this.#target;
+		const grantFailedMessage = t(
+			"Saved, but it could not be granted automatically. Select it from the list to grant it.",
+		);
+		this.#creatingSecret = true;
+		this.#problem = undefined;
+		this.#paint();
+		this.#setup.changed();
+		let saved = false;
+		void (async () => {
+			try {
+				await createSecret({ name, value, purpose: "App secret" }, this.#setup.signal);
+				saved = true;
+				this.#runtimeNewSecretValue.value = "";
+				if (this.#setup.signal.aborted || target !== this.#target) {
+					this.#creatingSecret = false;
+					return;
+				}
+				const refreshed = await binding.load(this.#setup.signal);
+				if (this.#setup.signal.aborted || target !== this.#target) {
+					this.#creatingSecret = false;
+					return;
+				}
+				if (refreshed) {
+					this.#runtimeConfig = refreshed;
+					this.#syncRuntimeFields(refreshed);
+				}
+				const created = refreshed?.availableSecrets.find((item) => item.name === name);
+				if (!created) {
+					this.#runtimeNewSecretName.value = "";
+					this.#addingSecret = false;
+					this.#creatingSecret = false;
+					this.#problem = grantFailedMessage;
+					this.#changed();
+					return;
+				}
+				await binding.grantSecret({ secretId: created.secretId, siteId, scope, targetEnv });
+				this.#runtimeNewSecretName.value = "";
+				this.#addingSecret = false;
+				this.#creatingSecret = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				await this.#loadRuntime(binding);
+			} catch (error: unknown) {
+				this.#creatingSecret = false;
+				if (this.#setup.signal.aborted || target !== this.#target) return;
+				if (saved) {
+					this.#runtimeNewSecretName.value = "";
+					this.#addingSecret = false;
+					await this.#loadRuntime(binding);
+					if (this.#setup.signal.aborted || target !== this.#target) return;
+					this.#problem = grantFailedMessage;
+					this.#changed();
+					return;
+				}
+				if (error instanceof CloudRpcError && error.code === "23505") {
+					this.#problem = t("A secret with that name already exists. Select it from the list to grant it.");
+				} else {
+					this.#problem = addressRefusal(error, phrase("The secret could not be saved. Try again."));
+				}
+				this.#changed();
+			}
+		})();
 	}
 
 	#revokeRuntimeGrant(grantId: string): void {
@@ -1954,18 +2114,28 @@ export class SurfaceAddress {
 						),
 					);
 
-		this.#runtimeSecretSelect.disabled = !canEdit || this.#grantingSecret;
-		this.#runtimeScopeSelect.disabled = !canEdit || this.#grantingSecret;
-		this.#runtimeTargetSelect.disabled = !canEdit || this.#grantingSecret;
+		this.#runtimeSecretSelect.disabled = !canEdit || this.#grantingSecret || this.#creatingSecret;
+		this.#runtimeNewSecretName.disabled = !canEdit || this.#creatingSecret;
+		this.#runtimeNewSecretValue.disabled = !canEdit || this.#creatingSecret;
+		this.#runtimeScopeSelect.disabled = !canEdit || this.#grantingSecret || this.#creatingSecret;
+		this.#runtimeTargetSelect.disabled = !canEdit || this.#grantingSecret || this.#creatingSecret;
+		const canCreateSecret = Boolean(canEdit && this.#setup.runtimeConfig?.()?.createSecret);
 
 		const grantForm = !canEdit
 			? null
-			: config.availableSecrets.length === 0
-				? this.#quietLine(t("Add environment secrets in Settings first, then grant them here."))
-				: h(
-						"div",
-						{ class: "surface-address-runtime-grant-form" },
-						this.#runtimeSecretSelect,
+			: this.#addingSecret && canCreateSecret
+				? h(
+						"form",
+						{
+							class: "surface-address-runtime-grant-form",
+							autocomplete: "off",
+							onsubmit: (event: SubmitEvent) => {
+								event.preventDefault();
+								this.#createRuntimeSecret();
+							},
+						},
+						this.#runtimeNewSecretName,
+						this.#runtimeNewSecretValue,
 						h(
 							"div",
 							{ class: "surface-address-runtime-grant-row" },
@@ -1974,22 +2144,61 @@ export class SurfaceAddress {
 							h(
 								"button",
 								{
-									type: "button",
+									type: "submit",
 									class: "surface-address-pill",
-									"data-key": "runtime-grant-secret",
-									disabled: this.#grantingSecret,
-									onclick: () => this.#grantRuntimeSecret(),
+									"data-key": "runtime-create-secret",
+									disabled: this.#creatingSecret,
 								},
-								this.#grantingSecret ? t("Granting…") : t("Grant secret"),
+								this.#creatingSecret ? t("Saving…") : t("Save & grant"),
 							),
 						),
-					);
+					)
+				: config.availableSecrets.length === 0
+					? this.#quietLine(
+							canCreateSecret
+								? t("Create an encrypted company secret to inject it at build, test, or runtime.")
+								: t("Add environment secrets in Settings first, then grant them here."),
+						)
+					: h(
+							"div",
+							{ class: "surface-address-runtime-grant-form" },
+							this.#runtimeSecretSelect,
+							h(
+								"div",
+								{ class: "surface-address-runtime-grant-row" },
+								this.#runtimeScopeSelect,
+								this.#runtimeTargetSelect,
+								h(
+									"button",
+									{
+										type: "button",
+										class: "surface-address-pill",
+										"data-key": "runtime-grant-secret",
+										disabled: this.#grantingSecret,
+										onclick: () => this.#grantRuntimeSecret(),
+									},
+									this.#grantingSecret ? t("Granting…") : t("Grant secret"),
+								),
+							),
+						);
 
 		return [
 			this.#top(t("Environment & secrets"), MAIN),
 			h(
 				"div",
 				{ class: "surface-address-body" },
+				config.deploymentKind
+					? h(
+							"div",
+							{ class: "surface-address-runtime-mode" },
+							h("span", null, t("Hosting")),
+							h(
+								"span",
+								{ class: "surface-address-runtime-mode-pill" },
+								deploymentKindLabel(config.deploymentKind),
+							),
+						)
+					: null,
 				h(
 					"form",
 					{
@@ -2063,7 +2272,33 @@ export class SurfaceAddress {
 				h(
 					"div",
 					{ class: "surface-address-runtime-section" },
-					h("h3", { class: "surface-address-runtime-heading" }, t("App secrets")),
+					h(
+						"div",
+						{ class: "surface-address-runtime-head" },
+						h("h3", { class: "surface-address-runtime-heading" }, t("App secrets")),
+						canCreateSecret
+							? h(
+									"button",
+									{
+										type: "button",
+										class: "surface-address-runtime-add",
+										"data-key": "runtime-toggle-new-secret",
+										disabled: this.#creatingSecret,
+										onclick: () => {
+											this.#addingSecret = !this.#addingSecret;
+											this.#problem = undefined;
+											if (!this.#addingSecret) this.#runtimeNewSecretValue.value = "";
+											this.#paint();
+											if (this.#addingSecret && this.#runtimeNewSecretName.isConnected) {
+												this.#runtimeNewSecretName.focus();
+											}
+										},
+									},
+									this.#addingSecret ? null : icon("plus"),
+									this.#addingSecret ? t("Cancel") : t("New secret"),
+								)
+							: null,
+					),
 					grantsEl,
 					grantForm,
 				),
@@ -2200,6 +2435,12 @@ export class SurfaceAddress {
 		];
 	}
 
+	#syncConnectButton(): void {
+		if (!this.#open || this.#page.kind !== "add") return;
+		const btn = this.#sheet.querySelector<HTMLButtonElement>('[data-key="connect"]');
+		if (btn) btn.disabled = cleanDomain(this.#field.value).length === 0;
+	}
+
 	#addPage(from: string | undefined): HTMLElement[] {
 		const back: Page = from ? { kind: "domain", hostname: from } : MAIN;
 		return [
@@ -2218,7 +2459,16 @@ export class SurfaceAddress {
 				h(
 					"div",
 					{ class: "surface-address-end" },
-					h("button", { type: "submit", class: "surface-address-pill", "data-key": "connect" }, t("Connect")),
+					h(
+						"button",
+						{
+							type: "submit",
+							class: "surface-address-pill",
+							"data-key": "connect",
+							disabled: cleanDomain(this.#field.value).length === 0,
+						},
+						t("Connect"),
+					),
 				),
 				this.#problemLine(),
 			),

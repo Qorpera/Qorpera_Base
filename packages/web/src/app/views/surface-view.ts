@@ -75,6 +75,10 @@ export interface SurfaceViewHost {
 	) => Promise<Readonly<Record<string, string>>>;
 	readonly siteHosting?: (surface: SurfaceSummary) => SurfaceSiteHosting | undefined;
 	readonly managesSites?: () => boolean;
+	readonly createCompanySecret?: (
+		input: { readonly name: string; readonly value: string; readonly purpose: string },
+		signal?: AbortSignal,
+	) => Promise<void>;
 	readonly canWrite?: () => boolean;
 	readonly live?: SurfaceLiveHosts;
 }
@@ -503,6 +507,7 @@ export class SurfaceView {
 					saveConfig: (input) => host.store.setSurfaceAppRuntimeConfig(surface.id, input),
 					grantSecret: (input) => host.store.grantSurfaceAppSecret(input),
 					revokeGrant: (grantId) => host.store.revokeSurfaceAppSecretGrant(grantId),
+					...(host.createCompanySecret ? { createSecret: host.createCompanySecret } : {}),
 				};
 			},
 			signal: lifetimeSignal,
